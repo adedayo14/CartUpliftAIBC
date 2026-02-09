@@ -6,14 +6,10 @@ import {
   ScrollRestoration,
   useLocation,
 } from "@remix-run/react";
-import { IframeBreaker } from "./components/IframeBreaker";
 import { useRouteError, isRouteErrorResponse } from "@remix-run/react";
 import { useEffect } from "react";
 
 export default function App() {
-  // Hard-code the API key to avoid hydration mismatch
-  const apiKey = "ba2c932cf6717c8fb6207fcc8111fe70";
-  const appBridgeVersion = "1";
   const location = useLocation();
 
   // Ensure Re:plain widget stays visible during SPA navigation
@@ -57,23 +53,13 @@ export default function App() {
       <head>
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width,initial-scale=1" />
-        <meta name="shopify-api-key" content={apiKey} />
-        <meta name="no-browser-extensions" content="true" />
-        <link rel="preconnect" href="https://cdn.shopify.com/" />
-        <link
-          rel="stylesheet"
-          href="https://cdn.shopify.com/static/fonts/inter/v4/styles.css"
-        />
-        <script src={`https://cdn.shopify.com/shopifycloud/app-bridge.js?v=${appBridgeVersion}`} />
         <Meta />
         <Links />
       </head>
       <body>
-        <IframeBreaker />
         <Outlet />
         <ScrollRestoration />
         <Scripts />
-        {/* Re:plain Live Chat Widget injected in useEffect */}
       </body>
     </html>
   );
@@ -82,16 +68,13 @@ export default function App() {
 export function ErrorBoundary() {
   const error = useRouteError();
   const errorId = 'error-' + Date.now();
-  
-  // Log to monitoring service
+
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      // Log to Sentry if available
       if ((window as Record<string, unknown>).Sentry) {
         ((window as Record<string, unknown>).Sentry as { captureException: (error: unknown) => void }).captureException(error);
       }
-      
-      // Also log to console for debugging (client-side error logging)
+
       console.error('App Error:', {
         errorId,
         error,
@@ -100,7 +83,6 @@ export function ErrorBoundary() {
     }
   }, [error, errorId]);
 
-  // Check if it's a known error type
   if (isRouteErrorResponse(error)) {
     return (
       <html>
@@ -119,7 +101,6 @@ export function ErrorBoundary() {
             <p className="error-id">Error ID: {errorId}</p>
           </div>
           <Scripts />
-          {/* Re:plain Live Chat Widget intentionally not reinjected in error boundary */}
         </body>
       </html>
     );
@@ -149,7 +130,6 @@ export function ErrorBoundary() {
           <p className="error-id">Error ID: {errorId}</p>
         </div>
         <Scripts />
-        {/* Re:plain Live Chat Widget intentionally not reinjected in error boundary */}
       </body>
     </html>
   );

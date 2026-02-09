@@ -13,7 +13,8 @@ datasource db {
 
 model Session {
   id            String    @id
-  shop          String
+  storeHash     String?
+  storeDomain   String?
   state         String
   isOnline      Boolean   @default(false)
   scope         String?
@@ -27,11 +28,13 @@ model Session {
   locale        String?
   collaborator  Boolean?  @default(false)
   emailVerified Boolean?  @default(false)
+
+  @@index([storeHash])
 }
 
 model Settings {
   id                      String   @id @default(cuid())
-  shop                    String   @unique
+  storeHash               String   @unique
   
   // Activation Tracking
   appEmbedActivated       Boolean  @default(false) // Tracks if app embed was enabled in theme editor
@@ -41,7 +44,7 @@ model Settings {
   enableApp               Boolean  @default(true)
   showOnlyOnCartPage      Boolean  @default(false)
   autoOpenCart            Boolean  @default(false)  // OFF by default - less intrusive
-  enableFreeShipping      Boolean  @default(false)  // OFF - requires Shopify discount setup
+  enableFreeShipping      Boolean  @default(false)
   freeShippingThreshold   Float    @default(0)
   
   // Advanced Features
@@ -133,9 +136,9 @@ model Settings {
   themeEmbedLastSeen      DateTime?
   
   // Store Configuration
-  currencyCode            String?  // Store's currency (fetched from Shopify)
+  currencyCode            String?  // Store's currency (fetched from BigCommerce)
   moneyFormat             String?  // Store's money format pattern
-  ownerEmail              String?  // Shop owner's email (for admin dashboard)
+  ownerEmail              String?  // Store owner's email (for admin dashboard)
   
   // Subscription & Billing (COMMENTED OUT - ACTIVATE AFTER DB MIGRATION)
   // subscriptionPlan        String?  // "starter" | "growth" | "pro"
@@ -167,7 +170,7 @@ model Settings {
 // Bundle Management System
 model Bundle {
   id               String    @id @default(cuid())
-  shop             String
+  storeHash        String
   name             String
   description      String?
   type             String    // manual, category, ai_suggested
@@ -193,14 +196,14 @@ model Bundle {
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
   
-  @@index([shop])
+  @@index([storeHash])
   @@index([status])
 }
 
 model BundleProduct {
   id         String   @id @default(cuid())
   bundleId   String
-  productId  String   // Shopify product ID
+  productId  String   // BigCommerce product ID
   variantId  String?  // Specific variant ID (optional)
   position   Int      @default(0) // Order in bundle
   required   Boolean  @default(false) // Required vs optional product
@@ -227,33 +230,33 @@ model BundleProduct {
 // Track bundle purchases to prevent duplicate webhook processing
 model BundlePurchase {
   id          String   @id @default(cuid())
-  shop        String
-  orderId     String   // Shopify order ID
+  storeHash   String
+  orderId     String   // BigCommerce order ID
   orderNumber Int?     // Human-readable order number
   bundleCount Int      @default(0) // How many bundles in this order
   totalValue  Float    @default(0) // Total revenue from bundle purchases in this order
   createdAt   DateTime @default(now())
-  
-  @@unique([shop, orderId])
-  @@index([shop])
+
+  @@unique([storeHash, orderId])
+  @@index([storeHash])
   @@index([orderId])
 }
 
 // Customer Bundle Interactions
 model CustomerBundle {
   id           String   @id @default(cuid())
-  shop         String
-  customerId   String?  // Shopify customer ID (null for anonymous)
+  storeHash    String
+  customerId   String?  // BigCommerce customer ID (null for anonymous)
   bundleId     String
   sessionId    String?  // For anonymous tracking
-  
+
   action       String   // "view", "add_to_cart", "purchase"
   cartValue    Float?   // Cart value when action occurred
   discountApplied Float? // Actual discount applied
-  
+
   createdAt    DateTime @default(now())
-  
-  @@index([shop])
+
+  @@index([storeHash])
   @@index([bundleId])
   @@index([customerId])
 }
@@ -286,7 +289,7 @@ enum EventType {
 
 model Experiment {
   id              Int                @id @default(autoincrement())
-  shopId          String             @map("shop_id")
+  storeHashId     String             @map("store_hash_id")
   name            String
   type            ExperimentType     @default(discount)
   status          ExperimentStatus   @default(running)
@@ -341,13 +344,13 @@ model Event {
 // Analytics Events for Dashboard (separate from AB testing)
 model AnalyticsEvent {
   id          String   @id @default(cuid())
-  shop        String
+  storeHash   String
   eventType   String   // cart_view | cart_abandon | purchase | bundle_impression | bundle_click | bundle_conversion
   sessionId   String?  // Anonymous session tracking
-  customerId  String?  // Shopify customer ID if logged in
-  
+  customerId  String?  // BigCommerce customer ID if logged in
+
   // Order/Revenue tracking
-  orderId     String?  // Shopify order ID
+  orderId     String?  // BigCommerce order ID
   orderValue  Decimal? // Total order value
   currency    String?  @default("USD")
   
@@ -366,8 +369,8 @@ model AnalyticsEvent {
   // Additional metadata
   metadata    Json?    // Flexible field for extra data
   
-  @@index([shop, timestamp(sort: Desc)])
-  @@index([shop, eventType, timestamp(sort: Desc)])
+  @@index([storeHash, timestamp(sort: Desc)])
+  @@index([storeHash, eventType, timestamp(sort: Desc)])
   @@index([bundleId, timestamp(sort: Desc)])
   @@index([sessionId, timestamp(sort: Desc)])
   @@map("analytics_events")
@@ -376,7 +379,7 @@ model AnalyticsEvent {
 // Recommendation tracking for ML/cart suggestions
 model TrackingEvent {
   id            String   @id @default(cuid())
-  shop          String
+  storeHash     String
   event         String   // "impression" | "click" | "add_to_cart" | "purchase"
   productId     String
   productTitle  String?
@@ -395,8 +398,8 @@ model TrackingEvent {
   
   createdAt     DateTime @default(now())
   
-  @@index([shop, createdAt(sort: Desc)])
-  @@index([shop, event, createdAt(sort: Desc)])
+  @@index([storeHash, createdAt(sort: Desc)])
+  @@index([storeHash, event, createdAt(sort: Desc)])
   @@index([productId, createdAt(sort: Desc)])
   @@index([sessionId, createdAt(sort: Desc)])
   @@map("tracking_events")
@@ -405,7 +408,7 @@ model TrackingEvent {
 // ML User Profiles for personalization (respects privacy settings)
 model MLUserProfile {
   id                String   @id @default(cuid())
-  shop              String
+  storeHash         String
   customerId        String?  // Only stored if privacy level allows
   sessionId         String   // Always stored
   anonymousId       String?  // Generated ID for basic privacy mode
@@ -434,10 +437,10 @@ model MLUserProfile {
   // Soft delete for GDPR compliance
   deletedAt         DateTime?
   
-  @@unique([shop, sessionId])
-  @@index([shop, customerId])
-  @@index([shop, lastActivity(sort: Desc)])
-  @@index([shop, privacyLevel])
+  @@unique([storeHash, sessionId])
+  @@index([storeHash, customerId])
+  @@index([storeHash, lastActivity(sort: Desc)])
+  @@index([storeHash, privacyLevel])
   @@index([deletedAt]) // For cleanup jobs
   @@map("ml_user_profiles")
 }
@@ -445,7 +448,7 @@ model MLUserProfile {
 // Product Similarity Matrix (for content-based recommendations)
 model MLProductSimilarity {
   id            String   @id @default(cuid())
-  shop          String
+  storeHash     String
   productId1    String
   productId2    String
   
@@ -460,16 +463,16 @@ model MLProductSimilarity {
   computedAt    DateTime @default(now())
   sampleSize    Int      @default(0) // Number of data points used
   
-  @@unique([shop, productId1, productId2])
-  @@index([shop, productId1, overallScore(sort: Desc)])
-  @@index([shop, overallScore(sort: Desc)])
+  @@unique([storeHash, productId1, productId2])
+  @@index([storeHash, productId1, overallScore(sort: Desc)])
+  @@index([storeHash, overallScore(sort: Desc)])
   @@map("ml_product_similarity")
 }
 
 // Data Retention Jobs (for privacy compliance)
 model MLDataRetentionJob {
   id              String   @id @default(cuid())
-  shop            String
+  storeHash       String
   jobType         String   // "cleanup" | "anonymize" | "export" | "delete"
   status          String   @default("pending") // "pending" | "running" | "completed" | "failed"
   
@@ -490,16 +493,16 @@ model MLDataRetentionJob {
   completedAt     DateTime?
   createdAt       DateTime @default(now())
   
-  @@index([shop, status])
-  @@index([shop, createdAt(sort: Desc)])
+  @@index([storeHash, status])
+  @@index([storeHash, createdAt(sort: Desc)])
   @@index([status, scheduledAt])
   @@map("ml_data_retention_jobs")
 }
 
-// 🎯 Purchase Attribution - Track recommendations that led to sales
+// Purchase Attribution - Track recommendations that led to sales
 model RecommendationAttribution {
   id                      String   @id @default(cuid())
-  shop                    String
+  storeHash               String
   productId               String
   orderId                 String
   orderNumber             Int?
@@ -514,16 +517,16 @@ model RecommendationAttribution {
   // Metadata
   createdAt               DateTime @default(now())
   
-  @@index([shop, productId])
-  @@index([shop, orderId])
-  @@index([shop, createdAt(sort: Desc)])
+  @@index([storeHash, productId])
+  @@index([storeHash, orderId])
+  @@index([storeHash, createdAt(sort: Desc)])
   @@map("recommendation_attributions")
 }
 
-// 📊 ML Product Performance - Daily aggregated metrics per product
+// ML Product Performance - Daily aggregated metrics per product
 model MLProductPerformance {
   id                String   @id @default(cuid())
-  shop              String
+  storeHash         String
   productId         String
   
   // Performance metrics (rolling 30 days)
@@ -545,16 +548,16 @@ model MLProductPerformance {
   lastUpdated       DateTime @default(now())
   createdAt         DateTime @default(now())
   
-  @@unique([shop, productId])
-  @@index([shop, confidence(sort: Desc)])
-  @@index([shop, isBlacklisted])
+  @@unique([storeHash, productId])
+  @@index([storeHash, confidence(sort: Desc)])
+  @@index([storeHash, isBlacklisted])
   @@map("ml_product_performance")
 }
 
-// 🏥 ML System Health - Monitor job performance for dashboard
+// ML System Health - Monitor job performance for dashboard
 model MLSystemHealth {
   id                String   @id @default(cuid())
-  shop              String
+  storeHash         String
   jobType           String   // "daily_learning" | "similarity_computation" | "profile_update"
   
   // Execution details
@@ -584,8 +587,8 @@ model MLSystemHealth {
   
   createdAt         DateTime @default(now())
   
-  @@index([shop, createdAt(sort: Desc)])
-  @@index([shop, jobType, createdAt(sort: Desc)])
+  @@index([storeHash, createdAt(sort: Desc)])
+  @@index([storeHash, jobType, createdAt(sort: Desc)])
   @@index([status, createdAt(sort: Desc)])
   @@map("ml_system_health")
 }
@@ -593,7 +596,7 @@ model MLSystemHealth {
 // Subscription & Billing Management
 model Subscription {
   id                    String    @id @default(cuid())
-  shop                  String    @unique
+  storeHash             String    @unique
   
   // Plan Information
   planTier              String    @default("starter") // "starter" | "growth" | "pro"
@@ -606,9 +609,9 @@ model Subscription {
   subscriptionStartedAt DateTime  @default(now())
   cancelledAt           DateTime?
   
-  // Shopify Charge Info
-  chargeId              String?   @unique // Shopify AppSubscription ID
-  confirmationUrl       String?
+  // Stripe Billing Info
+  stripeCustomerId      String?   @unique // Stripe Customer ID
+  stripeSubscriptionId  String?   @unique // Stripe Subscription ID
   
   // Order Tracking
   monthlyOrderCount     Int       @default(0)
@@ -620,30 +623,30 @@ model Subscription {
   createdAt             DateTime  @default(now())
   updatedAt             DateTime  @updatedAt
   
-  @@index([shop])
+  @@index([storeHash])
   @@index([planTier])
   @@index([planStatus])
   @@map("subscriptions")
 }
 
-// 💳 Billed Order Tracking - Prevents duplicate billing
+// Billed Order Tracking - Prevents duplicate billing
 model BilledOrder {
   id          String   @id @default(cuid())
-  shop        String
-  orderId     String   // Shopify order ID
+  storeHash   String
+  orderId     String   // BigCommerce order ID
   orderNumber Int?     // Human-readable order number
   countedAt   DateTime @default(now())
 
-  @@unique([shop, orderId])
-  @@index([shop])
+  @@unique([storeHash, orderId])
+  @@index([storeHash])
   @@index([orderId])
   @@map("billed_orders")
 }
 
-// 📊 Lifetime Metrics - Never resets, tracks all-time performance
+// Lifetime Metrics - Never resets, tracks all-time performance
 model LifetimeMetrics {
   id                      String   @id @default(cuid())
-  shop                    String   @unique
+  storeHash               String   @unique
 
   // Order Metrics (All-Time)
   totalOrders             Int      @default(0)
@@ -671,6 +674,6 @@ model LifetimeMetrics {
   createdAt               DateTime @default(now())
   updatedAt               DateTime @updatedAt
 
-  @@index([shop])
+  @@index([storeHash])
   @@map("lifetime_metrics")
 }

@@ -5,14 +5,14 @@ export const SecurityHeaders = {
   // Content Security Policy
   "Content-Security-Policy": [
     "default-src 'self'",
-    "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://*.shopify.com https://*.shopifycdn.com https://cdn.shopify.com https://cdn.shopifycdn.net https://widget.replain.cc",
-    "style-src 'self' 'unsafe-inline' https://*.shopify.com https://*.shopifycdn.com https://cdn.shopify.com https://fonts.googleapis.com https://widget.replain.cc",
-    "img-src 'self' data: blob: https://*.shopify.com https://*.shopifycdn.com https://cdn.shopify.com https://assets.replain.cc https://storage.replain.cc",
-    "font-src 'self' https://fonts.gstatic.com https://*.shopify.com https://*.shopifycdn.com",
-    "connect-src 'self' https://*.shopify.com https://*.myshopify.com https://cdn.shopify.com wss://*.shopify.com wss://*.myshopify.com https://widget.replain.cc https://app.replain.cc https://ws.replain.cc wss://widget.replain.cc wss://app.replain.cc wss://ws.replain.cc",
+    "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://*.bigcommerce.com https://widget.replain.cc",
+    "style-src 'self' 'unsafe-inline' https://*.bigcommerce.com https://fonts.googleapis.com https://widget.replain.cc",
+    "img-src 'self' data: blob: https://*.bigcommerce.com https://assets.replain.cc https://storage.replain.cc",
+    "font-src 'self' https://fonts.gstatic.com https://*.bigcommerce.com",
+    "connect-src 'self' https://*.bigcommerce.com https://api.bigcommerce.com https://login.bigcommerce.com https://widget.replain.cc https://app.replain.cc https://ws.replain.cc wss://widget.replain.cc wss://app.replain.cc wss://ws.replain.cc",
     "media-src 'self' https://widget.replain.cc",
-    "frame-src 'self' https://*.shopify.com https://*.myshopify.com",
-  "frame-ancestors https://admin.shopify.com https://*.myshopify.com https://*.shopify.com",
+    "frame-src 'self' https://*.bigcommerce.com",
+    "frame-ancestors https://*.bigcommerce.com https://store-*.mybigcommerce.com",
   ].join("; "),
   
   // Additional security headers
@@ -38,13 +38,14 @@ export function sanitizeInput(input: string): string {
 }
 
 /**
- * Validate shop domain format
+ * Validate BigCommerce store hash format
  */
-export function validateShopDomain(shop: string): boolean {
-  if (!shop || typeof shop !== 'string') return false;
-  
-  const shopPattern = /^[a-z0-9][a-z0-9-]*[a-z0-9]\.myshopify\.com$/i;
-  return shopPattern.test(shop);
+export function validateStoreHash(storeHash: string): boolean {
+  if (!storeHash || typeof storeHash !== 'string') return false;
+
+  // BigCommerce store hashes are alphanumeric, typically 10 characters
+  const storeHashPattern = /^[a-z0-9]{5,20}$/i;
+  return storeHashPattern.test(storeHash);
 }
 
 /**
@@ -104,13 +105,12 @@ function isValidIP(ip: string): boolean {
 }
 
 /**
- * Validate and sanitize product ID (Shopify product IDs are numeric)
+ * Validate and sanitize product ID (BigCommerce product IDs are numeric)
  */
 export function validateProductId(productId: string | null | undefined): string | null {
   if (!productId) return null;
 
-  // Remove any GID prefix if present (gid://shopify/Product/123 -> 123)
-  const cleanId = productId.replace(/^gid:\/\/shopify\/Product\//, '');
+  const cleanId = productId.trim();
 
   // Validate it's a valid number
   if (!/^\d+$/.test(cleanId)) {
@@ -121,13 +121,12 @@ export function validateProductId(productId: string | null | undefined): string 
 }
 
 /**
- * Validate and sanitize variant ID
+ * Validate and sanitize variant ID (BigCommerce variant IDs are numeric)
  */
 export function validateVariantId(variantId: string | null | undefined): string | null {
   if (!variantId) return null;
 
-  // Remove any GID prefix if present
-  const cleanId = variantId.replace(/^gid:\/\/shopify\/ProductVariant\//, '');
+  const cleanId = variantId.trim();
 
   // Validate it's a valid number
   if (!/^\d+$/.test(cleanId)) {
@@ -248,68 +247,29 @@ export function validateUrl(url: string | null | undefined): string | null {
 }
 
 /**
- * Get allowed domains for a shop (myshopify.com + custom domains)
- * Cached to avoid hitting Shopify API on every request
+ * Get allowed domains for a BigCommerce store
+ * Returns the default mybigcommerce.com domain
  */
 const domainCache = new Map<string, { domains: string[]; timestamp: number }>();
 const DOMAIN_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
-export async function getShopDomains(
-  shop: string,
-  admin?: { graphql: (query: string) => Promise<Response> }
+export async function getStoreDomains(
+  storeHash: string
 ): Promise<string[]> {
-  const myshopifyDomain = shop.endsWith('.myshopify.com') ? shop : `${shop}.myshopify.com`;
-  const myshopifyOrigin = `https://${myshopifyDomain}`;
+  const bcDomain = `store-${storeHash}.mybigcommerce.com`;
+  const bcOrigin = `https://${bcDomain}`;
 
   // Check cache first
-  const cached = domainCache.get(shop);
+  const cached = domainCache.get(storeHash);
   if (cached && (Date.now() - cached.timestamp) < DOMAIN_CACHE_TTL) {
     return cached.domains;
   }
 
-  // If no admin API provided, just return myshopify domain
-  if (!admin) {
-    return [myshopifyOrigin];
-  }
+  const domains = [bcOrigin];
 
-  try {
-    // Fetch custom domains from Shopify
-    const response = await admin.graphql(`
-      #graphql
-      query {
-        shop {
-          domains(first: 10) {
-            edges {
-              node {
-                host
-                url
-              }
-            }
-          }
-        }
-      }
-    `);
-
-    const data = await response.json();
-    const domains: string[] = [myshopifyOrigin]; // Always include myshopify.com
-
-    // Add custom domains
-    const domainEdges = data?.data?.shop?.domains?.edges || [];
-    for (const edge of domainEdges) {
-      const url = edge?.node?.url;
-      if (url && url !== myshopifyOrigin) {
-        domains.push(url);
-      }
-    }
-
-    // Cache the result
-    domainCache.set(shop, { domains, timestamp: Date.now() });
-    return domains;
-
-  } catch (error) {
-    console.warn('[CORS] Failed to fetch custom domains, using myshopify.com only:', error);
-    return [myshopifyOrigin];
-  }
+  // Cache the result
+  domainCache.set(storeHash, { domains, timestamp: Date.now() });
+  return domains;
 }
 
 /**
@@ -318,8 +278,7 @@ export async function getShopDomains(
  */
 export async function validateCorsOrigin(
   origin: string | null,
-  shop: string,
-  admin?: { graphql: (query: string) => Promise<Response> }
+  storeHash: string
 ): Promise<string | null> {
   if (!origin) return null;
 
@@ -329,15 +288,14 @@ export async function validateCorsOrigin(
       origin.startsWith('http://localhost') ||
       origin.startsWith('https://localhost') ||
       origin.includes('ngrok') ||
-      origin.includes('cloudflare') ||
-      origin.includes('shopify.dev')
+      origin.includes('cloudflare')
     ) {
       return origin;
     }
   }
 
-  // Get allowed domains for this shop
-  const allowedDomains = await getShopDomains(shop, admin);
+  // Get allowed domains for this store
+  const allowedDomains = await getStoreDomains(storeHash);
 
   // Check if origin matches any allowed domain
   // Must be exact match or subdomain match
@@ -356,7 +314,7 @@ export async function validateCorsOrigin(
   }
 
   // Origin not in allowlist
-  console.warn('[CORS] Rejected origin:', { origin, shop, allowedDomains });
+  console.warn('[CORS] Rejected origin:', { origin, storeHash, allowedDomains });
   return null;
 }
 

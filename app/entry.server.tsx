@@ -4,7 +4,6 @@ import { RemixServer } from "@remix-run/react";
 import { isbot } from "isbot";
 import { renderToPipeableStream } from "react-dom/server";
 import type { AppLoadContext, EntryContext } from "@remix-run/node";
-import { addDocumentResponseHeaders } from "./shopify.server";
 // Rate limiting is handled in middleware
 import { SecurityHeaders, getClientIP } from "./services/security.server";
 import { securityMonitor } from "./services/securityMonitor.server";
@@ -19,19 +18,16 @@ export default function handleRequest(
   remixContext: EntryContext,
   _loadContext: AppLoadContext
 ) {
-  addDocumentResponseHeaders(request, responseHeaders);
-  
   // Apply rate limiting
   const ip = getClientIP(request);
   const url = new URL(request.url);
-  const shop = url.searchParams.get('shop') || 'unknown';
+  const storeHash = url.searchParams.get('storeHash') || 'unknown';
   
   try {
     // Rate limiting is handled in middleware, just log for monitoring
-    logger.log('Processing request:', { shop, ip, path: url.pathname });
+    logger.log('Processing request:', { storeHash, ip, path: url.pathname });
   } catch (_error) {
-    // Log any errors but continue processing
-    logger.warn('Error in entry server security check:', { shop, ip });
+    logger.warn('Error in entry server security check:', { storeHash, ip });
   }
 
   // Add comprehensive security headers

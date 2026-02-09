@@ -3,10 +3,6 @@
  *
  * Validates all required environment variables at startup to fail fast
  * rather than failing later with cryptic errors.
- *
- * Usage:
- *   import { validateEnv } from "~/utils/env.server";
- *   validateEnv(); // Call at app startup
  */
 
 interface EnvVar {
@@ -18,34 +14,27 @@ interface EnvVar {
 }
 
 const ENV_VARS: EnvVar[] = [
-  // Shopify Configuration (REQUIRED)
+  // BigCommerce Configuration (REQUIRED)
   {
-    key: 'SHOPIFY_API_KEY',
+    key: 'BC_CLIENT_ID',
     required: true,
-    description: 'Shopify App Client ID',
+    description: 'BigCommerce App Client ID',
     validation: (v) => v.length > 0,
-    errorMessage: 'Must be a valid Shopify API key'
+    errorMessage: 'Must be a valid BigCommerce Client ID'
   },
   {
-    key: 'SHOPIFY_API_SECRET',
+    key: 'BC_CLIENT_SECRET',
     required: true,
-    description: 'Shopify App Client Secret',
+    description: 'BigCommerce App Client Secret',
     validation: (v) => v.length > 0,
-    errorMessage: 'Must be a valid Shopify API secret'
+    errorMessage: 'Must be a valid BigCommerce Client Secret'
   },
   {
-    key: 'SHOPIFY_APP_URL',
+    key: 'BC_APP_URL',
     required: true,
     description: 'Public URL where app is hosted',
     validation: (v) => v.startsWith('http://') || v.startsWith('https://'),
     errorMessage: 'Must be a valid URL starting with http:// or https://'
-  },
-  {
-    key: 'SCOPES',
-    required: true,
-    description: 'Shopify API scopes (comma-separated)',
-    validation: (v) => v.includes('read_orders') && v.includes('read_products'),
-    errorMessage: 'Must include at least read_orders,read_products'
   },
 
   // Database Configuration (REQUIRED)
@@ -88,6 +77,25 @@ const ENV_VARS: EnvVar[] = [
     description: 'Secret for database migration endpoints (recommended for production)'
   },
 
+  // Stripe Billing (Optional - required for production)
+  {
+    key: 'STRIPE_SECRET_KEY',
+    required: false,
+    description: 'Stripe secret key for subscription billing'
+  },
+  {
+    key: 'STRIPE_WEBHOOK_SECRET',
+    required: false,
+    description: 'Stripe webhook signing secret'
+  },
+
+  // BigCommerce Webhook Security (Optional)
+  {
+    key: 'BC_WEBHOOK_SECRET',
+    required: false,
+    description: 'Shared secret for BigCommerce webhook verification'
+  },
+
   // Optional Configuration
   {
     key: 'NODE_ENV',
@@ -109,11 +117,6 @@ const ENV_VARS: EnvVar[] = [
     description: 'Log output format (json/text)',
     validation: (v) => v === 'json' || v === 'text',
     errorMessage: 'Must be either "json" or "text"'
-  },
-  {
-    key: 'SHOP_CUSTOM_DOMAIN',
-    required: false,
-    description: 'Custom shop domain if not using .myshopify.com'
   }
 ];
 
@@ -135,28 +138,25 @@ export function validateEnv(): ValidationResult {
   for (const envVar of ENV_VARS) {
     const value = process.env[envVar.key];
 
-    // Check if required variable is missing
     if (envVar.required && !value) {
       missing.push(envVar.key);
       errors.push(
-        `❌ Missing required environment variable: ${envVar.key}\n   Description: ${envVar.description}`
+        `Missing required environment variable: ${envVar.key}\n   Description: ${envVar.description}`
       );
       continue;
     }
 
-    // Warn about optional variables
     if (!envVar.required && !value) {
       warnings.push(
-        `⚠️  Optional environment variable not set: ${envVar.key}\n   Description: ${envVar.description}`
+        `Optional environment variable not set: ${envVar.key}\n   Description: ${envVar.description}`
       );
       continue;
     }
 
-    // Validate value if validation function provided
     if (value && envVar.validation) {
       if (!envVar.validation(value)) {
         errors.push(
-          `❌ Invalid value for ${envVar.key}: ${envVar.errorMessage || 'Validation failed'}\n   Current value: ${value.substring(0, 20)}...`
+          `Invalid value for ${envVar.key}: ${envVar.errorMessage || 'Validation failed'}\n   Current value: ${value.substring(0, 20)}...`
         );
       }
     }
@@ -176,23 +176,20 @@ export function validateEnv(): ValidationResult {
 export function validateEnvOrThrow(): void {
   const result = validateEnv();
 
-  // Always log warnings
   if (result.warnings.length > 0) {
-    console.warn('\n🟡 Environment Variable Warnings:');
+    console.warn('\nEnvironment Variable Warnings:');
     result.warnings.forEach(w => console.warn(w));
     console.warn('');
   }
 
-  // Throw if there are errors
   if (!result.valid) {
-    console.error('\n🔴 Environment Variable Validation Failed:');
+    console.error('\nEnvironment Variable Validation Failed:');
     console.error('='.repeat(60));
     result.errors.forEach(e => console.error(e));
     console.error('='.repeat(60));
-    console.error('\n💡 How to fix:');
-    console.error('   1. Copy .env.example to .env (if it exists)');
-    console.error('   2. Fill in all required variables in .env');
-    console.error('   3. For production, set these in your hosting platform (Vercel, etc.)');
+    console.error('\nHow to fix:');
+    console.error('   1. Set required variables in your .env file');
+    console.error('   2. For production, set these in Vercel environment variables');
     console.error('');
 
     throw new Error(
@@ -200,9 +197,8 @@ export function validateEnvOrThrow(): void {
     );
   }
 
-  // Success message in development
   if (process.env.NODE_ENV === 'development') {
-    console.log('✅ Environment variables validated successfully');
+    console.log('Environment variables validated successfully');
   }
 }
 
@@ -214,7 +210,6 @@ export function getRequiredEnv(key: string): string {
   if (!value) {
     throw new Error(
       `Missing required environment variable: ${key}\n` +
-      `This should have been caught by validateEnvOrThrow(). ` +
       `Make sure to call validateEnvOrThrow() at app startup.`
     );
   }
@@ -232,11 +227,10 @@ export function getOptionalEnv(key: string, fallback: string = ''): string {
  * Type-safe environment variable getters
  */
 export const env = {
-  // Shopify
-  get shopifyApiKey() { return getRequiredEnv('SHOPIFY_API_KEY'); },
-  get shopifyApiSecret() { return getRequiredEnv('SHOPIFY_API_SECRET'); },
-  get shopifyAppUrl() { return getRequiredEnv('SHOPIFY_APP_URL'); },
-  get scopes() { return getRequiredEnv('SCOPES'); },
+  // BigCommerce
+  get bcClientId() { return getRequiredEnv('BC_CLIENT_ID'); },
+  get bcClientSecret() { return getRequiredEnv('BC_CLIENT_SECRET'); },
+  get bcAppUrl() { return getRequiredEnv('BC_APP_URL'); },
 
   // Database
   get databaseUrl() { return getRequiredEnv('DATABASE_URL'); },
@@ -247,6 +241,13 @@ export const env = {
   get adminSecret() { return getOptionalEnv('ADMIN_SECRET'); },
   get migrationSecret() { return getOptionalEnv('MIGRATION_SECRET'); },
 
+  // Stripe
+  get stripeSecretKey() { return getOptionalEnv('STRIPE_SECRET_KEY'); },
+  get stripeWebhookSecret() { return getOptionalEnv('STRIPE_WEBHOOK_SECRET'); },
+
+  // BigCommerce Webhook
+  get bcWebhookSecret() { return getOptionalEnv('BC_WEBHOOK_SECRET'); },
+
   // Services
   get resendApiKey() { return getOptionalEnv('RESEND_API_KEY'); },
 
@@ -254,7 +255,6 @@ export const env = {
   get nodeEnv() { return getOptionalEnv('NODE_ENV', 'development'); },
   get debugMode() { return getOptionalEnv('DEBUG_MODE', 'false') === 'true'; },
   get logFormat() { return getOptionalEnv('LOG_FORMAT', 'text'); },
-  get shopCustomDomain() { return getOptionalEnv('SHOP_CUSTOM_DOMAIN'); },
 
   // Derived values
   get isProduction() { return this.nodeEnv === 'production'; },
