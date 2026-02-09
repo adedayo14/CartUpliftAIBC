@@ -1,0 +1,8 @@
+{
+  "css.lint.validProperties": [],
+  "stylelint.enable": false,
+  "css.validate": false,
+  "[typescriptreact]": {
+    "editor.codeActionsOnSave": {}
+  }
+}

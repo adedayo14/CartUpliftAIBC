@@ -1,0 +1,15 @@
+
+> vercel-build
+> prisma generate && remix vite:build
+
+Prisma schema loaded from prisma/schema.prisma
+
+✔ Generated Prisma Client (v6.16.2) to ./node_modules/@prisma/client in 114ms
+
+Start by importing your Prisma Client (See: https://pris.ly/d/importing-client)
+
+Tip: Want to turn off tips and other hints? https://pris.ly/tip-4-nohints
+
+vite v6.3.6 building for production...
+transforming...
+✓ 1368 modules transformed.

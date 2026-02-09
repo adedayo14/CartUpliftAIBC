@@ -1,0 +1,51 @@
+.tableWrapper :global(.Polaris-DataTable__Table) {
+  table-layout: fixed;
+  width: 100%;
+}
+
+/* Hide pagination controls */
+.tableWrapper :global(.Polaris-DataTable__Navigation) {
+  display: none !important;
+}
+
+.tableWrapper :global(.Polaris-DataTable__Cell:last-child),
+.tableWrapper :global(.Polaris-DataTable__Heading:last-child) {
+  text-align: right;
+  width: 12vw;
+}
+
+.tableWrapper :global(.Polaris-DataTable__Cell:first-child),
+.tableWrapper :global(.Polaris-DataTable__Heading:first-child) {
+  width: 15vw;
+}
+
+.tableWrapper :global(.Polaris-DataTable__Cell:nth-child(2)),
+.tableWrapper :global(.Polaris-DataTable__Heading:nth-child(2)) {
+  width: 10vw;
+}
+
+.tableWrapper :global(.Polaris-DataTable__Cell:nth-child(3)),
+.tableWrapper :global(.Polaris-DataTable__Heading:nth-child(3)) {
+  width: 8vw;
+}
+
+.tableWrapper :global(.Polaris-DataTable__Cell:nth-child(4)),
+.tableWrapper :global(.Polaris-DataTable__Heading:nth-child(4)) {
+  width: 10vw;
+}
+
+.tableWrapper :global(.Polaris-DataTable__Cell:nth-child(5)),
+.tableWrapper :global(.Polaris-DataTable__Heading:nth-child(5)) {
+  width: 10vw;
+}
+
+.tableWrapper :global(.Polaris-DataTable__Cell:nth-child(6)),
+.tableWrapper :global(.Polaris-DataTable__Heading:nth-child(6)) {
+  width: 12vw;
+}
+
+.actionsCell {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}

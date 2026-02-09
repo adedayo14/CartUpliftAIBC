@@ -1,0 +1,29 @@
+node_modules
+.DS_Store
+
+/.cache
+/build
+/app/build
+/public/build/
+/public/_dev
+/app/public/build
+# No local database files needed - using PostgreSQL production DB
+
+.env
+.env.*
+
+# VS Code history files
+.history/
+
+# Extensions dist
+/extensions/*/dist
+
+# Build artifacts and backups
+*.backup
+*.pre-debug-gate
+
+# Ignore shopify files created during app dev
+.shopify/*
+.shopify.lock
+.vercel
+.env*.local

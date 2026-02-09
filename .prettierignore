@@ -1,0 +1,31 @@
+# Dependencies
+node_modules
+package-lock.json
+
+# Build outputs
+build
+dist
+.cache
+public/build
+
+# Prisma
+prisma/migrations
+
+# Environment
+.env
+.env.*
+
+# Git
+.git
+
+# Extensions
+extensions/**/node_modules
+extensions/**/build
+extensions/**/dist
+
+# Shopify
+shopify.app.toml
+
+# Misc
+*.log
+.DS_Store

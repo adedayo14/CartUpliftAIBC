@@ -1,0 +1,13 @@
+.planBadge {
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--p-color-bg-surface);
+  border: 1px solid var(--p-color-border);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.planBadge:hover {
+  background: var(--p-color-bg-surface-hover);
+}

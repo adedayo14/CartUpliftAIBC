@@ -1,0 +1,2 @@
+-- Empty baseline marker. We use "prisma migrate resolve" to mark 20251004180000_baseline as applied in production.
+-- This file exists to ensure baseline sorting precedes all other migrations if needed.

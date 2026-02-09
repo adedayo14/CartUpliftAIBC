@@ -1,0 +1,103 @@
+/* Additional styling specific to the admin bundles route */
+.bundles-product-scroll {
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.scrollable-product-list {
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.tier-info-box {
+  padding: 12px;
+  background: #f6f6f7;
+  border-radius: 4px;
+  margin-bottom: 16px;
+}
+
+.tier-info-content {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.5);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.modal-content {
+  background-color: white;
+  border-radius: 8px;
+  max-width: 600px;
+  width: 90%;
+  max-height: 80vh;
+  overflow: auto;
+  padding: 24px;
+}
+
+/* Mobile responsiveness improvements */
+@media (max-width: 768px) {
+  /* Make stats cards stack on mobile */
+  [class*="Polaris-InlineStack"] {
+    flex-direction: column !important;
+    gap: var(--p-space-400) !important;
+  }
+  
+  /* Remove left borders on mobile when stacked */
+  [class*="Polaris-InlineStack"] [class*="Polaris-Box"][class*="borderInlineStartWidth"] {
+    border-left: none !important;
+    padding-left: 0 !important;
+    padding-top: var(--p-space-400);
+    border-top: 1px solid var(--p-color-border);
+  }
+  
+  /* Improve button touch targets */
+  button {
+    min-height: 44px;
+  }
+  
+  /* Better table scrolling on mobile */
+  [class*="Polaris-DataTable"] {
+    overflow-x: auto;
+  }
+}
+
+/* Tablet breakpoint */
+@media (max-width: 1024px) and (min-width: 769px) {
+  /* Adjust stats to 2 columns on tablet */
+  [class*="Polaris-InlineStack"] {
+    flex-wrap: wrap !important;
+  }
+  
+  [class*="Polaris-InlineStack"] > * {
+    flex: 1 1 calc(50% - var(--p-space-400));
+    min-width: 200px;
+  }
+}
+
+/* Search and truncate styles */
+.bundle-search-container {
+  max-width: 300px;
+}
+
+.truncate-text {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bundle-error-description {
+  margin-top: 1rem;
+  color: #6d7175;
+}

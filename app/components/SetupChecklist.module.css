@@ -1,0 +1,52 @@
+.stepItem {
+  padding: 12px;
+  border-radius: 8px;
+  background: #f6f6f7;
+  transition: all 0.2s ease;
+}
+
+.stepCompleted {
+  background: #f0fdf4;
+}
+
+.stepActive {
+  background: #f0f9ff;
+  border: 1px solid #0ba5ec;
+}
+
+.stepIcon {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.stepNumber {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: #e4e5e7;
+  color: #6d7175;
+  font-size: 12px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.stepActive .stepNumber {
+  background: #0ba5ec;
+  color: white;
+}
+
+.successIcon {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: #f0fdf4;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}

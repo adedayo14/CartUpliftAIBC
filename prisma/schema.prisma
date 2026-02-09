@@ -1,0 +1,676 @@
+// Single Prisma schema - Production PostgreSQL
+// Deployment trigger: 2025-11-01 - Reverted to c5018d7 (working ML bundles)
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  directUrl = env("DATABASE_URL")
+  relationMode = "prisma"
+}
+
+model Session {
+  id            String    @id
+  shop          String
+  state         String
+  isOnline      Boolean   @default(false)
+  scope         String?
+  expires       DateTime?
+  accessToken   String
+  userId        BigInt?
+  firstName     String?
+  lastName      String?
+  email         String?
+  accountOwner  Boolean   @default(false)
+  locale        String?
+  collaborator  Boolean?  @default(false)
+  emailVerified Boolean?  @default(false)
+}
+
+model Settings {
+  id                      String   @id @default(cuid())
+  shop                    String   @unique
+  
+  // Activation Tracking
+  appEmbedActivated       Boolean  @default(false) // Tracks if app embed was enabled in theme editor
+  appEmbedActivatedAt     DateTime? // Timestamp when first activated
+  
+  // Core Features
+  enableApp               Boolean  @default(true)
+  showOnlyOnCartPage      Boolean  @default(false)
+  autoOpenCart            Boolean  @default(false)  // OFF by default - less intrusive
+  enableFreeShipping      Boolean  @default(false)  // OFF - requires Shopify discount setup
+  freeShippingThreshold   Float    @default(0)
+  
+  // Advanced Features
+  enableRecommendations   Boolean  @default(true)   // ON - auto-enabled on install to show value immediately
+  enableAddons            Boolean  @default(false)
+  enableDiscountCode      Boolean  @default(true)   // Keep ON - basic feature
+  enableNotes             Boolean  @default(false)
+  enableExpressCheckout   Boolean  @default(true)   // Keep ON - basic feature
+  enableAnalytics         Boolean  @default(true)   // Keep ON - core feature for insights
+  // Dev-only fields for title case options
+  enableRecommendationTitleCaps Boolean @default(false)
+  // Dev-only toggle in dev schema; safe to keep for prod alignment
+  
+  // Cart Behavior & Position
+  cartIcon                String   @default("cart")
+  
+  // Messages & Text
+  freeShippingText        String   @default("You're {amount} away from free shipping!")
+  freeShippingAchievedText String  @default("🎉 Congratulations! You've unlocked free shipping!")
+  recommendationsTitle    String   @default("You might also like")
+  actionText              String   @default("Add discount code")
+  addButtonText           String   @default("Add")
+  checkoutButtonText      String   @default("CHECKOUT")
+  applyButtonText         String   @default("Apply")
+  // Optional link texts (present in dev schema)
+  discountLinkText        String   @default("+ Got a promotion code?")
+  notesLinkText           String   @default("+ Add order notes")
+  
+  // Appearance
+  backgroundColor         String   @default("#ffffff")
+  textColor               String   @default("inherit")  // Use theme color
+  buttonColor             String   @default("inherit")  // Use theme color
+  buttonTextColor         String   @default("#ffffff")
+  recommendationsBackgroundColor String @default("#f5f5f5")  // Neutral gray
+  shippingBarBackgroundColor String @default("#e5e5e5")      // Neutral gray
+  shippingBarColor        String   @default("#000000")       // Black (safe default)
+  giftBarColor            String   @default("#f59e0b")       // Orange (default gift color)
+  
+  // Recommendation Settings
+  recommendationLayout    String   @default("horizontal")
+  maxRecommendations      Int      @default(6)
+  maxRecommendationProducts Int    @default(4)
+  complementDetectionMode String   @default("automatic")
+  manualRecommendationProducts String @default("")
+  
+  // Progress Bar System
+  progressBarMode         String   @default("free-shipping") // "free-shipping", "gift-gating", "combined"
+  enableGiftGating        Boolean  @default(false)
+  giftProgressStyle       String   @default("single-next") // "stacked", "single-multi", "single-next"
+  giftThresholds          String   @default("[]") // JSON array of gift thresholds
+  
+  // Legacy gift fields (keep for backward compatibility)
+  giftThreshold           Int?     // Old singular threshold field - keep for existing data
+  giftVariantMode         String?  // Old variant mode field - keep for existing data
+
+  // Legacy and UI fields used in dev schema (safe as additive columns)
+  giftNoticeText          String   @default("Free gift added: {{product}} (worth {{amount}})")
+  giftPriceText           String   @default("FREE")
+
+  // ML/Privacy Settings (required for AI Personalization section)
+  mlPersonalizationMode   String   @default("balanced")
+  enableMLRecommendations Boolean  @default(true)  // ON - auto-enabled on install to show AI value immediately
+  mlPrivacyLevel          String   @default("basic")
+  enableAdvancedPersonalization Boolean @default(false)
+  enableBehaviorTracking  Boolean  @default(false)
+  mlDataRetentionDays     String   @default("30")
+  hideRecommendationsAfterThreshold Boolean @default(false)
+  enableThresholdBasedSuggestions Boolean @default(false)
+  thresholdSuggestionMode String   @default("smart")
+  enableManualRecommendations Boolean @default(false)
+
+  // Smart Bundle Settings
+  enableSmartBundles      Boolean  @default(true)   // ON - auto-enabled on install to show value immediately
+  bundlesOnProductPages   Boolean  @default(true)
+  bundlesInCartDrawer     Boolean  @default(false)
+  bundlesOnCollectionPages Boolean @default(false)
+  bundlesOnCartPage       Boolean  @default(false)
+  bundlesOnCheckoutPage   Boolean  @default(false)
+  defaultBundleDiscount   String   @default("0")
+  bundleTitleTemplate     String   @default("Complete your setup")
+  bundleDiscountPrefix    String   @default("BUNDLE")
+  bundleConfidenceThreshold String @default("medium")
+  bundleSavingsFormat     String   @default("both")
+  showIndividualPricesInBundle Boolean @default(true)
+  autoApplyBundleDiscounts Boolean @default(true)
+
+  // Theme App Embed Status
+  themeEmbedEnabled       Boolean  @default(false)
+  themeEmbedLastSeen      DateTime?
+  
+  // Store Configuration
+  currencyCode            String?  // Store's currency (fetched from Shopify)
+  moneyFormat             String?  // Store's money format pattern
+  ownerEmail              String?  // Shop owner's email (for admin dashboard)
+  
+  // Subscription & Billing (COMMENTED OUT - ACTIVATE AFTER DB MIGRATION)
+  // subscriptionPlan        String?  // "starter" | "growth" | "pro"
+  // subscriptionStatus      String   @default("trial") // "trial" | "active" | "cancelled" | "expired"
+  // trialEndsAt             DateTime? // When the 14-day trial ends
+  // subscriptionStartedAt   DateTime? // When they first subscribed
+  // chargeId                String?  // Shopify charge ID for active subscription
+  
+  // Order Tracking & Limits (COMMENTED OUT - ACTIVATE AFTER DB MIGRATION)
+  // monthlyOrderCount       Int      @default(0)
+  // currentPeriodStart      DateTime @default(now())
+  // currentPeriodEnd        DateTime?
+  // orderLimitReached       Boolean  @default(false)
+  // lastOrderCountReset     DateTime?
+
+  // Onboarding Progress Tracking
+  onboardingCompleted     Boolean  @default(false)
+  onboardingCompletedAt   DateTime?
+  onboardingStepThemeEditor Boolean @default(false)
+  onboardingStepRecommendations Boolean @default(false)
+  onboardingStepFirstBundle Boolean @default(false)
+  onboardingStepPreview   Boolean  @default(false)
+  onboardingDismissed     Boolean  @default(false) // User chose to skip onboarding
+
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+}
+
+// Bundle Management System
+model Bundle {
+  id               String    @id @default(cuid())
+  shop             String
+  name             String
+  description      String?
+  type             String    // manual, category, ai_suggested
+  status           String    @default("draft") // draft, active, paused
+  discountType     String    @default("percentage")
+  discountValue    Float     @default(0)
+  minProducts      Int?      // Optional: Minimum number of products required
+  minBundlePrice   Float?    // Optional: Minimum bundle price (order value) required
+  assignmentType   String    @default("specific") // "specific" or "all" - where bundle appears
+  productIds       String    @default("[]") // JSON array of product IDs
+  collectionIds    String    @default("[]") // JSON array of collection IDs
+  assignedProducts String    @default("[]") // JSON array for assigned products
+  bundleStyle      String    @default("grid") // grid, fbt, tier, list
+  selectMinQty     Int?
+  selectMaxQty     Int?
+  tierConfig       String    @default("[]") // JSON array of tier configurations
+  allowDeselect    Boolean   @default(true)
+  hideIfNoML       Boolean   @default(false)
+  
+  products         BundleProduct[]
+  totalPurchases   Int       @default(0)
+  totalRevenue     Float     @default(0)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  
+  @@index([shop])
+  @@index([status])
+}
+
+model BundleProduct {
+  id         String   @id @default(cuid())
+  bundleId   String
+  productId  String   // Shopify product ID
+  variantId  String?  // Specific variant ID (optional)
+  position   Int      @default(0) // Order in bundle
+  required   Boolean  @default(false) // Required vs optional product
+  
+  // Product metadata (cached for performance)
+  productTitle  String?
+  productHandle String?
+  productPrice  Float?
+  
+  // NEW FIELDS - Enhanced bundle product control
+  isRemovable   Boolean  @default(true)  // Can user uncheck/remove in FBT/grid view?
+  isAnchor      Boolean  @default(false) // Main/current product in bundle (always included)
+  tierPricing   String?  // JSON: Product-specific tier overrides (optional)
+  
+  createdAt  DateTime @default(now())
+  
+  // Relations  
+  bundle     Bundle   @relation(fields: [bundleId], references: [id], onDelete: Cascade)
+  
+  @@index([bundleId])
+  @@index([productId])
+}
+
+// Track bundle purchases to prevent duplicate webhook processing
+model BundlePurchase {
+  id          String   @id @default(cuid())
+  shop        String
+  orderId     String   // Shopify order ID
+  orderNumber Int?     // Human-readable order number
+  bundleCount Int      @default(0) // How many bundles in this order
+  totalValue  Float    @default(0) // Total revenue from bundle purchases in this order
+  createdAt   DateTime @default(now())
+  
+  @@unique([shop, orderId])
+  @@index([shop])
+  @@index([orderId])
+}
+
+// Customer Bundle Interactions
+model CustomerBundle {
+  id           String   @id @default(cuid())
+  shop         String
+  customerId   String?  // Shopify customer ID (null for anonymous)
+  bundleId     String
+  sessionId    String?  // For anonymous tracking
+  
+  action       String   // "view", "add_to_cart", "purchase"
+  cartValue    Float?   // Cart value when action occurred
+  discountApplied Float? // Actual discount applied
+  
+  createdAt    DateTime @default(now())
+  
+  @@index([shop])
+  @@index([bundleId])
+  @@index([customerId])
+}
+
+// A/B Testing Models (keep in sync with development schema)
+enum ExperimentStatus {
+  running
+  completed
+  paused
+}
+
+enum ExperimentType {
+  discount
+  bundle
+  shipping
+  upsell
+}
+
+enum AttributionWindow {
+  session @map("session")
+  hours24 @map("24h")
+  days7 @map("7d")
+}
+
+enum EventType {
+  assignment
+  exposure
+  conversion
+}
+
+model Experiment {
+  id              Int                @id @default(autoincrement())
+  shopId          String             @map("shop_id")
+  name            String
+  type            ExperimentType     @default(discount)
+  status          ExperimentStatus   @default(running)
+  startDate       DateTime?          @map("start_date")
+  endDate         DateTime?          @map("end_date")
+  activeVariantId Int?               @map("active_variant_id")
+  attribution     AttributionWindow  @default(session)
+  createdAt       DateTime           @default(now()) @map("created_at")
+  updatedAt       DateTime           @updatedAt @map("updated_at")
+
+  variants Variant[]
+  events   Event[]
+
+  @@map("ab_experiments")
+}
+
+model Variant {
+  id           Int       @id @default(autoincrement())
+  experimentId Int       @map("experiment_id")
+  name         String
+  isControl    Boolean   @default(false) @map("is_control")
+  value        Decimal   @default(0.0) @map("value")
+  valueFormat  String    @default("percent") @map("value_format") // "percent" | "currency" | "number"
+  trafficPct   Decimal   @default(50.0) @map("traffic_pct")
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  experiment Experiment @relation(fields: [experimentId], references: [id], onDelete: Cascade)
+  events     Event[]
+
+  @@map("ab_variants")
+}
+
+model Event {
+  id           Int       @id @default(autoincrement())
+  type         EventType
+  experimentId Int       @map("experiment_id")
+  variantId    Int?      @map("variant_id")
+  unitId       String    @map("unit_id")
+  amount       Decimal?  @map("amount")
+  currency     String?   @map("currency")
+  occurredAt   DateTime  @default(now()) @map("occurred_at")
+  metadata     Json?
+
+  experiment Experiment @relation(fields: [experimentId], references: [id], onDelete: Cascade)
+  variant    Variant?   @relation(fields: [variantId], references: [id], onDelete: SetNull)
+
+  @@index([experimentId, variantId, occurredAt(sort: Desc)])
+  @@index([type, occurredAt(sort: Desc)])
+  @@map("ab_events")
+}
+
+// Analytics Events for Dashboard (separate from AB testing)
+model AnalyticsEvent {
+  id          String   @id @default(cuid())
+  shop        String
+  eventType   String   // cart_view | cart_abandon | purchase | bundle_impression | bundle_click | bundle_conversion
+  sessionId   String?  // Anonymous session tracking
+  customerId  String?  // Shopify customer ID if logged in
+  
+  // Order/Revenue tracking
+  orderId     String?  // Shopify order ID
+  orderValue  Decimal? // Total order value
+  currency    String?  @default("USD")
+  
+  // Bundle tracking
+  bundleId    String?  // Reference to Bundle.id
+  productIds  String?  // JSON array of product IDs in cart/bundle
+  
+  // Page context
+  pageUrl     String?
+  referrer    String?
+  userAgent   String?
+  
+  // Timestamps
+  timestamp   DateTime @default(now())
+  
+  // Additional metadata
+  metadata    Json?    // Flexible field for extra data
+  
+  @@index([shop, timestamp(sort: Desc)])
+  @@index([shop, eventType, timestamp(sort: Desc)])
+  @@index([bundleId, timestamp(sort: Desc)])
+  @@index([sessionId, timestamp(sort: Desc)])
+  @@map("analytics_events")
+}
+
+// Recommendation tracking for ML/cart suggestions
+model TrackingEvent {
+  id            String   @id @default(cuid())
+  shop          String
+  event         String   // "impression" | "click" | "add_to_cart" | "purchase"
+  productId     String
+  productTitle  String?
+  sessionId     String?
+  customerId    String?
+  
+  // Revenue tracking
+  revenueCents  Int?     // Revenue in cents to avoid decimal issues
+  currency      String?  @default("USD")
+  orderId       String?
+  
+  // Context
+  source        String?  // "cart_drawer" | "product_page" | "bundle" | "ml_recommendation"
+  position      Int?     // Position in recommendation list
+  metadata      Json?    // Additional context
+  
+  createdAt     DateTime @default(now())
+  
+  @@index([shop, createdAt(sort: Desc)])
+  @@index([shop, event, createdAt(sort: Desc)])
+  @@index([productId, createdAt(sort: Desc)])
+  @@index([sessionId, createdAt(sort: Desc)])
+  @@map("tracking_events")
+}
+
+// ML User Profiles for personalization (respects privacy settings)
+model MLUserProfile {
+  id                String   @id @default(cuid())
+  shop              String
+  customerId        String?  // Only stored if privacy level allows
+  sessionId         String   // Always stored
+  anonymousId       String?  // Generated ID for basic privacy mode
+  
+  // Privacy Control
+  privacyLevel      String   @default("basic") // "basic" | "standard" | "advanced"
+  consentTimestamp  DateTime?
+  dataRetentionDays Int      @default(30)
+  
+  // Behavioral Data (only collected based on privacy level)
+  viewedProducts    Json?    // Array of product IDs
+  cartedProducts    Json?    // Array of product IDs
+  purchasedProducts Json?    // Array of product IDs
+  categoryPreferences Json?  // Category affinity scores
+  priceRangePreference Json? // Min/max price preferences
+  
+  // ML Feature Vectors (computed)
+  featureVector     Json?    // ML-generated feature representation
+  similarUsers      Json?    // Array of similar user IDs (collaborative filtering)
+  
+  // Metadata
+  lastActivity      DateTime @default(now())
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  
+  // Soft delete for GDPR compliance
+  deletedAt         DateTime?
+  
+  @@unique([shop, sessionId])
+  @@index([shop, customerId])
+  @@index([shop, lastActivity(sort: Desc)])
+  @@index([shop, privacyLevel])
+  @@index([deletedAt]) // For cleanup jobs
+  @@map("ml_user_profiles")
+}
+
+// Product Similarity Matrix (for content-based recommendations)
+model MLProductSimilarity {
+  id            String   @id @default(cuid())
+  shop          String
+  productId1    String
+  productId2    String
+  
+  // Similarity Scores
+  categoryScore Float    @default(0) // Category similarity
+  priceScore    Float    @default(0) // Price range similarity
+  coViewScore   Float    @default(0) // Co-viewing frequency
+  coPurchaseScore Float  @default(0) // Co-purchase frequency
+  overallScore  Float    @default(0) // Combined similarity score
+  
+  // Metadata
+  computedAt    DateTime @default(now())
+  sampleSize    Int      @default(0) // Number of data points used
+  
+  @@unique([shop, productId1, productId2])
+  @@index([shop, productId1, overallScore(sort: Desc)])
+  @@index([shop, overallScore(sort: Desc)])
+  @@map("ml_product_similarity")
+}
+
+// Data Retention Jobs (for privacy compliance)
+model MLDataRetentionJob {
+  id              String   @id @default(cuid())
+  shop            String
+  jobType         String   // "cleanup" | "anonymize" | "export" | "delete"
+  status          String   @default("pending") // "pending" | "running" | "completed" | "failed"
+  
+  // Job Parameters
+  privacyLevel    String?
+  dataType        String?  // "profiles" | "tracking" | "all"
+  retentionDays   Int?
+  cutoffDate      DateTime?
+  
+  // Results
+  recordsProcessed Int     @default(0)
+  recordsDeleted   Int     @default(0)
+  errorMessage     String?
+  
+  // Timestamps
+  scheduledAt     DateTime?
+  startedAt       DateTime?
+  completedAt     DateTime?
+  createdAt       DateTime @default(now())
+  
+  @@index([shop, status])
+  @@index([shop, createdAt(sort: Desc)])
+  @@index([status, scheduledAt])
+  @@map("ml_data_retention_jobs")
+}
+
+// 🎯 Purchase Attribution - Track recommendations that led to sales
+model RecommendationAttribution {
+  id                      String   @id @default(cuid())
+  shop                    String
+  productId               String
+  orderId                 String
+  orderNumber             Int?
+  orderValue              Float    // Total order value
+  customerId              String?
+  
+  // Attribution details
+  recommendationEventIds  Json     // Array of tracking event IDs that showed this recommendation
+  attributedRevenue       Float    // Revenue specifically from this product
+  conversionTimeMinutes   Int      // Time from recommendation to purchase
+  
+  // Metadata
+  createdAt               DateTime @default(now())
+  
+  @@index([shop, productId])
+  @@index([shop, orderId])
+  @@index([shop, createdAt(sort: Desc)])
+  @@map("recommendation_attributions")
+}
+
+// 📊 ML Product Performance - Daily aggregated metrics per product
+model MLProductPerformance {
+  id                String   @id @default(cuid())
+  shop              String
+  productId         String
+  
+  // Performance metrics (rolling 30 days)
+  impressions       Int      @default(0)
+  clicks            Int      @default(0)
+  purchases         Int      @default(0)
+  revenue           Float    @default(0)
+  
+  // Calculated scores
+  ctr               Float    @default(0) // Click-through rate
+  cvr               Float    @default(0) // Conversion rate
+  confidence        Float    @default(0.5) // Overall confidence score (0-1)
+  
+  // Status
+  isBlacklisted     Boolean  @default(false)
+  blacklistReason   String?  // "low_ctr" | "low_cvr" | "manual"
+  
+  // Timestamps
+  lastUpdated       DateTime @default(now())
+  createdAt         DateTime @default(now())
+  
+  @@unique([shop, productId])
+  @@index([shop, confidence(sort: Desc)])
+  @@index([shop, isBlacklisted])
+  @@map("ml_product_performance")
+}
+
+// 🏥 ML System Health - Monitor job performance for dashboard
+model MLSystemHealth {
+  id                String   @id @default(cuid())
+  shop              String
+  jobType           String   // "daily_learning" | "similarity_computation" | "profile_update"
+  
+  // Execution details
+  status            String   // "running" | "success" | "failed" | "partial"
+  startedAt         DateTime
+  completedAt       DateTime?
+  durationMs        Int?     // Execution time in milliseconds
+  
+  // Results
+  recordsProcessed  Int      @default(0)
+  recordsCreated    Int      @default(0)
+  recordsUpdated    Int      @default(0)
+  recordsDeleted    Int      @default(0)
+  
+  // Errors
+  errorCount        Int      @default(0)
+  errorMessage      String?  // First error encountered
+  errorDetails      Json?    // Array of all errors
+  
+  // Performance metrics
+  memoryUsageMb     Float?   // Memory usage
+  cpuUsagePercent   Float?   // CPU usage
+  
+  // Metadata
+  triggeredBy       String   @default("cron") // "cron" | "manual" | "webhook"
+  metadata          Json?    // Additional context
+  
+  createdAt         DateTime @default(now())
+  
+  @@index([shop, createdAt(sort: Desc)])
+  @@index([shop, jobType, createdAt(sort: Desc)])
+  @@index([status, createdAt(sort: Desc)])
+  @@map("ml_system_health")
+}
+
+// Subscription & Billing Management
+model Subscription {
+  id                    String    @id @default(cuid())
+  shop                  String    @unique
+  
+  // Plan Information
+  planTier              String    @default("starter") // "starter" | "growth" | "pro"
+  planStatus            String    @default("trial") // "active" | "cancelled" | "expired" | "trial"
+  
+  // Billing Cycle
+  billingPeriodStart    DateTime  @default(now())
+  billingPeriodEnd      DateTime?
+  trialEndsAt           DateTime? // 14-day trial for paid plans
+  subscriptionStartedAt DateTime  @default(now())
+  cancelledAt           DateTime?
+  
+  // Shopify Charge Info
+  chargeId              String?   @unique // Shopify AppSubscription ID
+  confirmationUrl       String?
+  
+  // Order Tracking
+  monthlyOrderCount     Int       @default(0)
+  lastOrderCountReset   DateTime  @default(now())
+  orderLimitWarningShown Boolean  @default(false)
+  orderLimitReached     Boolean   @default(false)
+  
+  // Timestamps
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+  
+  @@index([shop])
+  @@index([planTier])
+  @@index([planStatus])
+  @@map("subscriptions")
+}
+
+// 💳 Billed Order Tracking - Prevents duplicate billing
+model BilledOrder {
+  id          String   @id @default(cuid())
+  shop        String
+  orderId     String   // Shopify order ID
+  orderNumber Int?     // Human-readable order number
+  countedAt   DateTime @default(now())
+
+  @@unique([shop, orderId])
+  @@index([shop])
+  @@index([orderId])
+  @@map("billed_orders")
+}
+
+// 📊 Lifetime Metrics - Never resets, tracks all-time performance
+model LifetimeMetrics {
+  id                      String   @id @default(cuid())
+  shop                    String   @unique
+
+  // Order Metrics (All-Time)
+  totalOrders             Int      @default(0)
+  totalRevenue            Float    @default(0)
+  totalAttributedOrders   Int      @default(0)
+  totalAttributedRevenue  Float    @default(0)
+
+  // Engagement Metrics (All-Time)
+  totalCartOpens          Int      @default(0)
+  totalRecImpressions     Int      @default(0)
+  totalRecClicks          Int      @default(0)
+  totalBundleViews        Int      @default(0)
+  totalBundleAdds         Int      @default(0)
+
+  // Milestone Tracking
+  firstOrderAt            DateTime?
+  milestone1000Orders     DateTime?
+  milestone10000Orders    DateTime?
+  milestone100000Orders   DateTime?
+
+  // App Lifecycle
+  appInstalledAt          DateTime @default(now())
+
+  // Timestamps
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  @@index([shop])
+  @@map("lifetime_metrics")
+}

@@ -1,0 +1,11 @@
+-- Drop deprecated sticky cart columns from Settings
+ALTER TABLE "Settings" DROP COLUMN IF EXISTS "enableStickyCart";
+ALTER TABLE "Settings" DROP COLUMN IF EXISTS "cartPosition";
+ALTER TABLE "Settings" DROP COLUMN IF EXISTS "stickyCartShowIcon";
+ALTER TABLE "Settings" DROP COLUMN IF EXISTS "stickyCartShowCount";
+ALTER TABLE "Settings" DROP COLUMN IF EXISTS "stickyCartShowTotal";
+ALTER TABLE "Settings" DROP COLUMN IF EXISTS "stickyCartBackgroundColor";
+ALTER TABLE "Settings" DROP COLUMN IF EXISTS "stickyCartTextColor";
+ALTER TABLE "Settings" DROP COLUMN IF EXISTS "stickyCartCountBadgeColor";
+ALTER TABLE "Settings" DROP COLUMN IF EXISTS "stickyCartCountBadgeTextColor";
+ALTER TABLE "Settings" DROP COLUMN IF EXISTS "stickyCartBorderRadius";

@@ -1,0 +1,29 @@
+/* App landing page styles */
+
+.app-link-no-decoration {
+  text-decoration: none;
+}
+
+.app-hidden-form {
+  display: none;
+}
+
+.app-action-button {
+  padding: 8px 16px;
+  background-color: #000;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.app-action-button:disabled {
+  background-color: #ccc;
+  cursor: not-allowed;
+}
+
+.app-step-number-white {
+  color: white;
+}

@@ -1,0 +1,14 @@
+# Exclude development/test artifacts from upload
+node_modules
+.history
+/build
+/app/build
+/public/_dev
+/prisma/dev.sqlite
+/prisma/dev.sqlite-journal
+shopify.web.toml
+cartuplift-latest.patch
+cartuplift-main.bundle
+test-*.js
+test-*.mjs
+recommendationLayout
