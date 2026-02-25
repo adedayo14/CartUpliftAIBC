@@ -32,7 +32,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
     return new Response("OK", { status: 200 });
   } catch (error) {
-    logger.error("Uninstall callback failed", { error });
+    const errMsg = error instanceof Error ? error.message : String(error);
+    logger.error("Uninstall callback failed", { message: errMsg });
     return new Response("Failed", { status: 500 });
   }
 };

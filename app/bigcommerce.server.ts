@@ -136,7 +136,8 @@ export function verifySignedPayload(signedPayload: string): BCSignedPayload {
     });
     return decoded as BCSignedPayload;
   } catch (error) {
-    logger.error("Failed to verify BigCommerce signed payload", { error });
+    const errMsg = error instanceof Error ? error.message : String(error);
+    logger.error("Failed to verify BigCommerce signed payload", { message: errMsg });
     throw new Error("Invalid signed_payload");
   }
 }

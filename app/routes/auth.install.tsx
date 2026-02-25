@@ -78,7 +78,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       },
     });
   } catch (error) {
-    logger.error("OAuth install failed", { error });
+    const errMsg = error instanceof Error ? error.message : String(error);
+    const errStack = error instanceof Error ? error.stack : undefined;
+    logger.error("OAuth install failed", { message: errMsg, stack: errStack });
     return new Response("Installation failed. Please try again.", {
       status: 500,
     });

@@ -22,27 +22,16 @@ const prismaClientConfig = {
 
 // Connection pool management for Vercel serverless
 if (process.env.NODE_ENV === "production") {
-  // In production (Vercel), create a single instance per function
-  // Vercel will manage connection lifecycle
+  // In production (Vercel), let Prisma lazily connect on first query.
+  // Do NOT eagerly $connect() — Neon closes idle connections and
+  // Prisma cannot reuse stale handles, causing "kind: Closed" errors.
   prisma = new PrismaClient(prismaClientConfig);
-  
-  // Graceful shutdown - disconnect on serverless function termination
-  prisma.$connect().catch((err) => {
-    console.error('Failed to connect to database:', err);
-  });
 } else {
   // In development, reuse connection across hot reloads
   if (!global.__prisma) {
     global.__prisma = new PrismaClient(prismaClientConfig);
   }
   prisma = global.__prisma;
-}
-
-// Cleanup on process exit
-if (typeof process !== 'undefined') {
-  process.on('beforeExit', async () => {
-    await prisma.$disconnect();
-  });
 }
 
 export { prisma };
