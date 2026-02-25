@@ -341,6 +341,7 @@ export async function deleteStoreUsers(storeHash: string): Promise<void> {
 
 /**
  * Authenticate an admin request by reading the session cookie.
+ * Falls back to URL `context` param for browsers that block third-party cookies (iframe).
  * Returns the BigCommerce session or redirects to install.
  */
 export async function authenticateAdmin(request: Request): Promise<{
@@ -351,7 +352,16 @@ export async function authenticateAdmin(request: Request): Promise<{
     request.headers.get("Cookie")
   );
 
-  const storeHash = cookieSession.get("storeHash") as string | undefined;
+  let storeHash = cookieSession.get("storeHash") as string | undefined;
+
+  // Fallback: read storeHash from URL `context` param (for third-party cookie blocked browsers)
+  if (!storeHash) {
+    const url = new URL(request.url);
+    const contextParam = url.searchParams.get("context");
+    if (contextParam && /^[a-z0-9]+$/i.test(contextParam)) {
+      storeHash = contextParam;
+    }
+  }
 
   if (!storeHash) {
     // Check if this is an API/fetcher request

@@ -26,6 +26,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
     return json({
       apiKey,
+      storeHash,
       currentPlan: subscription.planTier,
       orderCount: subscription.orderCount,
       orderLimit: orderLimitSafe,
@@ -45,9 +46,19 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 };
 
 export default function App() {
-  const { currentPlan, orderCount, orderLimit, approaching, isLimitReached } = useLoaderData<typeof loader>();
+  const { storeHash, currentPlan, orderCount, orderLimit, approaching, isLimitReached } = useLoaderData<typeof loader>();
   const [isAppBridgeReady, setIsAppBridgeReady] = useState(false);
   const [hasRefreshed, setHasRefreshed] = useState(false);
+
+  // Store storeHash in sessionStorage so subsequent navigations work even without cookies
+  useEffect(() => {
+    if (typeof window !== 'undefined' && storeHash) {
+      sessionStorage.setItem('bc_store_hash', storeHash);
+    }
+  }, [storeHash]);
+
+  // Build context query string for navigation links
+  const ctxParam = storeHash ? `?context=${storeHash}` : '';
 
   // Wait for App Bridge to be ready before rendering navigation
   useEffect(() => {
@@ -89,9 +100,9 @@ export default function App() {
       {/* BigCommerce App Navigation - only render after App Bridge is ready */}
       {isAppBridgeReady && (
         <s-app-nav>
-          <s-link href="/admin/dashboard">Analytics</s-link>
-          <s-link href="/admin/settings">Settings</s-link>
-          <s-link href="/admin/bundles">FBT</s-link>
+          <s-link href={`/admin/dashboard${ctxParam}`}>Analytics</s-link>
+          <s-link href={`/admin/settings${ctxParam}`}>Settings</s-link>
+          <s-link href={`/admin/bundles${ctxParam}`}>FBT</s-link>
         </s-app-nav>
       )}
       <div className={styles.headerBar}>

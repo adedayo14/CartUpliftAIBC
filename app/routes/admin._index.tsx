@@ -3,7 +3,11 @@ import { redirect } from "@remix-run/node";
 
 /**
  * /admin → redirect to /admin/dashboard
+ * Preserves `context` query param for third-party cookie fallback.
  */
-export const loader = async (_args: LoaderFunctionArgs) => {
-  return redirect("/admin/dashboard");
+export const loader = async ({ request }: LoaderFunctionArgs) => {
+  const url = new URL(request.url);
+  const context = url.searchParams.get("context");
+  const target = context ? `/admin/dashboard?context=${context}` : "/admin/dashboard";
+  return redirect(target);
 };

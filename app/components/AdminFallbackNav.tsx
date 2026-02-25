@@ -66,6 +66,11 @@ export function AdminFallbackNav() {
   const location = useLocation();
   const activeItem = findActiveItem(location.pathname);
 
+  // Preserve context param for third-party cookie fallback
+  const searchParams = new URLSearchParams(location.search);
+  const context = searchParams.get("context");
+  const ctxSuffix = context ? `?context=${context}` : "";
+
   return (
     <nav className={styles.fallbackNav} aria-label="App section navigation">
       {NAV_ITEMS.map((item) => {
@@ -75,7 +80,7 @@ export function AdminFallbackNav() {
         return (
           <AppNavLink
             key={item.label}
-            to={item.to}
+            to={`${item.to}${ctxSuffix}`}
             prefetch="intent"
             className={className}
           >

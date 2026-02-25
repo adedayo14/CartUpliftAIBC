@@ -56,14 +56,17 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     });
 
     // Set session cookie and redirect to admin dashboard
+    // Include storeHash in URL as fallback for browsers that block third-party cookies (iframe context)
     const cookieSession = await cookieSessionStorage.getSession();
     cookieSession.set("storeHash", storeHash);
     cookieSession.set("userId", payload.user.id);
     cookieSession.set("email", payload.user.email);
 
-    return redirect("/admin", {
+    const setCookie = await cookieSessionStorage.commitSession(cookieSession);
+
+    return redirect(`/admin?context=${storeHash}`, {
       headers: {
-        "Set-Cookie": await cookieSessionStorage.commitSession(cookieSession),
+        "Set-Cookie": setCookie,
       },
     });
   } catch (error) {
