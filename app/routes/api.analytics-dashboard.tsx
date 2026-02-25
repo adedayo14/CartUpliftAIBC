@@ -99,7 +99,7 @@ const url = new URL(request.url);
     // Store-level order metrics derived from our AnalyticsEvent table
     const storeAnalytics = await prisma.analyticsEvent.findMany({
       where: {
-        shop: storeHash,
+        storeHash,
         eventType: 'purchase',
         timestamp: {
           gte: new Date(dateRange.start),

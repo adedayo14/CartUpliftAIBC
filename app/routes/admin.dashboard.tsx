@@ -430,7 +430,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     try {
       const cartOpenEvents = await db.analyticsEvent.findMany({
         where: {
-          shop: storeHash,
+          storeHash,
           eventType: 'cart_open',
           createdAt: { gte: startDate, lte: endDate }
         }
@@ -442,7 +442,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
         const todayEvents = await db.analyticsEvent.findMany({
           where: {
-            shop: storeHash,
+            storeHash,
             eventType: 'cart_open',
             createdAt: { gte: todayStart, lte: endDate }
           }
@@ -704,7 +704,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     try {
       const attributions = await db.recommendationAttribution.findMany({
         where: {
-          shop: storeHash,
+          storeHash,
           createdAt: { gte: startDate, lte: endDate }
         }
       });
@@ -862,7 +862,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       // Get all bundles with their purchase data
       const bundles = await db.bundle.findMany({
         where: {
-          shop: storeHash,
+          storeHash,
           status: 'active'
         },
         select: {
@@ -879,7 +879,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       // Get bundle purchases in current period
       const bundlePurchases = await db.bundlePurchase.findMany({
         where: {
-          shop: storeHash,
+          storeHash,
           createdAt: { gte: startDate, lte: endDate }
         },
         select: {
@@ -903,7 +903,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       } else {
         bundleEvents = await db.trackingEvent.findMany({
           where: {
-            shop: storeHash,
+            storeHash,
             event: { in: ['view', 'impression', 'click'] },
             source: 'bundle',
             createdAt: { gte: startDate, lte: endDate }
@@ -925,7 +925,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
       const allBundlePurchases = await db.customerBundle.findMany({
         where: {
-          shop: storeHash,
+          storeHash,
           action: 'purchase',
           createdAt: { gte: startDate, lte: endDate }
         },
@@ -1052,7 +1052,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       // Get all attributed orders with their revenue
       const attributedOrderIds = await db.recommendationAttribution.findMany({
         where: {
-          shop: storeHash,
+          storeHash,
           createdAt: { gte: startDate, lte: endDate }
         },
         select: { orderId: true, attributedRevenue: true }
@@ -1060,7 +1060,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
       const bundleOrderIds = await db.bundlePurchase.findMany({
         where: {
-          shop: storeHash,
+          storeHash,
           createdAt: { gte: startDate, lte: endDate }
         },
         select: { orderId: true, totalValue: true }
@@ -1108,7 +1108,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     try {
       const previousAttributions = await db.recommendationAttribution.findMany({
         where: {
-          shop: storeHash,
+          storeHash,
           createdAt: { gte: previousPeriodStart, lte: previousPeriodEnd }
         }
       });
@@ -1120,7 +1120,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       // Add previous period bundle revenue
       const previousBundlePurchases = await db.bundlePurchase.findMany({
         where: {
-          shop: storeHash,
+          storeHash,
           createdAt: { gte: previousPeriodStart, lte: previousPeriodEnd }
         },
         select: { totalValue: true }
@@ -1221,7 +1221,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     try {
       activeBundleCount = await db.bundle.count({
         where: {
-          shop: storeHash,
+          storeHash,
           status: 'active'
         }
       });

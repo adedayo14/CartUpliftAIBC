@@ -17,7 +17,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     // Update this shop's subscription if it's on free plan
     const updated = await prisma.subscription.updateMany({
       where: {
-        shop: storeHash,
+        storeHash,
         planTier: 'free'
       },
       data: {
