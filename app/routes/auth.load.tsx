@@ -2,6 +2,7 @@ import type { LoaderFunctionArgs } from "@remix-run/node";
 import { redirect } from "@remix-run/node";
 import {
   verifySignedPayload,
+  extractStoreHash,
   getStoreSession,
   cookieSessionStorage,
   upsertStoreUser,
@@ -29,7 +30,16 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   try {
     // Verify and decode the JWT
     const payload = verifySignedPayload(signedPayload);
-    const storeHash = payload.store_hash;
+    // BC JWT may have store_hash directly, or in sub/context as "stores/{hash}"
+    const storeHash = payload.store_hash
+      || extractStoreHash(payload.sub || payload.context || "");
+
+    logger.info("Load callback JWT decoded", {
+      storeHash,
+      hasStoreHash: !!payload.store_hash,
+      sub: payload.sub,
+      context: payload.context,
+    });
 
     // Look up the store session
     const session = await getStoreSession(storeHash);

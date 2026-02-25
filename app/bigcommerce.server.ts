@@ -37,9 +37,10 @@ interface BCSignedPayload {
     id: number;
     email: string;
   };
-  context: string; // "stores/{store_hash}"
-  store_hash: string;
-  timestamp: number;
+  sub?: string; // JWT subject: "stores/{store_hash}"
+  context?: string; // "stores/{store_hash}"
+  store_hash?: string; // May or may not be present directly
+  timestamp?: number;
 }
 
 // ─── Environment ─────────────────────────────────────────────────────────────
