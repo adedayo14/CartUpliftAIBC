@@ -4,7 +4,7 @@ import { Resend } from 'resend';
 import { validateStoreHash, sanitizeTextInput, validateEmail, getClientIP } from "../services/security.server";
 import { rateLimitByIP } from "../utils/rateLimiter.server";
 
-const resend = new Resend(process.env.RESEND_API_KEY);
+const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
 
 interface SupportRequest {
   name: string;
@@ -180,7 +180,7 @@ async function sendSupportRequestEmail(request: SupportRequest) {
   `;
 
   try {
-    const data = await resend.emails.send({
+    const data = await resend!.emails.send({
       from: 'Cart Uplift <support@cartuplift.com>',
       to: "support@cartuplift.com",
       subject: `[${request.priority.toUpperCase()}] ${request.subject} - ${request.shop}`,

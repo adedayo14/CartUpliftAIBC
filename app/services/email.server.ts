@@ -6,7 +6,7 @@
 import { Resend } from 'resend';
 import { logger } from '~/utils/logger.server';
 
-const resend = new Resend(process.env.RESEND_API_KEY);
+const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
 
 const FROM_EMAIL = 'Cart Uplift <support@cartuplift.com>';
 const REPLY_TO = 'support@cartuplift.com';
@@ -28,7 +28,7 @@ async function sendEmail({ to, subject, html, text }: EmailParams) {
   }
 
   try {
-    const data = await resend.emails.send({
+    const data = await resend!.emails.send({
       from: FROM_EMAIL,
       to,
       subject,
