@@ -84,6 +84,8 @@ export default function App() {
 
   return (
     <>
+      {/* Hide BC custom elements when not inside BigCommerce admin (they render as plain text) */}
+      <style dangerouslySetInnerHTML={{ __html: `s-app-nav:not(:defined) { display: none; }` }} />
       {/* BigCommerce App Navigation - only render after App Bridge is ready */}
       {isAppBridgeReady && (
         <s-app-nav>
