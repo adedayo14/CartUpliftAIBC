@@ -171,7 +171,18 @@ async function apiRequest<T>(
     throw new Error(`BigCommerce API error ${response.status}: ${errorText}`);
   }
 
-  return response.json() as Promise<T>;
+  // V2 API can return empty body (e.g., no orders) — handle gracefully
+  const text = await response.text();
+  if (!text || text.trim() === "") {
+    return (version === "v2" ? [] : {}) as T;
+  }
+
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    logger.warn("Failed to parse BigCommerce API response", { storeHash, path, text: text.substring(0, 200) });
+    return (version === "v2" ? [] : {}) as T;
+  }
 }
 
 // ─── Products ────────────────────────────────────────────────────────────────

@@ -600,8 +600,6 @@ export async function afterAuthSetup(storeHash: string, accountUuid?: string): P
   const webhooks = [
     { scope: "store/order/created", destination: `${appUrl}/webhooks/orders/create` },
     { scope: "store/app/uninstalled", destination: `${appUrl}/webhooks/app/uninstalled` },
-    { scope: "store/app/updated", destination: `${appUrl}/webhooks/app/scopes_update` },
-    { scope: "store/subscription/updated", destination: `${appUrl}/webhooks/app-subscriptions/update` },
   ];
 
   for (const webhook of webhooks) {
