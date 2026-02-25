@@ -72,7 +72,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     cookieSession.set("userId", tokenData.user.id);
     cookieSession.set("email", tokenData.user.email);
 
-    return redirect("/admin", {
+    return redirect(`/admin?context=${storeHash}`, {
       headers: {
         "Set-Cookie": await cookieSessionStorage.commitSession(cookieSession),
       },
