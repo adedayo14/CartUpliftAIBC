@@ -132,7 +132,7 @@ export default function AppSettings() {
       }
 
       const payload = {
-        shop,
+        storeHash: shop,
         sessionToken,
         settings: formSettings
       };
