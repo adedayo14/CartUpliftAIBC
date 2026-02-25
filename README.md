@@ -2,6 +2,8 @@
 
 AI-powered product recommendations, smart bundles, and AOV optimization for BigCommerce stores.
 
+> Deployed on Vercel: cart-uplift-aibc.vercel.app
+
 ## Tech Stack
 
 - **Framework**: [Remix](https://remix.run) (Vite)
