@@ -9,7 +9,7 @@ export interface PricingPlan {
   id: PlanTier;
   name: string;
   price: number;
-  interval: "EVERY_30_DAYS" | "ANNUAL";
+  interval: "MONTH" | "ANNUAL";
   orderLimit: number;
   trialDays: number;
   features: string[];
@@ -17,7 +17,7 @@ export interface PricingPlan {
 }
 
 export interface SubscriptionInfo {
-  shop: string;
+  storeHash: string;
   planTier: PlanTier;
   planStatus: string;
   orderCount: number;

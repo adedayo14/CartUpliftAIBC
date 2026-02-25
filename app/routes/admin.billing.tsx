@@ -1,26 +1,27 @@
-import type { LoaderFunctionArgs } from "@remix-run/node";
-import { json } from "@remix-run/node";
-import { useLoaderData } from "@remix-run/react";
-import { Page, Layout, Card, Text, BlockStack, Button, InlineStack, Badge, Divider, Box } from "@shopify/polaris";
-import { TitleBar } from "@shopify/app-bridge-react";
-import { authenticate } from "../shopify.server";
+import type { LoaderFunctionArgs, ActionFunctionArgs } from "@remix-run/node";
+import { json, redirect } from "@remix-run/node";
+import { Form, useLoaderData, useSearchParams } from "@remix-run/react";
+import { Box, Text, H2, H3, Flex, Button, Badge, HR, Panel, Grid, GridItem } from "@bigcommerce/big-design";
+import { authenticateAdmin } from "../bigcommerce.server";
 import { getOrCreateSubscription } from "../services/billing.server";
-import { PRICING_PLANS } from "../config/billing.server";
+import { PRICING_PLANS, isValidPlan } from "../config/billing.server";
+import type { PlanTier } from "~/types/billing";
+import prisma from "~/db.server";
+import { createUnifiedBillingCheckout } from "~/services/unified-billing.server";
 
 /**
- * Billing page for Shopify Managed Pricing
- * Shows pricing plans and directs users to App Store to upgrade
+ * Billing page for BigCommerce
+ * Shows pricing plans and directs users to upgrade
  */
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { session, admin } = await authenticate.admin(request);
-  const subscription = await getOrCreateSubscription(session.shop, admin);
+  const { session, storeHash } = await authenticateAdmin(request);
+  const subscription = await getOrCreateSubscription(storeHash);
 
-  // Construct Shopify's billing page URL
-  const shopName = session.shop.replace('.myshopify.com', '');
-  const billingUrl = `https://admin.shopify.com/store/${shopName}/charges/cartupliftai/pricing_plans`;
+  // Construct BigCommerce's billing page URL
+  const billingUrl = `https://store-${storeHash}.mybigcommerce.com/manage/marketplace/apps`;
 
   return json({
-    shop: session.shop,
+    shop: storeHash,
     currentPlan: subscription.planTier,
     orderCount: subscription.orderCount,
     orderLimit: subscription.orderLimit,
@@ -29,102 +30,131 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   });
 };
 
+export const action = async ({ request }: ActionFunctionArgs) => {
+  try {
+    const { storeHash } = await authenticateAdmin(request);
+    if (!process.env.BC_PARTNER_ACCOUNT_UUID || !process.env.BC_ACCOUNT_API_TOKEN || !process.env.BC_APPLICATION_ID) {
+      return json({ error: "Unified Billing not configured yet" }, { status: 400 });
+    }
+    const formData = await request.formData();
+    const planId = String(formData.get("plan") || "");
+
+    if (!isValidPlan(planId)) {
+      return json({ error: "Invalid plan" }, { status: 400 });
+    }
+
+    const subscription = await prisma.subscription.findUnique({ where: { storeHash } });
+
+    const checkout = await createUnifiedBillingCheckout({
+      storeHash,
+      planTier: planId as PlanTier,
+      subscriptionId: subscription?.bcSubscriptionId,
+    });
+
+    return redirect(checkout.checkoutUrl);
+  } catch (error) {
+    console.error("[Billing Action] Failed to create checkout:", error);
+    return json({ error: "Failed to start billing checkout" }, { status: 500 });
+  }
+};
+
 export default function Billing() {
   const { currentPlan, orderCount, orderLimit, plans, billingUrl } = useLoaderData<typeof loader>();
-
-  const handleUpgrade = () => {
-    window.open(billingUrl, '_blank');
-  };
+  const [searchParams] = useSearchParams();
+  const billingComplete = searchParams.get("billing") === "complete";
 
   return (
-    <Page>
-      <TitleBar title="Billing & Plans" />
-      <Layout>
-        <Layout.Section>
-          <Card>
-            <BlockStack gap="400">
-              <BlockStack gap="200">
-                <InlineStack align="space-between" blockAlign="center">
-                  <Text as="h2" variant="headingMd">
-                    Current Plan
-                  </Text>
-                  <Badge tone="success">
-                    {currentPlan.charAt(0).toUpperCase() + currentPlan.slice(1)}
-                  </Badge>
-                </InlineStack>
-                <Text as="p" variant="bodySm" tone="subdued">
+    <Box>
+      <Grid gridColumns="1fr">
+        <GridItem>
+          <Panel>
+            <Flex flexDirection="column" flexGap="1rem">
+              <Flex flexDirection="column" flexGap="0.5rem">
+                <Flex flexDirection="row" justifyContent="space-between" alignItems="center">
+                  <H2>Current Plan</H2>
+                  <Badge variant="success" label={currentPlan.charAt(0).toUpperCase() + currentPlan.slice(1)} />
+                </Flex>
+                <Text color="secondary">
                   You've used {orderCount} of {orderLimit === Infinity ? 'unlimited' : orderLimit} orders this month
                 </Text>
-              </BlockStack>
+                {billingComplete && (
+                  <Text color="success">Billing updated successfully.</Text>
+                )}
+              </Flex>
 
-              <Divider />
+              <HR />
 
-              <BlockStack gap="400">
-                <Text as="h2" variant="headingMd">
-                  Available Plans
-                </Text>
+              <Flex flexDirection="column" flexGap="1rem">
+                <H2>Available Plans</H2>
 
                 {plans.map((plan) => (
-                  <Card key={plan.id} background={currentPlan === plan.id ? 'bg-surface-secondary' : undefined}>
-                    <BlockStack gap="300">
-                      <InlineStack align="space-between" blockAlign="start">
-                        <BlockStack gap="100">
-                          <InlineStack gap="200" blockAlign="center">
-                            <Text as="h3" variant="headingMd">
-                              {plan.name}
-                            </Text>
+                  <Panel key={plan.id}>
+                    <Flex flexDirection="column" flexGap="0.75rem">
+                      <Flex flexDirection="row" justifyContent="space-between" alignItems="flex-start">
+                        <Flex flexDirection="column" flexGap="0.25rem">
+                          <Flex flexDirection="row" flexGap="0.5rem" alignItems="center">
+                            <H3>{plan.name}</H3>
                             {currentPlan === plan.id && (
-                              <Badge tone="success">Current</Badge>
+                              <Badge variant="success" label="Current" />
                             )}
-                          </InlineStack>
-                          <Text as="p" variant="headingLg" fontWeight="bold">
+                          </Flex>
+                          <Text bold>
                             ${plan.price}
-                            <Text as="span" variant="bodySm" tone="subdued">
-                              /month
-                            </Text>
+                            <Text color="secondary"> /month</Text>
                           </Text>
-                        </BlockStack>
-                      </InlineStack>
+                        </Flex>
+                      </Flex>
 
-                      <BlockStack gap="100">
+                      <Flex flexDirection="column" flexGap="0.25rem">
                         {plan.features.map((feature, index) => (
-                          <Text key={index} as="p" variant="bodySm">
+                          <Text key={index}>
                             • {feature}
                           </Text>
                         ))}
-                      </BlockStack>
+                      </Flex>
 
                       {plan.trialDays > 0 && (
-                        <Box paddingBlockStart="200">
-                          <Text as="p" variant="bodySm" tone="success">
+                        <Box marginTop="medium">
+                          <Text color="success">
                             ✓ {plan.trialDays}-day free trial
                           </Text>
                         </Box>
                       )}
-                    </BlockStack>
-                  </Card>
+
+                      <Box marginTop="medium">
+                        <Form method="post">
+                          <input type="hidden" name="plan" value={plan.id} />
+                          <Button
+                            variant="primary"
+                            type="submit"
+                            disabled={currentPlan === plan.id}
+                          >
+                            {currentPlan === plan.id ? "Current Plan" : "Select Plan"}
+                          </Button>
+                        </Form>
+                      </Box>
+                    </Flex>
+                  </Panel>
                 ))}
-              </BlockStack>
+              </Flex>
 
-              <Divider />
+              <HR />
 
-              <BlockStack gap="200">
-                <Text as="p" variant="headingMd">
-                  Ready to upgrade?
-                </Text>
-                <Text as="p" variant="bodySm" tone="subdued">
+              <Flex flexDirection="column" flexGap="0.5rem">
+                <H2>Ready to upgrade?</H2>
+                <Text color="secondary">
                   Click below to select a plan and start your 14-day free trial. You can change or cancel anytime.
                 </Text>
-                <Box paddingBlockStart="200">
-                  <Button variant="primary" onClick={handleUpgrade}>
-                    Select Plan
+                <Box marginTop="medium">
+                  <Button variant="subtle" onClick={() => window.open(billingUrl, '_blank')}>
+                    Manage billing in BigCommerce
                   </Button>
                 </Box>
-              </BlockStack>
-            </BlockStack>
-          </Card>
-        </Layout.Section>
-      </Layout>
-    </Page>
+              </Flex>
+            </Flex>
+          </Panel>
+        </GridItem>
+      </Grid>
+    </Box>
   );
 }

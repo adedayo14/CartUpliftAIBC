@@ -1,12 +1,14 @@
 import { useState } from "react";
 import {
   Modal,
-  TextField,
-  FormLayout,
-  Banner,
+  Input,
+  Textarea,
+  Message,
   Text,
-  BlockStack,
-} from "@shopify/polaris";
+  Flex,
+  Button,
+  Box,
+} from "@bigcommerce/big-design";
 import { useFetcher } from "@remix-run/react";
 
 interface SupportModalProps {
@@ -23,7 +25,7 @@ export function SupportModal({ open, onClose, planTier = "starter" }: SupportMod
   const isSubmitting = fetcher.state === "submitting";
   const isSuccess = fetcher.data?.success === true;
   const error = fetcher.data?.error;
-  
+
   // Get expected response time based on plan
   const responseTimes: Record<string, string> = {
     free: "48 hours",
@@ -61,69 +63,72 @@ export function SupportModal({ open, onClose, planTier = "starter" }: SupportMod
 
   return (
     <Modal
-      open={open}
+      isOpen={open}
       onClose={handleClose}
-      title="Contact Support"
-      primaryAction={{
-        content: isSuccess ? "Sent!" : "Send message",
-        onAction: handleSubmit,
-        loading: isSubmitting,
-        disabled: !subject || !message || isSuccess,
-      }}
-      secondaryActions={[
+      header="Contact Support"
+      actions={[
         {
-          content: "Cancel",
-          onAction: handleClose,
+          text: "Cancel",
+          variant: "subtle",
+          onClick: handleClose,
+        },
+        {
+          text: isSuccess ? "Sent!" : "Send message",
+          onClick: handleSubmit,
+          isLoading: isSubmitting,
+          disabled: !subject || !message || isSuccess,
         },
       ]}
     >
-      <Modal.Section>
-        <BlockStack gap="400">
-          {isSuccess && (
-            <Banner tone="success">
-              <Text as="p">
-                Your support request has been sent! We'll respond within {responseTime}.
-              </Text>
-            </Banner>
-          )}
+      <Flex flexDirection="column" flexGap="1rem">
+        {isSuccess && (
+          <Message
+            type="success"
+            messages={[
+              {
+                text: `Your support request has been sent! We'll respond within ${responseTime}.`,
+              },
+            ]}
+          />
+        )}
 
-          {error && (
-            <Banner tone="critical">
-              <Text as="p">{error}</Text>
-            </Banner>
-          )}
+        {error && (
+          <Message
+            type="error"
+            messages={[
+              {
+                text: error,
+              },
+            ]}
+          />
+        )}
 
-          <Text as="p" tone="subdued">
-            Expected response time: <Text as="span" fontWeight="semibold">{responseTime}</Text>
-          </Text>
+        <Text>
+          Expected response time: <strong>{responseTime}</strong>
+        </Text>
 
-          <FormLayout>
-            <TextField
-              label="Subject"
-              value={subject}
-              onChange={setSubject}
-              placeholder="e.g., Help with product recommendations"
-              autoComplete="off"
-              disabled={isSuccess}
-            />
+        <Input
+          label="Subject"
+          value={subject}
+          onChange={(e) => setSubject(e.target.value)}
+          placeholder="e.g., Help with product recommendations"
+          disabled={isSuccess}
+        />
 
-            <TextField
-              label="Message"
-              value={message}
-              onChange={setMessage}
-              multiline={6}
-              placeholder="Please describe your issue or question in detail..."
-              autoComplete="off"
-              disabled={isSuccess}
-            />
-          </FormLayout>
+        <Textarea
+          label="Message"
+          value={message}
+          onChange={(e) => setMessage(e.target.value)}
+          rows={6}
+          placeholder="Please describe your issue or question in detail..."
+          disabled={isSuccess}
+        />
 
-          <Text as="p" variant="bodySm" tone="subdued">
-            We'll respond to your email address on file. You can also email us directly at{" "}
-            <Text as="span" fontWeight="semibold">support@cartuplift.com</Text>
-          </Text>
-        </BlockStack>
-      </Modal.Section>
+        <Text>
+          We'll respond to your email address on file. You can also email us directly at{" "}
+          <strong>support@cartuplift.com</strong>
+        </Text>
+      </Flex>
     </Modal>
   );
 }

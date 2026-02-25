@@ -1,10 +1,10 @@
 import type { LoaderFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
-import { authenticate } from "../shopify.server";
+import { authenticateAdmin } from "../bigcommerce.server";
 import db from "../db.server";
 
 interface TrackingEventWhere {
-  shop: string;
+  storeHash: string;
   createdAt: {
     gte: Date;
   };
@@ -13,8 +13,7 @@ interface TrackingEventWhere {
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   // SECURITY: Require admin authentication for debug endpoint
-  const { session } = await authenticate.admin(request);
-  const { shop } = session;
+  const { session, storeHash } = await authenticateAdmin(request);
 
   try {
     const url = new URL(request.url);
@@ -22,7 +21,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
     // Get recent tracking events
     const where: TrackingEventWhere = {
-      shop,
+      storeHash,
       createdAt: {
         gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) // Last 7 days
       }
@@ -49,7 +48,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
     return json({
       success: true,
-      shop,
+      storeHash,
       productId: productId || "all",
       eventCount: events?.length || 0,
       events: events || []

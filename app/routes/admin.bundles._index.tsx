@@ -1,18 +1,10 @@
 import type { LoaderFunctionArgs, LinksFunction } from "@remix-run/node";
 import { json } from "@remix-run/node";
-import { useLoaderData, Link, useNavigation } from "@remix-run/react";
+import { useLoaderData, useNavigation } from "@remix-run/react";
 import { useState, useCallback, useRef, useEffect } from "react";
-import {
-  Page,
-  Layout,
-  Card,
-  Toast,
-  EmptyState,
-  Button,
-  InlineStack,
-} from "@shopify/polaris";
-import { PlusIcon } from "@shopify/polaris-icons";
-import { authenticate } from "../shopify.server";
+import { Box, Panel, Flex, Button, Text, H1, H2 } from "@bigcommerce/big-design";
+import { AddIcon, CloseIcon } from "@bigcommerce/big-design-icons";
+import { authenticateAdmin, bigcommerceApi } from "../bigcommerce.server";
 
 import prisma from "../db.server";
 import adminBundlesStyles from "~/styles/admin-bundles.css?url";
@@ -23,12 +15,12 @@ export const links: LinksFunction = () => [{ rel: "stylesheet", href: adminBundl
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   let shop = 'unknown-shop';
-  
-  try {
-    const { admin, session } = await authenticate.admin(request);
-    shop = session.shop;
 
-    const rawBundles = await prisma.bundle.findMany({ where: { shop }, orderBy: { createdAt: 'desc' } });
+  try {
+    const { session, storeHash } = await authenticateAdmin(request);
+    shop = storeHash;
+
+    const rawBundles = await prisma.bundle.findMany({ where: { storeHash }, orderBy: { createdAt: 'desc' } });
 
     const bundles: Bundle[] = rawBundles.map(bundle => {
       let parsedTierConfig: { qty: number; discount: number }[] | null = null;
@@ -44,8 +36,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       } else if (Array.isArray(bundle.tierConfig)) {
         parsedTierConfig = bundle.tierConfig as { qty: number; discount: number }[];
       }
-      
-      return { 
+
+      return {
         id: bundle.id,
         name: bundle.name,
         description: bundle.description,
@@ -70,21 +62,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       };
     });
 
-    const shopQuery = admin.graphql(`query shopInfo { shop { currencyCode } }`).then(res => res.json());
-    const productsQuery = admin.graphql(
-      `#graphql
-      query getProducts {
-        products(first: 50) {
-          edges {
-            node {
-              id
-              title
-              handle
-            }
-          }
-        }
-      }`
-    ).then(res => res.json());
+    // Fetch currency and products from BigCommerce in parallel
+    const shopQuery = bigcommerceApi(storeHash, "/store", { version: "v2" }).then(res => res.json());
+    const productsQuery = bigcommerceApi(storeHash, "/catalog/products?include=variants,images&is_visible=true&limit=50").then(res => res.json());
 
     const [shopResult, productsResult] = await Promise.allSettled([shopQuery, productsQuery]);
 
@@ -92,21 +72,20 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     let products: { node: { id: string; title: string; handle: string } }[] = [];
 
     if (shopResult.status === 'fulfilled') {
-      if (shopResult.value?.errors?.length) {
-        console.error('[admin.bundles._index] shop query errors:', shopResult.value.errors);
-      } else {
-        currencyCode = shopResult.value?.data?.shop?.currencyCode || 'USD';
-      }
+      currencyCode = shopResult.value?.currency || 'USD';
     } else {
-      console.error('[admin.bundles._index] shop query failed:', shopResult.reason);
+      console.error('[admin.bundles._index] store info query failed:', shopResult.reason);
     }
 
     if (productsResult.status === 'fulfilled') {
-      if (productsResult.value?.errors?.length) {
-        console.error('[admin.bundles._index] products query errors:', productsResult.value.errors);
-      } else {
-        products = productsResult.value?.data?.products?.edges || [];
-      }
+      const bcProducts = productsResult.value?.data || [];
+      products = bcProducts.map((p: Record<string, unknown>) => ({
+        node: {
+          id: String(p.id),
+          title: (p.name as string) || 'Untitled Product',
+          handle: ((p.custom_url as { url?: string })?.url || `/${p.id}/`).replace(/^\/|\/$/g, ''),
+        }
+      }));
     } else {
       console.error('[admin.bundles._index] products query failed:', productsResult.reason);
     }
@@ -114,7 +93,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     return json({ shop, bundles, currencyCode, products });
   } catch (error) {
     console.error("[admin.bundles._index] Loader error:", error);
-    
+
     // If we can't get shop from session, try from the error or return generic fallback
     let shopFallback = 'unknown-shop';
     try {
@@ -123,7 +102,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     } catch (_e) {
       // Ignore URL parsing errors
     }
-    
+
     // Return empty data instead of throwing to prevent error boundary flash
     return json({
       shop: shopFallback,
@@ -176,29 +155,26 @@ export default function BundlesIndex() {
   // During revalidation, keep showing cached stable data to prevent error flash
   if (error && !hasLoadedSuccessfully.current && !isRevalidating && !inSuppressWindow) {
     return (
-      <Page title="FBT (Frequently Bought Together)">
-        <Layout>
-          <Layout.Section>
-            <Card>
-              <EmptyState
-                heading="Error loading bundles"
-                image="https://cdn.shopify.com/s/files/1/0262/4071/2726/files/emptystate-files.png"
-              >
-                <p>An error occurred while loading your FBT bundles.</p>
-                <p className="bundle-error-description">{error}</p>
-                <br />
-                <Button onClick={() => window.location.reload()}>Refresh Page</Button>
-              </EmptyState>
-            </Card>
-          </Layout.Section>
-        </Layout>
-      </Page>
+      <Box padding="medium" style={{ maxWidth: "1200px", margin: "0 auto" }}>
+        <Flex flexDirection="column" flexGap="1.5rem">
+          <H1>FBT (Frequently Bought Together)</H1>
+          {toastMarkup(toast, setToast)}
+          <Panel>
+            <Flex flexDirection="column" flexGap="0.75rem">
+              <H2>Error loading bundles</H2>
+              <Text>An error occurred while loading your FBT bundles.</Text>
+              <Text className="bundle-error-description">{error}</Text>
+              <Button onClick={() => window.location.reload()}>Refresh Page</Button>
+            </Flex>
+          </Panel>
+        </Flex>
+      </Box>
     );
   }
 
   const searchParams = isBrowser ? window.location.search : '';
   const createBundleUrl = '/admin/bundles/new' + searchParams;
-  
+
   const handleCreateBundle = useCallback(() => {
     if (!isBrowser) {
       return;
@@ -213,10 +189,6 @@ export default function BundlesIndex() {
     window.location.href = `/admin/bundles/${bundle.id}` + window.location.search;
   }, [isBrowser]);
 
-  const toastMarkup = toast ? (
-    <Toast content={toast.content} onDismiss={() => setToast(null)} error={toast.error} />
-  ) : null;
-
   // Use stable cached data to prevent showing empty state during revalidation
   const displayBundles = hasLoadedSuccessfully.current ? stableBundles : bundles;
   const displayShop = hasLoadedSuccessfully.current ? stableShop : shop;
@@ -225,51 +197,65 @@ export default function BundlesIndex() {
   // Empty state when no bundles exist
   if (displayBundles.length === 0) {
     return (
-      <Page title="FBT (Frequently Bought Together)">
-        <Layout>
-          <Layout.Section>
-            <Card>
-              <EmptyState
-                heading="Create your first FBT"
-                image="https://cdn.shopify.com/s/files/1/0262/4071/2726/files/emptystate-files.png"
-              >
-                <p>Create product bundles to increase average order value and drive more sales.</p>
-                <br />
-                <Button icon={PlusIcon} onClick={handleCreateBundle}>Create FBT</Button>
-              </EmptyState>
-            </Card>
-          </Layout.Section>
-        </Layout>
-        {toastMarkup}
-      </Page>
+      <Box padding="medium" style={{ maxWidth: "1200px", margin: "0 auto" }}>
+        <Flex flexDirection="column" flexGap="1.5rem">
+          <Flex flexDirection="row" justifyContent="space-between" alignItems="center">
+            <H1>FBT (Frequently Bought Together)</H1>
+            <Button iconLeft={<AddIcon />} variant="primary" onClick={handleCreateBundle}>
+              Create FBT
+            </Button>
+          </Flex>
+          {toastMarkup(toast, setToast)}
+          <Panel>
+            <Flex flexDirection="column" flexGap="0.75rem">
+              <H2>Create your first FBT</H2>
+              <Text>Create product bundles to increase average order value and drive more sales.</Text>
+              <Button iconLeft={<AddIcon />} onClick={handleCreateBundle}>Create FBT</Button>
+            </Flex>
+          </Panel>
+        </Flex>
+      </Box>
     );
   }
 
   return (
-    <Page title="FBT (Frequently Bought Together)" fullWidth>
-      <Layout>
-        <Layout.Section>
-          <InlineStack align="end">
-            <Button icon={PlusIcon} variant="primary" onClick={handleCreateBundle}>
-              Create FBT
-            </Button>
-          </InlineStack>
-        </Layout.Section>
-        <Layout.Section>
-          <Card>
-            <BundleTable
-              key={`bundle-table-${displayBundles.length}`}
-              shop={displayShop}
-              bundles={displayBundles}
-              currencyCode={displayCurrencyCode}
-              onEdit={handleEditBundle}
-              setToast={handleSetToast}
-            />
-          </Card>
-        </Layout.Section>
-      </Layout>
-      {toastMarkup}
-    </Page>
+    <Box padding="medium" style={{ maxWidth: "100%", margin: "0 auto" }}>
+      <Flex flexDirection="column" flexGap="1.5rem">
+        <Flex flexDirection="row" justifyContent="space-between" alignItems="center">
+          <H1>FBT (Frequently Bought Together)</H1>
+          <Button iconLeft={<AddIcon />} variant="primary" onClick={handleCreateBundle}>
+            Create FBT
+          </Button>
+        </Flex>
+        {toastMarkup(toast, setToast)}
+        <Panel>
+          <BundleTable
+            key={`bundle-table-${displayBundles.length}`}
+            shop={displayShop}
+            bundles={displayBundles}
+            currencyCode={displayCurrencyCode}
+            onEdit={handleEditBundle}
+            setToast={handleSetToast}
+          />
+        </Panel>
+      </Flex>
+    </Box>
+  );
+}
+
+function toastMarkup(
+  toast: { content: string; error?: boolean } | null,
+  setToast: (toast: { content: string; error?: boolean } | null) => void,
+) {
+  if (!toast) return null;
+
+  return (
+    <Panel>
+      <Flex flexDirection="row" justifyContent="space-between" alignItems="center" flexGap="0.75rem">
+        <Text color={toast.error ? "danger" : "success"}>{toast.content}</Text>
+        <Button variant="subtle" iconOnly={<CloseIcon />} onClick={() => setToast(null)} />
+      </Flex>
+    </Panel>
   );
 }
 
@@ -279,21 +265,17 @@ export default function BundlesIndex() {
  */
 export function ErrorBoundary() {
   return (
-    <Page title="FBT (Frequently Bought Together)">
-      <Layout>
-        <Layout.Section>
-          <Card>
-            <EmptyState
-              heading="Loading bundles..."
-              image="https://cdn.shopify.com/s/files/1/0262/4071/2726/files/emptystate-files.png"
-            >
-              <p>Please wait while we refresh your FBT bundles.</p>
-              <br />
-              <Button onClick={() => window.location.reload()}>Refresh Page</Button>
-            </EmptyState>
-          </Card>
-        </Layout.Section>
-      </Layout>
-    </Page>
+    <Box padding="medium" style={{ maxWidth: "1200px", margin: "0 auto" }}>
+      <Flex flexDirection="column" flexGap="1.5rem">
+        <H1>FBT (Frequently Bought Together)</H1>
+        <Panel>
+          <Flex flexDirection="column" flexGap="0.75rem">
+            <H2>Loading bundles...</H2>
+            <Text>Please wait while we refresh your FBT bundles.</Text>
+            <Button onClick={() => window.location.reload()}>Refresh Page</Button>
+          </Flex>
+        </Panel>
+      </Flex>
+    </Box>
   );
 }

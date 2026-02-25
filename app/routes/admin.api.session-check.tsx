@@ -1,17 +1,17 @@
 import type { LoaderFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
-import { authenticate } from "../shopify.server";
+import { authenticateAdmin } from "../bigcommerce.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   try {
     // Try to authenticate - if this fails, session is expired
-    const { session } = await authenticate.admin(request);
-    
+    const { session, storeHash } = await authenticateAdmin(request);
+
     // Return session status
-    return json({ 
-      valid: true, 
-      shop: session.shop,
-      expiresIn: null // Shopify doesn't provide expiry info easily
+    return json({
+      valid: true,
+      shop: storeHash,
+      expiresIn: null
     });
   } catch (_error) {
     // Session is invalid/expired

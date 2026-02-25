@@ -1,5 +1,5 @@
 import { json, type ActionFunctionArgs, type LoaderFunctionArgs } from "@remix-run/node";
-import { authenticate, unauthenticated } from "../shopify.server";
+import { authenticateAdmin, bigcommerceApi } from "../bigcommerce.server";
 import { getSettings } from "../models/settings.server";
 import { rateLimitByIP } from "../utils/rateLimiter.server";
 
@@ -99,10 +99,9 @@ interface GraphQLProductsResponse {
 
 export async function loader({ request }: LoaderFunctionArgs) {
   try {
-    const { session } = await authenticate.public.appProxy(request);
-    const shop = session?.shop;
-    
-    if (!shop) {
+    const { session, storeHash } = await authenticateAdmin(request);
+
+    if (!storeHash) {
       return json({ error: 'Unauthorized' }, { status: 401 });
     }
 
@@ -110,12 +109,12 @@ export async function loader({ request }: LoaderFunctionArgs) {
     const action = url.searchParams.get('action');
 
     if (action === 'get_bundle_rules') {
-      return await getBundleRules(shop);
+      return await getBundleRules(storeHash);
     }
 
     if (action === 'get_products_for_rule') {
       const ruleId = url.searchParams.get('rule_id');
-      return await getProductsForRule(shop, ruleId);
+      return await getProductsForRule(storeHash, ruleId);
     }
 
     return json({ error: 'Invalid action' }, { status: 400 });
@@ -140,10 +139,9 @@ export async function action({ request }: ActionFunctionArgs) {
       );
     }
 
-    const { session } = await authenticate.public.appProxy(request);
-    const shop = session?.shop;
+    const { session, storeHash } = await authenticateAdmin(request);
 
-    if (!shop) {
+    if (!storeHash) {
       return json({ error: 'Unauthorized' }, { status: 401 });
     }
 
@@ -152,16 +150,16 @@ export async function action({ request }: ActionFunctionArgs) {
 
     switch (actionType) {
       case 'create_bundle_session':
-        return await createBundleSession(shop, data);
-      
+        return await createBundleSession(storeHash, data);
+
       case 'update_bundle_selection':
-        return await updateBundleSelection(shop, data);
-      
+        return await updateBundleSelection(storeHash, data);
+
       case 'calculate_bundle_price':
-        return await calculateBundlePrice(shop, data);
-      
+        return await calculateBundlePrice(storeHash, data);
+
       case 'finalize_bundle':
-        return await finalizeBundle(shop, data);
+        return await finalizeBundle(storeHash, data);
       
       default:
         return json({ error: 'Invalid action' }, { status: 400 });
@@ -233,102 +231,33 @@ async function getProductsForRule(shop: string, ruleId: string | null) {
   }
 
   try {
-    const { admin } = await unauthenticated.admin(shop);
-    
-    // In production, get category from rule configuration
-    // For now, fetch products and simulate category filtering
-    const productsResp = await admin.graphql(`
-      #graphql
-      query getProducts($first: Int!) {
-        products(first: $first) {
-          edges {
-            node {
-              id
-              title
-              handle
-              vendor
-              productType
-              tags
-              variants(first: 3) {
-                edges {
-                  node {
-                    id
-                    title
-                    price
-                    availableForSale
-                    inventoryQuantity
-                  }
-                }
-              }
-              media(first: 1) {
-                edges {
-                  node {
-                    ... on MediaImage {
-                      image {
-                        url
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    `, { variables: { first: 50 } });
+    // Fetch visible products from BigCommerce catalog
+    const productsResponse = await bigcommerceApi(shop, "/catalog/products?include=variants,images&is_visible=true&limit=50");
+    const productsData = await productsResponse.json();
 
-    if (!productsResp.ok) {
-      throw new Error(`GraphQL error: ${productsResp.status}`);
-    }
-
-    const productsData = await productsResp.json() as GraphQLProductsResponse;
-    const allProducts = productsData?.data?.products?.edges || [];
-
-    // Filter products by rule (simulate category filtering)
-    const filteredProducts = allProducts.filter((edge: GraphQLProductEdge) => {
-      const product = edge.node;
-
-      // Simple category matching based on rule ID
-      if (ruleId.includes('skincare')) {
-        return product.productType?.toLowerCase().includes('skincare') ||
-               product.tags.some((tag: string) => tag.toLowerCase().includes('skincare'));
-      }
-
-      if (ruleId.includes('supplements')) {
-        return product.productType?.toLowerCase().includes('supplement') ||
-               product.tags.some((tag: string) => tag.toLowerCase().includes('supplement'));
-      }
-
-      if (ruleId.includes('accessories')) {
-        return product.productType?.toLowerCase().includes('accessory') ||
-               product.tags.some((tag: string) => tag.toLowerCase().includes('accessory'));
-      }
-
-      return true; // Default: include all products
-    });
-
-    const products: BundleProduct[] = filteredProducts.map((edge: GraphQLProductEdge) => {
-      const product = edge.node;
-      const defaultVariant = product.variants?.edges?.[0]?.node;
+    const products: BundleProduct[] = (productsData.data || []).map((p: Record<string, unknown>) => {
+      const variants = (p.variants as Array<Record<string, unknown>>) || [];
+      const firstVariant = variants[0];
+      const images = (p.images as Array<{ url_standard?: string }>) || [];
 
       return {
-        id: product.id.replace('gid://shopify/Product/', ''),
-        title: product.title,
-        handle: product.handle,
-        vendor: product.vendor,
-        productType: product.productType,
-        tags: product.tags,
-        price: parseFloat(defaultVariant?.price || '0'),
-        available: defaultVariant?.availableForSale || false,
-        inventory: defaultVariant?.inventoryQuantity || 0,
-        variant_id: defaultVariant?.id?.replace('gid://shopify/ProductVariant/', '') || '',
-        image: product.media?.edges?.[0]?.node?.image?.url || ''
+        id: String(p.id),
+        title: (p.name as string) || 'Untitled Product',
+        handle: ((p.custom_url as { url?: string })?.url || `/${p.id}/`).replace(/^\/|\/$/g, ''),
+        vendor: (p.brand_id as string) || '',
+        productType: (p.type as string) || 'physical',
+        tags: [],
+        price: Number(p.price) || 0,
+        available: (p.is_visible as boolean) && ((p.inventory_level as number) || 0) > 0,
+        inventory: (p.inventory_level as number) || 0,
+        variant_id: firstVariant ? String(firstVariant.id) : String(p.id),
+        image: images[0]?.url_standard || '',
       };
     });
 
     return json({
       success: true,
-      products: products.slice(0, 24), // Limit for performance
+      products,
       rule_id: ruleId
     });
 

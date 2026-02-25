@@ -3,7 +3,7 @@ import type { ActionFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
 import db from "../db.server";
 import {
-  validateShopDomain,
+  validateStoreHash,
   validateProductId,
   validateVariantId,
   validateSessionId,
@@ -31,7 +31,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const rawSessionId = formData.get("sessionId") as string;
 
     const eventType = sanitizeTextInput(rawEventType, 50);
-    const shop = validateShopDomain(rawShop) ? rawShop : null;
+    const shop = validateStoreHash(rawShop) ? rawShop : null;
     const sessionId = validateSessionId(rawSessionId);
 
     if (!eventType || !shop) {
@@ -81,7 +81,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       if (eventType === "impression" || eventType === "click") {
         const existingEvent = await db.trackingEvent.findFirst({
           where: {
-            shop,
+            storeHash: shop,
             event: eventType,
             productId,
             sessionId: sessionId || undefined,
@@ -103,7 +103,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
       await db.trackingEvent.create({
         data: {
-          shop,
+          storeHash: shop,
           event: eventType,
           productId, // This will be the variant ID in most cases
           productTitle: productTitle || undefined,
@@ -136,7 +136,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
     await db.analyticsEvent.create({
       data: {
-        shop,
+        storeHash: shop,
         eventType,
         sessionId: sessionId || undefined,
         orderId: orderId || undefined,

@@ -1,108 +1,11 @@
-// Phase 6: Real Analytics Dashboard - Replace mock with Shopify data
+// Phase 6: Real Analytics Dashboard - Replace mock with BigCommerce data
 import { json } from "@remix-run/node";
 import type { LoaderFunctionArgs } from "@remix-run/node";
-import { authenticate } from "../shopify.server";
+import { authenticateAdmin } from "../bigcommerce.server";
 import { rateLimitRequest } from "../utils/rateLimiter.server";
 import prisma from "../db.server";
 import type { AnalyticsEventModel } from "~/types/prisma";
 
-// Shopify Admin API client type
-type ShopifyAdminClient = Awaited<ReturnType<typeof authenticate.admin>>['admin'];
-
-// Shopify GraphQL types
-interface ShopifyOrderNode {
-  id: string;
-  name: string;
-  createdAt: string;
-  totalPrice: string;
-  subtotalPrice: string;
-  totalTax: string;
-  currencyCode: string;
-  fulfillmentStatus: string;
-  financialStatus: string;
-  customer: {
-    id: string;
-    email: string;
-  } | null;
-  shippingAddress: {
-    country: string;
-    province: string;
-    city: string;
-  } | null;
-  lineItems: {
-    edges: Array<{
-      node: {
-        id: string;
-        quantity: number;
-        product: {
-          id: string;
-          title: string;
-          vendor: string;
-        };
-        variant: {
-          id: string;
-          title: string;
-          price: string;
-        };
-      };
-    }>;
-  };
-}
-
-interface ShopifyOrderEdge {
-  node: ShopifyOrderNode;
-}
-
-interface ShopifyOrdersResponse {
-  data: {
-    orders: {
-      edges: ShopifyOrderEdge[];
-      pageInfo: {
-        hasNextPage: boolean;
-        endCursor: string | null;
-      };
-    };
-  };
-  errors?: Array<{ message: string }>;
-}
-
-interface ShopifyMetrics {
-  totalOrders: number;
-  totalRevenue: number;
-  averageOrderValue: number;
-  completedOrders: number;
-  topProducts: TopProduct[];
-  ordersByDay: OrderByDay[];
-  customerSegments: CustomerSegments;
-}
-
-interface TopProduct {
-  id: string;
-  title: string;
-  vendor: string;
-  quantity: number;
-  revenue: number;
-}
-
-interface OrderByDay {
-  date: string;
-  orders: number;
-  revenue: number;
-}
-
-interface CustomerSegments {
-  newCustomers: number;
-  returningCustomers: number;
-  vipCustomers: number;
-  totalCustomers: number;
-}
-
-interface CustomerStat {
-  id: string;
-  email: string;
-  orders: number;
-  revenue: number;
-}
 
 interface RealtimeMetrics {
   activeUsers: number;
@@ -167,11 +70,10 @@ interface BundleMetrics {
 }
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { admin, session } = await authenticate.admin(request);
-  const shop = session.shop;
+  const { session, storeHash } = await authenticateAdmin(request);
 
 // SECURITY: Rate limiting - 50 requests per minute (analytics aggregation)
-const rateLimitResult = await rateLimitRequest(request, shop, {
+const rateLimitResult = await rateLimitRequest(request, storeHash, {
   maxRequests: 50,
   windowMs: 60 * 1000,
   burstMax: 25,
@@ -194,28 +96,46 @@ const url = new URL(request.url);
     // Calculate date range
     const dateRange = calculateDateRange(period, startDate, endDate);
     
-    // Get real Shopify order data
-    const shopifyMetrics = await getShopifyOrderMetrics(admin, dateRange);
-    
+    // Store-level order metrics derived from our AnalyticsEvent table
+    const storeAnalytics = await prisma.analyticsEvent.findMany({
+      where: {
+        shop: storeHash,
+        eventType: 'purchase',
+        timestamp: {
+          gte: new Date(dateRange.start),
+          lte: new Date(dateRange.end),
+        },
+      },
+    });
+
+    const totalOrders = storeAnalytics.length;
+    const totalRevenue = storeAnalytics.reduce((sum: number, a: AnalyticsEventModel) => sum + (a.orderValue || 0), 0);
+    const storeMetrics = {
+      totalOrders,
+      totalRevenue,
+      averageOrderValue: totalOrders > 0 ? totalRevenue / totalOrders : 0,
+      completedOrders: totalOrders,
+    };
+
     // Get cart uplift analytics from our database
-    const cartAnalytics = await getCartAnalytics(session.shop, dateRange);
-    
+    const cartAnalytics = await getCartAnalytics(storeHash, dateRange);
+
     // Get bundle performance data
-    const bundleMetrics = await getBundleAnalytics(session.shop, dateRange);
-    
+    const bundleMetrics = await getBundleAnalytics(storeHash, dateRange);
+
     // Get real-time metrics for dashboard
-    const realtimeMetrics = await getRealtimeMetrics(session.shop);
-    
+    const realtimeMetrics = await getRealtimeMetrics(storeHash);
+
     // Combine all metrics
     const analytics = {
       period: dateRange,
-      shopifyMetrics,
+      storeMetrics,
       cartMetrics: cartAnalytics,
       bundleMetrics,
       realtimeMetrics,
-      trends: await calculateTrends(session.shop, dateRange),
-      geographic: await getGeographicData(admin, dateRange),
-      deviceBreakdown: await getDeviceBreakdown(session.shop, dateRange)
+      trends: await calculateTrends(storeHash, dateRange),
+      geographic: await getGeographicData(storeHash, dateRange),
+      deviceBreakdown: await getDeviceBreakdown(storeHash, dateRange)
     };
 
     return json(analytics);
@@ -230,108 +150,13 @@ const url = new URL(request.url);
   }
 };
 
-// Get real order data from Shopify
-async function getShopifyOrderMetrics(admin: ShopifyAdminClient, dateRange: AnalyticsPeriod): Promise<ShopifyMetrics> {
-  const ordersQuery = `
-    query getOrderMetrics($query: String!) {
-      orders(first: 250, query: $query) {
-        edges {
-          node {
-            id
-            name
-            createdAt
-            totalPrice
-            subtotalPrice
-            totalTax
-            currencyCode
-            fulfillmentStatus
-            financialStatus
-            customer {
-              id
-              email
-            }
-            shippingAddress {
-              country
-              province
-              city
-            }
-            lineItems(first: 50) {
-              edges {
-                node {
-                  id
-                  quantity
-                  product {
-                    id
-                    title
-                    vendor
-                  }
-                  variant {
-                    id
-                    title
-                    price
-                  }
-                }
-              }
-            }
-          }
-        }
-        pageInfo {
-          hasNextPage
-          endCursor
-        }
-      }
-    }
-  `;
-
-  try {
-    const response = await admin.graphql(ordersQuery, {
-      variables: {
-        query: `created_at:>=${dateRange.start} created_at:<=${dateRange.end}`
-      }
-    });
-
-    const data = await response.json() as ShopifyOrdersResponse;
-
-    if (data.errors) {
-      throw new Error(`GraphQL errors: ${JSON.stringify(data.errors)}`);
-    }
-
-    const orders = data.data.orders.edges.map(({ node }: ShopifyOrderEdge) => node);
-
-    return {
-      totalOrders: orders.length,
-      totalRevenue: orders.reduce((sum: number, order: ShopifyOrderNode) =>
-        sum + parseFloat(order.totalPrice), 0),
-      averageOrderValue: orders.length > 0 ?
-        orders.reduce((sum: number, order: ShopifyOrderNode) => sum + parseFloat(order.totalPrice), 0) / orders.length : 0,
-      completedOrders: orders.filter((order: ShopifyOrderNode) =>
-        order.fulfillmentStatus === 'fulfilled' ||
-        order.financialStatus === 'paid').length,
-      topProducts: getTopProducts(orders),
-      ordersByDay: getOrdersByDay(orders, dateRange),
-      customerSegments: getCustomerSegments(orders)
-    };
-  } catch (error: unknown) {
-    console.error("Shopify metrics error:", error);
-    return {
-      totalOrders: 0,
-      totalRevenue: 0,
-      averageOrderValue: 0,
-      completedOrders: 0,
-      topProducts: [],
-      ordersByDay: [],
-      customerSegments: []
-    };
-  }
-}
-
 // Get cart analytics from our database
 async function getCartAnalytics(shop: string, dateRange: AnalyticsPeriod): Promise<CartMetrics> {
   try {
     // Query AnalyticsEvent model for real cart tracking data
     const analytics = await prisma.analyticsEvent.findMany({
       where: {
-        shop,
+        storeHash: shop,
         timestamp: {
           gte: new Date(dateRange.start),
           lte: new Date(dateRange.end)
@@ -419,11 +244,19 @@ async function getBundleMetrics(analytics: AnalyticsEventModel[]): Promise<Bundl
   }));
 }
 
-async function getBundleAnalytics(_shop: string, _dateRange: AnalyticsPeriod): Promise<BundleMetrics[]> {
+async function getBundleAnalytics(shop: string, dateRange: AnalyticsPeriod): Promise<BundleMetrics[]> {
   try {
-    // Get bundle performance data
-    // Use empty array temporarily until ABEvent is properly set up
-    const bundleAnalytics: AnalyticsEventModel[] = [];
+    const bundleAnalytics = await prisma.analyticsEvent.findMany({
+      where: {
+        storeHash: shop,
+        bundleId: { not: null },
+        timestamp: {
+          gte: new Date(dateRange.start),
+          lte: new Date(dateRange.end),
+        },
+      },
+      orderBy: { timestamp: 'desc' },
+    });
 
     return getBundleMetrics(bundleAnalytics);
   } catch (error: unknown) {
@@ -432,10 +265,17 @@ async function getBundleAnalytics(_shop: string, _dateRange: AnalyticsPeriod): P
   }
 }
 
-async function getRealtimeMetrics(_shop: string): Promise<RealtimeMetrics> {
+async function getRealtimeMetrics(shop: string): Promise<RealtimeMetrics> {
   try {
-    // Use empty array temporarily until ABEvent is properly set up
-    const recentAnalytics: AnalyticsEventModel[] = [];
+    // Query events from the last 30 minutes for real-time data
+    const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
+    const recentAnalytics = await prisma.analyticsEvent.findMany({
+      where: {
+        storeHash: shop,
+        timestamp: { gte: thirtyMinutesAgo },
+      },
+      orderBy: { timestamp: 'desc' },
+    });
 
     return {
       activeUsers: new Set(recentAnalytics.map((a: AnalyticsEventModel) => a.sessionId)).size,
@@ -477,22 +317,52 @@ async function calculateTrends(shop: string, dateRange: AnalyticsPeriod): Promis
   }
 }
 
-async function getGeographicData(_admin: ShopifyAdminClient, _dateRange: AnalyticsPeriod): Promise<GeographicData[]> {
-  // This would use Shopify's Analytics API if available
-  // For now, return placeholder data
-  return [
-    { country: 'US', orders: 0, revenue: 0 },
-    { country: 'CA', orders: 0, revenue: 0 },
-    { country: 'GB', orders: 0, revenue: 0 }
-  ];
+async function getGeographicData(shop: string, dateRange: AnalyticsPeriod): Promise<GeographicData[]> {
+  try {
+    const analytics = await prisma.analyticsEvent.findMany({
+      where: {
+        storeHash: shop,
+        eventType: 'purchase',
+        timestamp: {
+          gte: new Date(dateRange.start),
+          lte: new Date(dateRange.end),
+        },
+      },
+    });
+
+    // Group by country from event metadata
+    const geoStats = analytics.reduce((acc: Record<string, { orders: number; revenue: number }>, record: AnalyticsEventModel) => {
+      const country = (record as unknown as { country?: string }).country || 'Unknown';
+      if (!acc[country]) acc[country] = { orders: 0, revenue: 0 };
+      acc[country].orders++;
+      acc[country].revenue += record.orderValue || 0;
+      return acc;
+    }, {} as Record<string, { orders: number; revenue: number }>);
+
+    return Object.entries(geoStats).map(([country, stats]): GeographicData => ({
+      country,
+      orders: stats.orders,
+      revenue: stats.revenue,
+    }));
+  } catch (error: unknown) {
+    console.error("Geographic data error:", error);
+    return [];
+  }
 }
 
-async function getDeviceBreakdown(_shop: string, _dateRange: AnalyticsPeriod): Promise<DeviceBreakdown[]> {
+async function getDeviceBreakdown(shop: string, dateRange: AnalyticsPeriod): Promise<DeviceBreakdown[]> {
   try {
-    // Use Settings table temporarily until ABEvent is properly set up
-    // This would be replaced with actual analytics data when the schema is updated
-    const analytics: AnalyticsEventModel[] = [];
-    // Group by device type if you track this data
+    const analytics = await prisma.analyticsEvent.findMany({
+      where: {
+        storeHash: shop,
+        timestamp: {
+          gte: new Date(dateRange.start),
+          lte: new Date(dateRange.end),
+        },
+      },
+    });
+
+    // Group by device type
     const deviceStats = analytics.reduce((acc: Record<string, number>, record: AnalyticsEventModel) => {
       const device = (record as unknown as { deviceType?: string }).deviceType || 'Unknown';
       if (!acc[device]) acc[device] = 0;
@@ -544,77 +414,3 @@ function calculatePercentageChange(current: number, previous: number): number {
   return ((current - previous) / previous) * 100;
 }
 
-function getTopProducts(orders: ShopifyOrderNode[]): TopProduct[] {
-  const productStats = new Map<string, TopProduct>();
-
-  orders.forEach(order => {
-    order.lineItems.edges.forEach(({ node }) => {
-      const productId = node.product.id;
-      if (!productStats.has(productId)) {
-        productStats.set(productId, {
-          id: productId,
-          title: node.product.title,
-          vendor: node.product.vendor,
-          quantity: 0,
-          revenue: 0
-        });
-      }
-      
-      const stats = productStats.get(productId);
-      stats.quantity += node.quantity;
-      stats.revenue += parseFloat(node.variant.price) * node.quantity;
-    });
-  });
-  
-  return Array.from(productStats.values())
-    .sort((a, b) => b.revenue - a.revenue)
-    .slice(0, 10);
-}
-
-function getOrdersByDay(orders: ShopifyOrderNode[], _dateRange: AnalyticsPeriod): OrderByDay[] {
-  const dayStats = new Map<string, OrderByDay>();
-  
-  orders.forEach(order => {
-    const date = new Date(order.createdAt).toISOString().split('T')[0];
-    if (!dayStats.has(date)) {
-      dayStats.set(date, { date, orders: 0, revenue: 0 });
-    }
-    
-    const stats = dayStats.get(date);
-    stats.orders++;
-    stats.revenue += parseFloat(order.totalPrice);
-  });
-  
-  return Array.from(dayStats.values()).sort((a, b) => a.date.localeCompare(b.date));
-}
-
-function getCustomerSegments(orders: ShopifyOrderNode[]): CustomerSegments {
-  const customerStats = new Map<string, CustomerStat>();
-  
-  orders.forEach(order => {
-    if (order.customer?.id) {
-      const customerId = order.customer.id;
-      if (!customerStats.has(customerId)) {
-        customerStats.set(customerId, {
-          id: customerId,
-          email: order.customer.email,
-          orders: 0,
-          revenue: 0
-        });
-      }
-      
-      const stats = customerStats.get(customerId);
-      stats.orders++;
-      stats.revenue += parseFloat(order.totalPrice);
-    }
-  });
-  
-  const customers = Array.from(customerStats.values());
-  
-  return {
-    newCustomers: customers.filter(c => c.orders === 1).length,
-    returningCustomers: customers.filter(c => c.orders > 1).length,
-    vipCustomers: customers.filter(c => c.revenue > 500).length,
-    totalCustomers: customers.length
-  };
-}

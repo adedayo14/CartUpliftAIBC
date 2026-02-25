@@ -57,7 +57,7 @@ export async function runUserProfileUpdate(shop: string, settings?: { mlPrivacyL
       privacyLevel = settings.mlPrivacyLevel;
     } else {
       const shopSettings = await prisma.settings.findUnique({
-        where: { shop },
+        where: { storeHash: shop },
         select: { mlPrivacyLevel: true }
       });
       privacyLevel = shopSettings?.mlPrivacyLevel || 'basic';
@@ -69,7 +69,7 @@ export async function runUserProfileUpdate(shop: string, settings?: { mlPrivacyL
     
     const events = await prisma.trackingEvent.findMany({
       where: {
-        shop,
+        storeHash: shop,
         createdAt: { gte: thirtyDaysAgo }
       },
       orderBy: {
@@ -155,7 +155,7 @@ export async function runUserProfileUpdate(shop: string, settings?: { mlPrivacyL
       
       // Prepare profile data
       const profileData = {
-        shop,
+        storeHash: shop,
         sessionId,
         customerId: privacyLevel === 'advanced' ? behavior.customerId : null,
         anonymousId: privacyLevel === 'basic' ? `anon_${sessionId.slice(0, 8)}` : null,
@@ -172,8 +172,8 @@ export async function runUserProfileUpdate(shop: string, settings?: { mlPrivacyL
       try {
         const result = await prisma.mLUserProfile.upsert({
           where: {
-            shop_sessionId: {
-              shop,
+            storeHash_sessionId: {
+              storeHash: shop,
               sessionId
             }
           },
@@ -242,16 +242,16 @@ export async function runUserProfileUpdateForAllShops() {
   try {
     // Get all shops with their privacy settings
     const shops = await prisma.settings.findMany({
-      select: { 
-        shop: true,
+      select: {
+        storeHash: true,
         mlPrivacyLevel: true
       }
     });
-    
+
     logger.log(`📋 [PROFILE UPDATE] Found ${shops.length} shops to process`);
-    
+
     const results = [];
-    for (const { shop, mlPrivacyLevel } of shops) {
+    for (const { storeHash: shop, mlPrivacyLevel } of shops) {
       const result = await runUserProfileUpdate(shop, { mlPrivacyLevel });
       results.push(result);
     }

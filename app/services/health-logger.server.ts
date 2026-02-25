@@ -139,7 +139,7 @@ export async function startHealthLog(
 
   const health = await prisma.mLSystemHealth.create({
     data: {
-      shop,
+      storeHash: shop,
       jobType,
       status: 'running',
       startedAt,
@@ -157,7 +157,7 @@ export async function startHealthLog(
  */
 export async function getRecentHealthLogs(shop: string, limit = 50) {
   return await prisma.mLSystemHealth.findMany({
-    where: { shop },
+    where: { storeHash: shop },
     orderBy: { createdAt: 'desc' },
     take: limit
   });
@@ -172,7 +172,7 @@ export async function getHealthSummary(shop: string, days = 7) {
 
   const logs = await prisma.mLSystemHealth.findMany({
     where: {
-      shop,
+      storeHash: shop,
       createdAt: { gte: since }
     },
     orderBy: { createdAt: 'desc' }

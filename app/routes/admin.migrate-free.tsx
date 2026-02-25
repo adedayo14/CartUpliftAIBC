@@ -1,6 +1,6 @@
 import type { LoaderFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
-import { authenticate } from "~/shopify.server";
+import { authenticateAdmin } from "~/bigcommerce.server";
 import prisma from "~/db.server";
 
 /**
@@ -8,7 +8,7 @@ import prisma from "~/db.server";
  * Visit /admin/migrate-free to run the migration for your shop
  */
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  const { session, storeHash } = await authenticateAdmin(request);
 
   try {
     // Calculate trial end date (14 days from now)
@@ -17,7 +17,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     // Update this shop's subscription if it's on free plan
     const updated = await prisma.subscription.updateMany({
       where: {
-        shop: session.shop,
+        shop: storeHash,
         planTier: 'free'
       },
       data: {
@@ -31,21 +31,21 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       return json({
         success: true,
         message: `✅ Migrated ${updated.count} subscription(s) from FREE to STARTER trial`,
-        shop: session.shop,
+        shop: storeHash,
         trialEndsAt: trialEnd.toISOString()
       });
     } else {
       return json({
         success: true,
         message: "✅ No migration needed - subscription already on STARTER or higher",
-        shop: session.shop
+        shop: storeHash
       });
     }
   } catch (error) {
     return json({
       success: false,
       error: error instanceof Error ? error.message : 'Unknown error',
-      shop: session.shop
+      shop: storeHash
     }, { status: 500 });
   }
 };

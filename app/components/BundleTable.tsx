@@ -3,12 +3,12 @@ import { useRevalidator } from "@remix-run/react";
 import {
   Badge,
   Button,
-  DataTable,
+  Table,
   Text,
-  InlineStack,
+  Flex,
   Box,
-} from "@shopify/polaris";
-import { DeleteIcon, EditIcon, PauseCircleIcon, PlayCircleIcon } from "@shopify/polaris-icons";
+} from "@bigcommerce/big-design";
+import { DeleteIcon, EditIcon, StopIcon, PlayArrowIcon } from "@bigcommerce/big-design-icons";
 import { formatMoney } from "../utils/formatters";
 import type { Bundle } from "../routes/admin.bundles";
 import { BUNDLE_TYPES, BUNDLE_STATUS, DISCOUNT_TYPES } from "~/constants/bundle";
@@ -42,7 +42,7 @@ export function BundleTable({ shop, bundles, currencyCode, onEdit, setToast }: B
     ));
 
     try {
-      // Use XMLHttpRequest to avoid Remix interception in Shopify embedded apps
+      // Use XMLHttpRequest to avoid Remix interception in embedded apps
       const xhr = new XMLHttpRequest();
       const authParams = window.location.search;
       const apiEndpoint = '/admin/api/bundle-management' + authParams;
@@ -92,7 +92,7 @@ export function BundleTable({ shop, bundles, currencyCode, onEdit, setToast }: B
     setLoadingAction({ bundleId, action: 'delete' });
 
     try {
-      // Use XMLHttpRequest to avoid Remix interception in Shopify embedded apps
+      // Use XMLHttpRequest to avoid Remix interception in embedded apps
       const xhr = new XMLHttpRequest();
       const authParams = window.location.search;
       const apiEndpoint = '/admin/api/bundle-management' + authParams;
@@ -134,48 +134,47 @@ export function BundleTable({ shop, bundles, currencyCode, onEdit, setToast }: B
     }
   }, [shop, setToast, revalidator]);
 
-  const rows = useMemo(() => optimisticBundles.map((bundle, index) => [
-    <Text key={`name-${bundle.id}-${index}`} variant="bodyMd" fontWeight="semibold" as="span">{bundle.name}</Text>,
-    bundle.type === BUNDLE_TYPES.MANUAL ? 'Manual' : bundle.type === BUNDLE_TYPES.COLLECTION ? 'Collection' : 'AI Suggested',
-    <Badge key={`status-${bundle.id}-${index}`} tone={bundle.status === BUNDLE_STATUS.ACTIVE ? 'success' : 'attention'}>{bundle.status}</Badge>,
-    bundle.discountType === DISCOUNT_TYPES.PERCENTAGE ? `${bundle.discountValue}%` : formatMoney(bundle.discountValue, currencyCode),
-    <Text key={`purchases-${bundle.id}-${index}`} variant="bodyMd" as="span">{(bundle.totalPurchases || 0).toLocaleString()}</Text>,
-    <Text key={`revenue-${bundle.id}-${index}`} variant="bodyMd" as="span">{formatMoney(bundle.totalRevenue || 0, currencyCode)}</Text>,
-    <InlineStack key={`actions-${bundle.id}-${index}`} gap="200" align="end" blockAlign="center">
-      <Button
-        size="large"
-        variant="plain"
-        onClick={() => handleToggleStatus(bundle.id, bundle.status)}
-        loading={loadingAction?.bundleId === bundle.id && loadingAction?.action === 'toggle'}
-        icon={bundle.status === BUNDLE_STATUS.ACTIVE ? PauseCircleIcon : PlayCircleIcon}
-        accessibilityLabel={bundle.status === BUNDLE_STATUS.ACTIVE ? 'Pause FBT' : 'Activate FBT'}
-      />
-      <Button 
-        size="large" 
-        variant="plain"
-        onClick={() => onEdit(bundle)}
-        icon={EditIcon}
-        accessibilityLabel="Edit FBT"
-      />
-      <Button 
-        size="large" 
-        variant="plain"
-        tone="critical" 
-        onClick={() => handleDeleteBundle(bundle.id)} 
-        loading={loadingAction?.bundleId === bundle.id && loadingAction?.action === 'delete'} 
-        icon={DeleteIcon}
-        accessibilityLabel="Delete FBT"
-      />
-    </InlineStack>,
-  ]), [optimisticBundles, currencyCode, handleToggleStatus, handleDeleteBundle, onEdit, loadingAction]);
+  const columns = [
+    { header: 'FBT Name', hash: 'name' as const, render: ({ name, id }: Bundle) => <Text bold>{name}</Text> },
+    { header: 'Type', hash: 'type' as const, render: ({ type }: Bundle) => type === BUNDLE_TYPES.MANUAL ? 'Manual' : type === BUNDLE_TYPES.COLLECTION ? 'Collection' : 'AI Suggested' },
+    { header: 'Status', hash: 'status' as const, render: ({ status }: Bundle) => <Badge variant={status === BUNDLE_STATUS.ACTIVE ? 'success' : 'warning'} label={status} /> },
+    { header: 'Discount', hash: 'discountValue' as const, render: ({ discountType, discountValue }: Bundle) => discountType === DISCOUNT_TYPES.PERCENTAGE ? `${discountValue}%` : formatMoney(discountValue, currencyCode) },
+    { header: 'Purchases', hash: 'totalPurchases' as const, render: ({ totalPurchases }: Bundle) => <Text>{(totalPurchases || 0).toLocaleString()}</Text> },
+    { header: 'Revenue', hash: 'totalRevenue' as const, render: ({ totalRevenue }: Bundle) => <Text>{formatMoney(totalRevenue || 0, currencyCode)}</Text> },
+    {
+      header: 'Actions',
+      hash: 'id' as const,
+      render: (bundle: Bundle) => (
+        <Flex flexDirection="row" flexGap="0.5rem" justifyContent="flex-end" alignItems="center">
+          <Button
+            variant="subtle"
+            onClick={() => handleToggleStatus(bundle.id, bundle.status)}
+            isLoading={loadingAction?.bundleId === bundle.id && loadingAction?.action === 'toggle'}
+            iconOnly={bundle.status === BUNDLE_STATUS.ACTIVE ? <StopIcon /> : <PlayArrowIcon />}
+          />
+          <Button
+            variant="subtle"
+            onClick={() => onEdit(bundle)}
+            iconOnly={<EditIcon />}
+          />
+          <Button
+            variant="subtle"
+            onClick={() => handleDeleteBundle(bundle.id)}
+            isLoading={loadingAction?.bundleId === bundle.id && loadingAction?.action === 'delete'}
+            iconOnly={<DeleteIcon />}
+          />
+        </Flex>
+      ),
+    },
+  ];
 
   return (
-    <Box maxWidth="1400px">
+    <Box style={{ maxWidth: "1400px" }}>
       <div className={styles.tableWrapper}>
-        <DataTable
-          columnContentTypes={['text', 'text', 'text', 'numeric', 'numeric', 'numeric', 'text']}
-          headings={['FBT Name', 'Type', 'Status', 'Discount', 'Purchases', 'Revenue', 'Actions']}
-          rows={rows}
+        <Table
+          columns={columns}
+          items={optimisticBundles}
+          stickyHeader
         />
       </div>
     </Box>

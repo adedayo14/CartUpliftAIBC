@@ -25,7 +25,7 @@ export async function scheduleDataRetention(job: DataRetentionJob) {
 
     const retentionJob = await prisma.mLDataRetentionJob.create({
       data: {
-        shop: job.shop,
+        storeHash: job.shop,
         jobType: job.jobType,
         dataType: job.dataType,
         retentionDays: job.retentionDays,
@@ -71,7 +71,7 @@ export async function executeDataRetention(jobId: string) {
     if (job.dataType === 'profiles' || job.dataType === 'all') {
       const deletedProfiles = await prisma.mLUserProfile.updateMany({
         where: {
-          shop: job.shop,
+          storeHash: job.shop,
           lastActivity: {
             lt: job.cutoffDate
           },
@@ -87,7 +87,7 @@ export async function executeDataRetention(jobId: string) {
     if (job.dataType === 'tracking' || job.dataType === 'all') {
       const deletedTracking = await prisma.trackingEvent.deleteMany({
         where: {
-          shop: job.shop,
+          storeHash: job.shop,
           createdAt: {
             lt: job.cutoffDate
           }
@@ -160,7 +160,7 @@ export async function anonymizeUserData(shop: string, customerId: string) {
     // Remove customer ID and replace with anonymous ID
     const updated = await prisma.mLUserProfile.updateMany({
       where: {
-        shop,
+        storeHash: shop,
         customerId,
         deletedAt: null
       },
@@ -186,7 +186,7 @@ export async function deleteUserData(shop: string, customerId: string) {
     // Hard delete ML profiles
     const deletedProfiles = await prisma.mLUserProfile.deleteMany({
       where: {
-        shop,
+        storeHash: shop,
         customerId
       }
     });
@@ -194,7 +194,7 @@ export async function deleteUserData(shop: string, customerId: string) {
     // Delete tracking events
     const deletedTracking = await prisma.trackingEvent.deleteMany({
       where: {
-        shop,
+        storeHash: shop,
         customerId
       }
     });
@@ -216,18 +216,18 @@ export async function getRetentionStats(shop: string) {
   try {
     const [profileCount, trackingCount, oldestProfile, newestProfile] = await Promise.all([
       prisma.mLUserProfile.count({
-        where: { shop, deletedAt: null }
+        where: { storeHash: shop, deletedAt: null }
       }),
       prisma.trackingEvent.count({
-        where: { shop }
+        where: { storeHash: shop }
       }),
       prisma.mLUserProfile.findFirst({
-        where: { shop, deletedAt: null },
+        where: { storeHash: shop, deletedAt: null },
         orderBy: { createdAt: 'asc' },
         select: { createdAt: true }
       }),
       prisma.mLUserProfile.findFirst({
-        where: { shop, deletedAt: null },
+        where: { storeHash: shop, deletedAt: null },
         orderBy: { createdAt: 'desc' },
         select: { createdAt: true }
       })

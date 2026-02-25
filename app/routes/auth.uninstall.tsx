@@ -1,5 +1,5 @@
 import type { LoaderFunctionArgs } from "@remix-run/node";
-import { verifySignedPayload, deleteStoreSessions } from "../bigcommerce.server";
+import { verifySignedPayload, deleteStoreSessions, deleteStoreUsers, cleanupStorefrontScripts } from "../bigcommerce.server";
 import { logger } from "~/utils/logger.server";
 
 /**
@@ -23,8 +23,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
     logger.info("App uninstalled", { storeHash });
 
-    // Delete all sessions for this store
+    // Best-effort cleanup before credentials are removed
+    await cleanupStorefrontScripts(storeHash);
+
+    // Delete all sessions/users for this store
     await deleteStoreSessions(storeHash);
+    await deleteStoreUsers(storeHash);
 
     return new Response("OK", { status: 200 });
   } catch (error) {

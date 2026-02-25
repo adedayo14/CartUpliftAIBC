@@ -1,24 +1,23 @@
 import { json, type LoaderFunctionArgs } from "@remix-run/node";
 import { getSettings, saveSettings, getDefaultSettings } from "../models/settings.server";
-import { authenticate } from "../shopify.server";
+import { authenticateAdmin } from "../bigcommerce.server";
 import { LAYOUT_MAP, HTTP_METHODS } from "~/constants/bundle";
-import { validateShopDomain, validateCorsOrigin, getCorsHeaders } from "../services/security.server";
+import { validateStoreHash, validateCorsOrigin, getCorsHeaders } from "../services/security.server";
 import { rateLimitRequest } from "../utils/rateLimiter.server";
 import { getOrCreateSubscription } from "../services/billing.server";
 
 export async function loader({ request }: LoaderFunctionArgs) {
   try {
-    const { session, admin } = await authenticate.admin(request);
-    const shop = session.shop;
+    const { storeHash } = await authenticateAdmin(request);
 
     // SECURITY: Validate CORS origin
     const origin = request.headers.get("origin") || "";
-    const allowedOrigin = await validateCorsOrigin(origin, shop);
+    const allowedOrigin = await validateCorsOrigin(origin, storeHash);
     const corsHeaders = getCorsHeaders(allowedOrigin);
 
     // SECURITY: Rate limiting - 100 requests per minute for settings reads
     try {
-      await rateLimitRequest(request, shop, {
+      await rateLimitRequest(request, storeHash, {
         maxRequests: 100,
         windowMs: 60 * 1000,
         burstMax: 40,
@@ -29,8 +28,8 @@ export async function loader({ request }: LoaderFunctionArgs) {
       throw error;
     }
 
-    // 🔒 BILLING LIMIT CHECK: Return 402 if order limit reached
-    const subscription = await getOrCreateSubscription(shop, admin);
+    // BILLING LIMIT CHECK: Return 402 if order limit reached
+    const subscription = await getOrCreateSubscription(storeHash);
     if (subscription.isLimitReached) {
       return new Response("Payment Required - Order limit reached", {
         status: 402,
@@ -38,18 +37,18 @@ export async function loader({ request }: LoaderFunctionArgs) {
       });
     }
 
-    const settings = await getSettings(shop);
-    
+    const settings = await getSettings(storeHash);
+
     // Track app embed activation on first storefront load
     if (!settings.appEmbedActivated) {
-      await saveSettings(shop, { 
-        appEmbedActivated: true, 
-        appEmbedActivatedAt: new Date() 
+      await saveSettings(storeHash, {
+        appEmbedActivated: true,
+        appEmbedActivatedAt: new Date()
       });
       settings.appEmbedActivated = true;
       settings.appEmbedActivatedAt = new Date();
     }
-    
+
     // Normalize layout for theme (row/column expected in CSS/JS)
     const normalized = {
       source: 'db',
@@ -67,7 +66,6 @@ export async function loader({ request }: LoaderFunctionArgs) {
     });
   } catch (error) {
     // Fail open: serve defaults so preview and storefront keep working
-    // Use wildcard for error fallback since we don't have shop context
     const defaults = getDefaultSettings();
     const normalized = {
       source: 'defaults',
@@ -92,20 +90,20 @@ export async function action({ request }: LoaderFunctionArgs) {
   try {
     const contentType = request.headers.get('content-type');
 
-    // Handle JSON payload with embedded shop/session
+    // Handle JSON payload with embedded storeHash/session
     if (contentType?.includes('application/json')) {
       const payload = await request.json();
-      const { shop: rawShop, settings } = payload;
+      const { storeHash: rawStoreHash, settings } = payload;
 
-      // SECURITY: Validate shop domain
-      if (!rawShop || !validateShopDomain(rawShop)) {
-        console.warn('[Settings API] Invalid shop domain:', rawShop);
-        return json({ error: "Valid shop parameter required" }, { status: 400 });
+      // SECURITY: Validate store hash
+      if (!rawStoreHash || !validateStoreHash(rawStoreHash)) {
+        console.warn('[Settings API] Invalid store hash:', rawStoreHash);
+        return json({ error: "Valid storeHash parameter required" }, { status: 400 });
       }
 
-      // SECURITY: Rate limiting for settings writes - 200 requests per minute (admin-only, authenticated)
+      // SECURITY: Rate limiting for settings writes
       try {
-        await rateLimitRequest(request, rawShop, {
+        await rateLimitRequest(request, rawStoreHash, {
           maxRequests: 200,
           windowMs: 60 * 1000,
           burstMax: 50,
@@ -116,19 +114,18 @@ export async function action({ request }: LoaderFunctionArgs) {
         throw error;
       }
 
-      const savedSettings = await saveSettings(rawShop, settings);
+      const savedSettings = await saveSettings(rawStoreHash, settings);
 
       return json({ success: true, settings: savedSettings });
     }
 
-    // Fallback: Try to authenticate (this may hang in embedded context)
-    const { session } = await authenticate.admin(request);
-    const shop = session.shop;
+    // Fallback: authenticate from session cookie
+    const { storeHash } = await authenticateAdmin(request);
 
     const formData = await request.formData();
     const settings = Object.fromEntries(formData);
 
-    const savedSettings = await saveSettings(shop, settings as Record<string, unknown>);
+    const savedSettings = await saveSettings(storeHash, settings as Record<string, unknown>);
 
     return json({ success: true, settings: savedSettings });
   } catch (error) {

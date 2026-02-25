@@ -58,7 +58,7 @@ export async function runSimilarityComputation(shop: string) {
     // Get purchase events from last 90 days (using tracking events as data source)
     const purchaseEvents = await prisma.trackingEvent.findMany({
       where: {
-        shop,
+        storeHash: shop,
         event: 'purchase',
         createdAt: { gte: ninetyDaysAgo },
         orderId: { not: null }
@@ -132,7 +132,7 @@ export async function runSimilarityComputation(shop: string) {
     
     // Calculate similarity scores and create records
     const similarityRecords: Array<{
-      shop: string;
+      storeHash: string;
       productId1: string;
       productId2: string;
       categoryScore: number;
@@ -163,16 +163,16 @@ export async function runSimilarityComputation(shop: string) {
       if (similarityScore > 0.1 && pair.coPurchaseCount >= 2) {
         // Create bidirectional records
         // NOTE: Currently using co-purchase score only. Future enhancements:
-        // - categoryScore: Would require Shopify API calls to fetch product categories
-        // - priceScore: Would require Shopify API calls to fetch product prices
+        // - categoryScore: Would require BigCommerce API calls to fetch product categories
+        // - priceScore: Would require BigCommerce API calls to fetch product prices
         // - coViewScore: Would require frontend tracking of "viewed together" events
         // The current co-purchase based algorithm is production-ready and effective.
         similarityRecords.push({
-          shop,
+          storeHash: shop,
           productId1: pair.productId1,
           productId2: pair.productId2,
-          categoryScore: 0, // Future: Add category similarity via Shopify API
-          priceScore: 0, // Future: Add price similarity via Shopify API
+          categoryScore: 0, // Future: Add category similarity via BigCommerce API
+          priceScore: 0, // Future: Add price similarity via BigCommerce API
           coViewScore: 0, // Future: Add co-view tracking from frontend events
           coPurchaseScore: frequencyScore,
           overallScore: similarityScore,
@@ -180,11 +180,11 @@ export async function runSimilarityComputation(shop: string) {
         });
 
         similarityRecords.push({
-          shop,
+          storeHash: shop,
           productId1: pair.productId2,
           productId2: pair.productId1,
-          categoryScore: 0, // Future: Add category similarity via Shopify API
-          priceScore: 0, // Future: Add price similarity via Shopify API
+          categoryScore: 0, // Future: Add category similarity via BigCommerce API
+          priceScore: 0, // Future: Add price similarity via BigCommerce API
           coViewScore: 0, // Future: Add co-view tracking from frontend events
           coPurchaseScore: frequencyScore,
           overallScore: similarityScore,
@@ -197,7 +197,7 @@ export async function runSimilarityComputation(shop: string) {
     await prisma.$transaction(async (tx) => {
       // Delete old similarities
       await tx.mLProductSimilarity.deleteMany({
-        where: { shop }
+        where: { storeHash: shop }
       });
       
       // Insert new similarities (in batches to avoid query limits)
@@ -252,13 +252,13 @@ export async function runSimilarityComputationForAllShops() {
   try {
     // Get all unique shops
     const shops = await prisma.settings.findMany({
-      select: { shop: true }
+      select: { storeHash: true }
     });
-    
+
     logger.log(`📋 [SIMILARITY] Found ${shops.length} shops to process`);
-    
+
     const results = [];
-    for (const { shop } of shops) {
+    for (const { storeHash: shop } of shops) {
       const result = await runSimilarityComputation(shop);
       results.push(result);
     }

@@ -3,19 +3,21 @@ import { json } from "@remix-run/node";
 import { useLoaderData, useNavigate } from "@remix-run/react";
 import { useState, useCallback, useEffect } from "react";
 import {
-  Page,
-  Layout,
-  Card,
-  BlockStack,
-  TextField,
+  Box,
+  Flex,
+  Panel,
   Text,
+  H1,
+  H2,
+  Small,
+  Button,
+  Input,
+  Textarea,
   Select,
-  Toast,
-  Frame,
   Checkbox,
-  Banner,
-} from "@shopify/polaris";
-import { authenticate } from "../shopify.server";
+} from "@bigcommerce/big-design";
+import { ArrowBackIcon } from "@bigcommerce/big-design-icons";
+import { authenticateAdmin } from "../bigcommerce.server";
 import prisma from "../db.server";
 import { BUNDLE_STATUS, DISCOUNT_TYPES } from "~/constants/bundle";
 
@@ -23,11 +25,11 @@ const COMPONENT_VERSION = "v3.0.0-full-edit-support";
 
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   console.log('🔵 [BundleEdit] Loader called');
-  
+
   try {
     // Authenticate with proper error handling
-    const { session } = await authenticate.admin(request);
-    const { shop } = session;
+    const { session, storeHash } = await authenticateAdmin(request);
+    const shop = storeHash;
     const { id } = params;
 
     console.log('🔵 [BundleEdit] Shop:', shop, 'Bundle ID:', id);
@@ -38,7 +40,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     }
 
     const bundle = await prisma.bundle.findFirst({
-      where: { id, shop },
+      where: { id, storeHash: shop },
     });
 
     if (!bundle) {
@@ -90,7 +92,7 @@ export default function BundleEdit() {
     console.log('💾 [BundleEdit] Save clicked');
     console.log('📦 [BundleEdit] Bundle ID:', bundle.id);
     console.log('🏪 [BundleEdit] Shop:', shop);
-    
+
     setIsSaving(true);
 
     try {
@@ -109,8 +111,8 @@ export default function BundleEdit() {
         allowDeselect,
         hideIfNoML,
       };
-      
-      // Use XMLHttpRequest to avoid Remix interception in Shopify embedded apps
+
+      // Use XMLHttpRequest to avoid Remix interception in embedded apps
       const xhr = new XMLHttpRequest();
       const authParams = window.location.search;
       const apiEndpoint = '/admin/api/bundle-management' + authParams;
@@ -151,195 +153,229 @@ export default function BundleEdit() {
   }, [bundle.id, shop, name, description, status, discountType, discountValue, assignmentType, minProducts, minBundlePrice, allowDeselect, hideIfNoML, navigate]);
 
   return (
-    <Frame>
-      <Page
-        title={`Edit: ${bundle.name}`}
-        backAction={{
-          url: "/app/bundles" + window.location.search,
-        }}
-        primaryAction={{
-          content: "Save",
-          onAction: handleSave,
-          loading: isSaving,
-        }}
-      >
-        <Layout>
-          <Layout.Section>
-            <Card>
-              <BlockStack gap="400">
-                <Text as="h2" variant="headingMd">
-                  Basic Information
-                </Text>
-                <TextField
-                  label="Bundle Name"
-                  value={name}
-                  onChange={setName}
-                  autoComplete="off"
-                />
-                <TextField
-                  label="Description"
-                  value={description}
-                  onChange={setDescription}
-                  autoComplete="off"
-                  multiline={3}
-                />
-                <TextField
-                  label="Type"
-                  value={bundle.type}
-                  autoComplete="off"
-                  disabled
-                  helpText="Bundle type cannot be changed after creation"
-                />
-                <Select
-                  label="Status"
-                  options={[
-                    { label: "Active", value: BUNDLE_STATUS.ACTIVE },
-                    { label: "Paused", value: BUNDLE_STATUS.PAUSED },
-                  ]}
-                  value={status}
-                  onChange={setStatus}
-                />
-              </BlockStack>
-            </Card>
-          </Layout.Section>
+    <>
+      <Box padding="medium">
+        {/* Page header with back button and save */}
+        <Flex justifyContent="space-between" alignItems="center" marginBottom="large">
+          <Flex alignItems="center" flexGap="1rem">
+            <Button
+              variant="subtle"
+              onClick={() => navigate("/app/bundles" + window.location.search)}
+              iconOnly={<ArrowBackIcon />}
+            />
+            <H1>{`Edit: ${bundle.name}`}</H1>
+          </Flex>
+          <Button
+            variant="primary"
+            onClick={handleSave}
+            isLoading={isSaving}
+          >
+            Save
+          </Button>
+        </Flex>
 
-          <Layout.Section>
-            <Card>
-              <BlockStack gap="400">
-                <Text as="h2" variant="headingMd">
-                  Discount Configuration
-                </Text>
-                <Banner tone="warning">
-                  <Text as="p" variant="bodySm">
-                    <strong>Discount Setup Required:</strong> Create a matching discount in Shopify Admin. Cart Uplift doesn't auto-generate discounts—this value is for display only.
-                  </Text>
-                </Banner>
-                <Select
-                  label="Discount Type"
-                  options={[
-                    { label: "Percentage", value: DISCOUNT_TYPES.PERCENTAGE },
-                    { label: "Fixed Amount", value: DISCOUNT_TYPES.FIXED },
-                  ]}
-                  value={discountType}
-                  onChange={setDiscountType}
-                />
-                <TextField
-                  label="Discount Value"
-                  value={discountValue}
-                  onChange={setDiscountValue}
-                  autoComplete="off"
-                  type="number"
-                  suffix={discountType === DISCOUNT_TYPES.PERCENTAGE ? "%" : "USD"}
-                />
-              </BlockStack>
-            </Card>
-          </Layout.Section>
+        {/* Layout */}
+        <Flex flexDirection="column" flexGap="1.5rem">
+          {/* Basic Information */}
+          <Box>
+            <Panel header="Basic Information">
+              <Box padding="xSmall">
+                <Flex flexDirection="column" flexGap="1rem">
+                  <Input
+                    label="Bundle Name"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    autoComplete="off"
+                  />
+                  <Textarea
+                    label="Description"
+                    value={description}
+                    onChange={(e) => setDescription(e.target.value)}
+                    rows={3}
+                  />
+                  <Input
+                    label="Type"
+                    value={bundle.type}
+                    autoComplete="off"
+                    disabled
+                    description="Bundle type cannot be changed after creation"
+                  />
+                  <Select
+                    label="Status"
+                    options={[
+                      { content: "Active", value: BUNDLE_STATUS.ACTIVE },
+                      { content: "Paused", value: BUNDLE_STATUS.PAUSED },
+                    ]}
+                    value={status}
+                    onOptionChange={setStatus}
+                  />
+                </Flex>
+              </Box>
+            </Panel>
+          </Box>
 
-          <Layout.Section>
-            <Card>
-              <BlockStack gap="400">
-                <Text as="h2" variant="headingMd">
-                  Display & Assignment
-                </Text>
-                <Select
-                  label="Show Bundle On"
-                  options={[
-                    { label: "All product pages", value: "all" },
-                    { label: "Specific product pages", value: "specific" },
-                  ]}
-                  value={assignmentType}
-                  onChange={setAssignmentType}
-                  helpText={assignmentType === "specific" 
-                    ? "This bundle will show on the product pages selected during creation" 
-                    : "This bundle will appear on all product pages"}
-                />
-                {assignmentType === "all" && (
-                  <Banner tone="info" hideIcon>
-                    This bundle will be displayed on all product pages in your store.
-                  </Banner>
-                )}
-              </BlockStack>
-            </Card>
-          </Layout.Section>
+          {/* Discount Configuration */}
+          <Box>
+            <Panel header="Discount Configuration">
+              <Box padding="xSmall">
+                <Flex flexDirection="column" flexGap="1rem">
+                  {/* Warning banner */}
+                  <Box
+                    borderLeft="box"
+                    padding="small"
+                    backgroundColor="warning10"
+                  >
+                    <Text>
+                      <strong>Discount Setup Required:</strong> Create a matching discount in BigCommerce Control Panel. Cart Uplift doesn't auto-generate discounts -- this value is for display only.
+                    </Text>
+                  </Box>
+                  <Select
+                    label="Discount Type"
+                    options={[
+                      { content: "Percentage", value: DISCOUNT_TYPES.PERCENTAGE },
+                      { content: "Fixed Amount", value: DISCOUNT_TYPES.FIXED },
+                    ]}
+                    value={discountType}
+                    onOptionChange={setDiscountType}
+                  />
+                  <Input
+                    label="Discount Value"
+                    value={discountValue}
+                    onChange={(e) => setDiscountValue(e.target.value)}
+                    autoComplete="off"
+                    type="number"
+                    description={discountType === DISCOUNT_TYPES.PERCENTAGE ? "Value in %" : "Value in USD"}
+                  />
+                </Flex>
+              </Box>
+            </Panel>
+          </Box>
+
+          {/* Display & Assignment */}
+          <Box>
+            <Panel header="Display & Assignment">
+              <Box padding="xSmall">
+                <Flex flexDirection="column" flexGap="1rem">
+                  <Select
+                    label="Show Bundle On"
+                    options={[
+                      { content: "All product pages", value: "all" },
+                      { content: "Specific product pages", value: "specific" },
+                    ]}
+                    value={assignmentType}
+                    onOptionChange={setAssignmentType}
+                    description={assignmentType === "specific"
+                      ? "This bundle will show on the product pages selected during creation"
+                      : "This bundle will appear on all product pages"}
+                  />
+                  {assignmentType === "all" && (
+                    <Box
+                      borderLeft="box"
+                      padding="small"
+                      backgroundColor="info10"
+                    >
+                      <Text>
+                        This bundle will be displayed on all product pages in your store.
+                      </Text>
+                    </Box>
+                  )}
+                </Flex>
+              </Box>
+            </Panel>
+          </Box>
 
           {/* Hidden for now - keep for future use. Set SHOW_MINIMUM_FIELDS=true to enable */}
           {SHOW_MINIMUM_FIELDS && (
-            <Layout.Section>
-              <Card>
-                <BlockStack gap="400">
-                  <Text as="h2" variant="headingMd">
-                    Requirements & Constraints
-                  </Text>
-                  <TextField
-                    label="Minimum Products"
-                    value={minProducts}
-                    onChange={setMinProducts}
-                    autoComplete="off"
-                    type="number"
-                    helpText="Minimum number of products required in bundle (optional)"
-                  />
-                  <TextField
-                    label="Minimum Bundle Price"
-                    value={minBundlePrice}
-                    onChange={setMinBundlePrice}
-                    autoComplete="off"
-                    type="number"
-                    prefix="$"
-                    helpText="Minimum total price required for bundle (optional)"
-                  />
-                </BlockStack>
-              </Card>
-            </Layout.Section>
+            <Box>
+              <Panel header="Requirements & Constraints">
+                <Box padding="xSmall">
+                  <Flex flexDirection="column" flexGap="1rem">
+                    <Input
+                      label="Minimum Products"
+                      value={minProducts}
+                      onChange={(e) => setMinProducts(e.target.value)}
+                      autoComplete="off"
+                      type="number"
+                      description="Minimum number of products required in bundle (optional)"
+                    />
+                    <Input
+                      label="Minimum Bundle Price"
+                      value={minBundlePrice}
+                      onChange={(e) => setMinBundlePrice(e.target.value)}
+                      autoComplete="off"
+                      type="number"
+                      description="Minimum total price required for bundle (optional)"
+                    />
+                  </Flex>
+                </Box>
+              </Panel>
+            </Box>
           )}
 
-          {/* Hidden - these are now defaults: allowDeselect=true, hideIfNoML=false 
+          {/* Hidden - these are now defaults: allowDeselect=true, hideIfNoML=false
               Set SHOW_ADVANCED_OPTIONS=true to enable */}
           {SHOW_ADVANCED_OPTIONS && (
-            <Layout.Section>
-              <Card>
-                <BlockStack gap="400">
-                  <Text as="h2" variant="headingMd">
-                    Advanced Options
-                  </Text>
-                  <Checkbox
-                    label="Allow customers to deselect items"
-                    checked={allowDeselect}
-                    onChange={setAllowDeselect}
-                    helpText="Let customers remove items from the bundle before adding to cart"
-                  />
-                  <Checkbox
-                    label="Hide if no ML recommendations"
-                    checked={hideIfNoML}
-                    onChange={setHideIfNoML}
-                    helpText="Only show this bundle when AI has confidence in recommendations"
-                  />
-                </BlockStack>
-              </Card>
-            </Layout.Section>
+            <Box>
+              <Panel header="Advanced Options">
+                <Box padding="xSmall">
+                  <Flex flexDirection="column" flexGap="1rem">
+                    <Checkbox
+                      label="Allow customers to deselect items"
+                      checked={allowDeselect}
+                      onChange={(e) => setAllowDeselect(e.target.checked)}
+                      description="Let customers remove items from the bundle before adding to cart"
+                    />
+                    <Checkbox
+                      label="Hide if no ML recommendations"
+                      checked={hideIfNoML}
+                      onChange={(e) => setHideIfNoML(e.target.checked)}
+                      description="Only show this bundle when AI has confidence in recommendations"
+                    />
+                  </Flex>
+                </Box>
+              </Panel>
+            </Box>
           )}
-        </Layout>
-      </Page>
+        </Flex>
+      </Box>
+
+      {/* Toast notification */}
       {toast && (
-        <Toast
-          content={toast.content}
-          error={toast.error}
-          onDismiss={() => setToast(null)}
-        />
+        <Box
+          style={{
+            position: "fixed",
+            bottom: "1rem",
+            right: "1rem",
+            zIndex: 9999,
+            padding: "0.75rem 1rem",
+            backgroundColor: toast.error ? "#DB3643" : "#208831",
+            color: "#FFFFFF",
+            borderRadius: "4px",
+            boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
+            cursor: "pointer",
+          }}
+          onClick={() => setToast(null)}
+        >
+          <Text color="white">{toast.content}</Text>
+        </Box>
       )}
-    </Frame>
+    </>
   );
 }
 
 export function ErrorBoundary() {
   return (
-    <Page title="Error">
-      <Layout>
-        <Layout.Section>
-          <Card>
-            <Text as="p">Bundle not found or an error occurred.</Text>
-          </Card>
-        </Layout.Section>
-      </Layout>
-    </Page>
+    <Box padding="medium">
+      <H1>Error</H1>
+      <Flex flexDirection="column" flexGap="1.5rem" marginTop="large">
+        <Box>
+          <Panel>
+            <Box padding="xSmall">
+              <Text>Bundle not found or an error occurred.</Text>
+            </Box>
+          </Panel>
+        </Box>
+      </Flex>
+    </Box>
   );
 }

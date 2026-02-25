@@ -53,7 +53,7 @@ export async function getSettingsWithOnboarding(shop: string) {
   if (hasOnboarding) {
     // Full query with onboarding fields
     return await prisma.settings.findUnique({
-      where: { shop },
+      where: { storeHash: shop },
       select: {
         appEmbedActivated: true,
         appEmbedActivatedAt: true,
@@ -70,7 +70,7 @@ export async function getSettingsWithOnboarding(shop: string) {
   } else {
     // Fallback query without onboarding fields
     return await prisma.settings.findUnique({
-      where: { shop },
+      where: { storeHash: shop },
       select: {
         appEmbedActivated: true,
         appEmbedActivatedAt: true,
@@ -95,13 +95,13 @@ export async function updateOnboardingStep(
     // If fields don't exist, just update basic activation for theme-editor
     if (stepId === "theme-editor") {
       await prisma.settings.upsert({
-        where: { shop },
+        where: { storeHash: shop },
         update: {
           appEmbedActivated: true,
           appEmbedActivatedAt: new Date()
         },
         create: {
-          shop,
+          storeHash: shop,
           appEmbedActivated: true,
           appEmbedActivatedAt: new Date()
         },
@@ -127,7 +127,7 @@ export async function updateOnboardingStep(
   }
 
   // Check if all steps will be complete
-  const currentSettings = await prisma.settings.findUnique({ where: { shop } });
+  const currentSettings = await prisma.settings.findUnique({ where: { storeHash: shop } });
 
   if (currentSettings) {
     const allStepsComplete =
@@ -143,9 +143,9 @@ export async function updateOnboardingStep(
   }
 
   await prisma.settings.upsert({
-    where: { shop },
+    where: { storeHash: shop },
     update: updateData,
-    create: { shop, ...updateData },
+    create: { storeHash: shop, ...updateData },
   });
 
   return true;
@@ -163,9 +163,9 @@ export async function dismissOnboarding(shop: string): Promise<boolean> {
   }
 
   await prisma.settings.upsert({
-    where: { shop },
+    where: { storeHash: shop },
     update: { onboardingDismissed: true },
-    create: { shop, onboardingDismissed: true },
+    create: { storeHash: shop, onboardingDismissed: true },
   });
 
   return true;

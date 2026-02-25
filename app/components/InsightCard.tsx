@@ -4,13 +4,8 @@
  * Designed to be simple, informational, and action-oriented
  */
 
-import { BlockStack, InlineStack, Text, Button, Icon, Box } from "@shopify/polaris";
-import { 
-  AlertCircleIcon, 
-  InfoIcon, 
-  CheckCircleIcon,
-  LightbulbIcon 
-} from "@shopify/polaris-icons";
+import { Flex, Text, Button, Box } from "@bigcommerce/big-design";
+import { ErrorIcon, InfoIcon, CheckCircleIcon } from "@bigcommerce/big-design-icons";
 import styles from "./InsightCard.module.css";
 
 export type InsightType = "critical" | "warning" | "success" | "info";
@@ -32,25 +27,25 @@ export interface InsightCardProps {
 
 const typeConfig = {
   critical: {
-    icon: AlertCircleIcon,
+    Icon: ErrorIcon,
     iconColor: "#D72C0D",
     bg: "#FEF3F2",
     borderColor: "#F04438",
   },
   warning: {
-    icon: InfoIcon,
+    Icon: InfoIcon,
     iconColor: "#DC6803",
     bg: "#FFFAEB",
     borderColor: "#F79009",
   },
   success: {
-    icon: CheckCircleIcon,
+    Icon: CheckCircleIcon,
     iconColor: "#079455",
     bg: "#F0FDF4",
     borderColor: "#17B26A",
   },
   info: {
-    icon: LightbulbIcon,
+    Icon: InfoIcon,
     iconColor: "#0086C9",
     bg: "#F0F9FF",
     borderColor: "#0BA5EC",
@@ -65,7 +60,8 @@ export function InsightCard({
   onDismiss,
 }: InsightCardProps) {
   const config = typeConfig[type];
-  
+  const IconComponent = config.Icon;
+
   // Map type to CSS class
   const typeClass = {
     critical: styles.insightCardCritical,
@@ -76,52 +72,40 @@ export function InsightCard({
 
   return (
     <div className={`${styles.insightCard} ${styles.insightCardInner} ${typeClass}`}>
-      <Box paddingBlock="300" paddingInline="300">
-        <BlockStack gap="300" inlineAlign="start">
+      <Box padding="medium">
+        <Flex flexDirection="column" flexGap="0.75rem" alignItems="flex-start">
           <div className={styles.insightCardHeader}>
-            <Icon source={config.icon} tone={type === "critical" ? "critical" : undefined} />
-            <Text as="p" variant="bodySm" fontWeight="semibold">
+            <IconComponent color={config.iconColor} />
+            <Text bold>
               {title}
             </Text>
           </div>
-          
-          <Text as="p" variant="bodySm" tone="subdued">
+
+          <Text color="secondary">
             {message}
           </Text>
 
           {(action || onDismiss) && (
-            <InlineStack gap="200" align="start">
+            <Flex flexDirection="row" flexGap="0.5rem" alignItems="flex-start">
               {action && (
-                action.url ? (
-                  <Button
-                    size="micro"
-                    url={action.url}
-                    variant={type === "critical" ? "primary" : undefined}
-                  >
-                    {action.label}
-                  </Button>
-                ) : (
-                  <Button
-                    size="micro"
-                    onClick={action.onClick}
-                    variant={type === "critical" ? "primary" : undefined}
-                  >
-                    {action.label}
-                  </Button>
-                )
+                <Button
+                  variant={type === "critical" ? "primary" : "secondary"}
+                  onClick={action.onClick}
+                >
+                  {action.label}
+                </Button>
               )}
               {onDismiss && (
                 <Button
-                  size="micro"
-                  variant="plain"
+                  variant="subtle"
                   onClick={onDismiss}
                 >
                   Dismiss
                 </Button>
               )}
-            </InlineStack>
+            </Flex>
           )}
-        </BlockStack>
+        </Flex>
       </Box>
     </div>
   );

@@ -64,7 +64,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       if (db.trackingEvent) {
         await db.trackingEvent.create({
           data: {
-            shop,
+            storeHash: shop,
             event: 'ml_recommendation_served',
             productId: anchorProducts[0] || '',
             sessionId: sessionId || null,

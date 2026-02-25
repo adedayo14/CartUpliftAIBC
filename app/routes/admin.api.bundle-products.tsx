@@ -1,6 +1,6 @@
 import type { LoaderFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
-import { authenticate, unauthenticated } from "../shopify.server";
+import { authenticateAdmin, bigcommerceApi } from "../bigcommerce.server";
 import { rateLimitRequest } from "../utils/rateLimiter.server";
 
 /**
@@ -78,127 +78,44 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     let adminClient: AdminClient;
     let shopDomain: string | undefined;
 
-    if (shopParam) {
-      console.log('🔥 Using unauthenticated admin client for shop param:', shopParam);
-      const { admin } = await unauthenticated.admin(shopParam);
-      adminClient = admin;
-      shopDomain = shopParam;
-    } else {
-      const { admin, session } = await authenticate.admin(request);
-      const shop = session.shop;
+    const { session, storeHash } = await authenticateAdmin(request);
 
-// SECURITY: Rate limiting - 50 requests per minute (100-product query)
-const rateLimitResult = await rateLimitRequest(request, shop, {
-  maxRequests: 50,
-  windowMs: 60 * 1000,
-  burstMax: 25,
-  burstWindowMs: 10 * 1000,
-});
+    // SECURITY: Rate limiting - 50 requests per minute
+    const rateLimitResult = await rateLimitRequest(request, storeHash, {
+      maxRequests: 50,
+      windowMs: 60 * 1000,
+      burstMax: 25,
+      burstWindowMs: 10 * 1000,
+    });
 
-if (!rateLimitResult.allowed) {
-  return json(
-    { error: "Rate limit exceeded", retryAfter: rateLimitResult.retryAfter },
-    { status: 429, headers: { "Retry-After": String(rateLimitResult.retryAfter || 60) } }
-  );
-}
-adminClient = admin;
-      shopDomain = session.shop;
-      console.log('🔥 Authenticated admin session for shop:', shopDomain);
+    if (!rateLimitResult.allowed) {
+      return json(
+        { error: "Rate limit exceeded", retryAfter: rateLimitResult.retryAfter },
+        { status: 429, headers: { "Retry-After": String(rateLimitResult.retryAfter || 60) } }
+      );
     }
 
-    const graphqlQuery = `
-      #graphql
-      query getProducts($query: String!) {
-        products(first: 100, query: $query) {
-          edges {
-            node {
-              id
-              title
-              handle
-              status
-              totalInventory
-              variants(first: 10) {
-                edges {
-                  node {
-                    id
-                    title
-                    price
-                    inventoryQuantity
-                  }
-                }
-              }
-              featuredImage {
-                url
-                altText
-              }
-            }
-          }
-        }
-      }
-    `;
+    // Fetch products from BigCommerce catalog API
+    const apiPath = query
+      ? `/catalog/products?keyword=${encodeURIComponent(query)}&include=variants,images&is_visible=true&limit=50`
+      : `/catalog/products?include=variants,images&is_visible=true&limit=50`;
+    const productsResponse = await bigcommerceApi(storeHash, apiPath);
+    const productsData = await productsResponse.json();
 
-    // Race the GraphQL call against a timeout to prevent hanging UI
-    const respPromise = (async () => {
-      const resp = await adminClient.graphql(graphqlQuery, {
-        variables: { query: query || "status:active" }
-      });
-      return resp;
-    })();
-
-    const timeoutMs = 12000; // 12s safety timeout
-    const raced = await Promise.race([
-      respPromise,
-      new Promise<TimeoutResponse>((resolve) => setTimeout(() => resolve({ __timeout: true }), timeoutMs))
-    ]);
-
-    if ('__timeout' in raced && raced.__timeout) {
-      console.error(`⏳ GraphQL products request timed out after ${timeoutMs}ms for shop ${shopDomain}`);
-      return json({ 
-        success: false, 
-        error: `Timed out loading products after ${Math.round(timeoutMs/1000)}s. Please Retry.`,
-        products: []
-      }, { status: 504, headers: { 'Cache-Control': 'no-store' } });
-    }
-
-    const response = raced as Response;
-    if (!response.ok) {
-      console.error('🔥 GraphQL request failed:', response.status);
-      return json({ 
-        success: false, 
-        error: 'Failed to fetch products from Shopify',
-        products: []
-      }, { status: 500, headers: { 'Cache-Control': 'no-store' } });
-    }
-
-    const responseJson = await response.json() as GraphQLProductsResponse;
-
-    if (responseJson.errors) {
-      console.error('🔥 GraphQL errors:', responseJson.errors);
-      return json({
-        success: false,
-        error: 'GraphQL query failed',
-        products: []
-      }, { status: 500, headers: { 'Cache-Control': 'no-store' } });
-    }
-
-    const productEdges = responseJson.data?.products?.edges || [];
-
-    console.log(`🔥 Successfully fetched ${productEdges.length} products for ${shopDomain}`);
-
-    const products: Product[] = productEdges.map((edge: { node: GraphQLProductNode }) => ({
-      id: edge.node.id,
-      title: edge.node.title,
-      handle: edge.node.handle,
-      status: edge.node.status,
-      totalInventory: edge.node.totalInventory,
-      variants: edge.node.variants.edges.map((v: { node: GraphQLVariantNode }) => ({
-        id: v.node.id,
-        title: v.node.title,
-        price: parseFloat(v.node.price),
-        inventoryQuantity: v.node.inventoryQuantity
+    const products: Product[] = (productsData.data || []).map((p: Record<string, unknown>) => ({
+      id: String(p.id),
+      title: (p.name as string) || 'Untitled Product',
+      handle: ((p.custom_url as { url?: string })?.url || `/${p.id}/`).replace(/^\/|\/$/g, ''),
+      status: (p.is_visible as boolean) ? 'ACTIVE' : 'DRAFT',
+      totalInventory: (p.inventory_level as number) || 0,
+      variants: ((p.variants as Array<Record<string, unknown>>) || []).map((v: Record<string, unknown>) => ({
+        id: String(v.id),
+        title: ((v.option_values as Array<{ label: string }>) || []).map((o: { label: string }) => o.label).join(' / ') || 'Default',
+        price: Number(v.price) || Number(p.price) || 0,
+        inventoryQuantity: (v.inventory_level as number) || 0,
       })),
-      price: edge.node.variants.edges[0]?.node?.price || "0.00",
-      image: edge.node.featuredImage?.url
+      price: String(p.price || '0.00'),
+      image: ((p.images as Array<{ url_standard?: string }>) || [])[0]?.url_standard || undefined,
     }));
 
     return json({

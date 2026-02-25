@@ -46,7 +46,7 @@ const auditCache = new Map<string, { data: SecurityAuditResponse; timestamp: num
 const CACHE_TTL = 60 * 1000; // 60 seconds
 
 export const loader = withAuth(async ({ auth }) => {
-  const shop = auth.session.shop;
+  const shop = auth.storeHash;
 
   // Check cache first
   const cached = auditCache.get(shop);

@@ -50,9 +50,9 @@ export function SessionStatus({ onSessionExpired }: SessionStatusProps) {
       }
     };
 
-    // Listen for App Bridge authentication messages
+    // Listen for BigCommerce authentication messages
     const handleMessage = (event: MessageEvent) => {
-      if (event.data && event.data.message === 'Shopify.API.reauthorizeApplication') {
+      if (event.data && event.data.message === 'BigCommerce.reauthorize') {
         checkAndRefreshSession();
       }
     };

@@ -128,10 +128,10 @@ export interface SettingsData {
 	themeEmbedLastSeen?: string; // ISO string
 }
 
-export async function getSettings(shop: string): Promise<SettingsData> {
+export async function getSettings(storeHash: string): Promise<SettingsData> {
 	try {
 		const settings = await db.settings.findUnique({
-			where: { shop },
+			where: { storeHash },
 		});
 
 		if (!settings) {
@@ -285,7 +285,7 @@ export async function getSettings(shop: string): Promise<SettingsData> {
 }
 
 export async function saveSettings(
-	shop: string,
+	storeHash: string,
 	settingsData: Partial<SettingsData>,
 ): Promise<SettingsData> {
 	try {
@@ -489,8 +489,8 @@ export async function saveSettings(
 					fallbackData[key] = filteredData[key] as SettingsData[typeof key];
 			}
 			settings = await db.settings.upsert({
-				where: { shop },
-				create: { shop, ...fallbackData },
+				where: { storeHash },
+				create: { storeHash, ...fallbackData },
 				update: fallbackData,
 			}) as ExtendedSettings;
 		};
@@ -501,8 +501,8 @@ export async function saveSettings(
 					logger.log(`[Settings] Retry attempt ${attempt}...`);
 				}
 				settings = await db.settings.upsert({
-					where: { shop },
-					create: { shop, ...dataForSave },
+					where: { storeHash },
+					create: { storeHash, ...dataForSave },
 					update: dataForSave,
 				}) as ExtendedSettings;
 				break;

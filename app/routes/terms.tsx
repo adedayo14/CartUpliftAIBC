@@ -6,7 +6,7 @@ export const meta: MetaFunction = () => ([
   {
     name: "description",
     content:
-      "Terms of Service for Cart Uplift - AI-powered product recommendations and smart bundles for Shopify stores.",
+      "Terms of Service for Cart Uplift - AI-powered product recommendations and smart bundles for BigCommerce stores.",
   },
 ]);
 
@@ -27,7 +27,7 @@ export default function TermsOfService() {
       <section>
         <p>
           These Terms of Service ("Terms") govern your access to and use of Cart Uplift
-          ("the App"), a Shopify application provided by Cart Uplift ("we", "us", "our").
+          ("the App"), a BigCommerce application provided by Cart Uplift ("we", "us", "our").
           By installing or using the App, you ("Merchant", "you", "your") agree to be
           bound by these Terms.
         </p>
@@ -35,7 +35,7 @@ export default function TermsOfService() {
 
       <h2>1. Acceptance of Terms</h2>
       <p>
-        By installing the App from the Shopify App Store and using our services, you agree
+        By installing the App from the BigCommerce App Marketplace and using our services, you agree
         to these Terms, our Privacy Policy, and any additional terms referenced herein.
         If you do not agree to these Terms, you may not use the App.
       </p>
@@ -43,7 +43,7 @@ export default function TermsOfService() {
       <h2>2. Description of Service</h2>
       <p>
         Cart Uplift provides AI-powered product recommendations, smart product bundles,
-        cart enhancement features, and analytics for Shopify merchants. The App includes:
+        cart enhancement features, and analytics for BigCommerce merchants. The App includes:
       </p>
       <ul>
         <li>AI-driven product recommendations based on purchase patterns</li>
@@ -58,7 +58,7 @@ export default function TermsOfService() {
 
       <h3>3.1 Eligibility</h3>
       <p>
-        You must be a Shopify merchant in good standing to use the App. You represent
+        You must be a BigCommerce merchant in good standing to use the App. You represent
         that you have the authority to bind your business to these Terms.
       </p>
 
@@ -79,9 +79,9 @@ export default function TermsOfService() {
 
       <h3>3.3 Billing</h3>
       <p>
-        Billing is managed through Shopify's billing system. By subscribing to a paid plan,
-        you authorize Shopify to charge your account the subscription fee on a recurring
-        monthly basis. Charges will appear on your Shopify invoice.
+        Billing is managed through BigCommerce's billing system. By subscribing to a paid plan,
+        you authorize BigCommerce to charge your account the subscription fee on a recurring
+        monthly basis. Charges will appear on your BigCommerce invoice.
       </p>
 
       <h3>3.4 Order Limits</h3>
@@ -102,21 +102,21 @@ export default function TermsOfService() {
       <h3>4.1 Compliance</h3>
       <p>
         You agree to use the App in compliance with all applicable laws, including but not
-        limited to privacy laws (GDPR, CCPA), consumer protection laws, and Shopify's
+        limited to privacy laws (GDPR, CCPA), consumer protection laws, and BigCommerce's
         Terms of Service and Acceptable Use Policy.
       </p>
 
       <h3>4.2 Data Accuracy</h3>
       <p>
         You are responsible for ensuring that product data, pricing, and inventory
-        information in your Shopify store is accurate. The App relies on this data to
+        information in your BigCommerce store is accurate. The App relies on this data to
         generate recommendations and bundles.
       </p>
 
       <h3>4.3 Theme Integration</h3>
       <p>
         You are responsible for enabling and configuring the App's theme extension in
-        your Shopify theme editor. We provide documentation and support but cannot
+        your BigCommerce theme editor. We provide documentation and support but cannot
         guarantee compatibility with all third-party themes.
       </p>
 
@@ -155,7 +155,7 @@ export default function TermsOfService() {
       <p>
         Subject to these Terms, we grant you a limited, non-exclusive, non-transferable,
         revocable license to access and use the App solely for your internal business
-        purposes in connection with your Shopify store.
+        purposes in connection with your BigCommerce store.
       </p>
 
       <h2>7. Data and Privacy</h2>
@@ -210,7 +210,7 @@ export default function TermsOfService() {
       <h3>10.2 Termination by You</h3>
       <p>
         You may terminate your use of the App at any time by uninstalling it from your
-        Shopify store. If you are on a paid plan, uninstalling will cancel your
+        BigCommerce store. If you are on a paid plan, uninstalling will cancel your
         subscription at the end of the current billing period. No refunds are provided
         for partial months.
       </p>

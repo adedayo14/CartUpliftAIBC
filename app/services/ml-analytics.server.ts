@@ -3,7 +3,7 @@
  * Provides data quality metrics and order statistics for ML personalization
  */
 
-import { unauthenticated } from "~/shopify.server";
+import { getOrders } from "~/services/bigcommerce-api.server";
 import prismaClient from "~/db.server";
 import { logger } from "~/utils/logger.server";
 
@@ -17,58 +17,16 @@ export interface DataQualityMetrics {
   recommendedMode: 'basic' | 'standard' | 'advanced';
 }
 
-interface ShopifyGraphQLResponse {
-  data?: {
-    orders?: {
-      edges?: Array<{
-        node: {
-          id: string;
-          createdAt?: string;
-        };
-      }>;
-      pageInfo?: {
-        hasNextPage: boolean;
-      };
-    };
-  };
-  errors?: unknown[];
-}
-
 /**
- * Get order count and data quality metrics for a shop
+ * Get order count and data quality metrics for a store
  */
-export async function getDataQualityMetrics(shop: string): Promise<DataQualityMetrics> {
+export async function getDataQualityMetrics(storeHash: string): Promise<DataQualityMetrics> {
   try {
-    // Query Shopify for order count
-    const { admin } = await unauthenticated.admin(shop);
-    
-    const response = await admin.graphql(`#graphql
-      query getOrderCount {
-        orders(first: 1) {
-          edges {
-            node {
-              id
-            }
-          }
-          pageInfo {
-            hasNextPage
-          }
-        }
-      }
-    `);
+    // Fetch recent orders from BigCommerce to estimate count
+    const orders = await getOrders(storeHash, { limit: 250 });
+    const orderCount = orders.length;
 
-    if (!response.ok) {
-      logger.warn('Failed to fetch order count from Shopify');
-      return getDefaultMetrics();
-    }
-
-    const data: ShopifyGraphQLResponse = await response.json();
-    
-    // Get total order count (approximate from first query)
-    // For exact count, we'd need to paginate, but this gives us a quick estimate
-    const hasOrders = data?.data?.orders?.edges?.length > 0;
-    
-    if (!hasOrders) {
+    if (orderCount === 0) {
       return {
         orderCount: 0,
         qualityLevel: 'new_store',
@@ -78,61 +36,37 @@ export async function getDataQualityMetrics(shop: string): Promise<DataQualityMe
       };
     }
 
-    // Fetch paginated orders to get accurate count (up to 250 for performance)
-    const orderCountResponse = await admin.graphql(`#graphql
-      query getOrderList {
-        orders(first: 250, sortKey: CREATED_AT, reverse: true) {
-          edges {
-            node {
-              id
-              createdAt
-            }
-          }
-          pageInfo {
-            hasNextPage
-          }
-        }
-      }
-    `);
-
-    const orderData: ShopifyGraphQLResponse = await orderCountResponse.json();
-    const orders = orderData?.data?.orders?.edges || [];
-    const hasMoreOrders = orderData?.data?.orders?.pageInfo?.hasNextPage || false;
-    
-    // Estimate total if we hit the limit
-    let orderCount = orders.length;
-    if (hasMoreOrders) {
-      orderCount = Math.max(250, Math.floor(orderCount * 1.5)); // Conservative estimate
-    }
+    // If we got 250 orders, there are likely more
+    const estimatedCount = orderCount >= 250 ? Math.floor(orderCount * 1.5) : orderCount;
 
     // Calculate quality metrics
     let qualityLevel: 'new_store' | 'growing' | 'good' | 'rich';
     let qualityScore: number;
     let recommendedMode: 'basic' | 'standard' | 'advanced';
 
-    if (orderCount < 10) {
+    if (estimatedCount < 10) {
       qualityLevel = 'new_store';
-      qualityScore = Math.min(orderCount * 5, 25); // 0-25
+      qualityScore = Math.min(estimatedCount * 5, 25); // 0-25
       recommendedMode = 'basic';
-    } else if (orderCount < 100) {
+    } else if (estimatedCount < 100) {
       qualityLevel = 'growing';
-      qualityScore = 25 + Math.min((orderCount - 10) * 0.5, 25); // 25-50
+      qualityScore = 25 + Math.min((estimatedCount - 10) * 0.5, 25); // 25-50
       recommendedMode = 'standard';
-    } else if (orderCount < 500) {
+    } else if (estimatedCount < 500) {
       qualityLevel = 'good';
-      qualityScore = 50 + Math.min((orderCount - 100) * 0.1, 25); // 50-75
+      qualityScore = 50 + Math.min((estimatedCount - 100) * 0.1, 25); // 50-75
       recommendedMode = 'advanced';
     } else {
       qualityLevel = 'rich';
-      qualityScore = 75 + Math.min((orderCount - 500) * 0.01, 25); // 75-100
+      qualityScore = 75 + Math.min((estimatedCount - 500) * 0.01, 25); // 75-100
       recommendedMode = 'advanced';
     }
 
     return {
-      orderCount,
+      orderCount: estimatedCount,
       qualityLevel,
       qualityScore: Math.min(qualityScore, 100),
-      hasEnoughData: orderCount >= 10,
+      hasEnoughData: estimatedCount >= 10,
       recommendedMode
     };
 
@@ -156,7 +90,7 @@ function getDefaultMetrics(): DataQualityMetrics {
  * Track ML recommendation event
  */
 export async function trackMLRecommendation(params: {
-  shop: string;
+  storeHash: string;
   productIds: string[];
   sessionId?: string;
   customerId?: string;
@@ -164,11 +98,11 @@ export async function trackMLRecommendation(params: {
   metadata?: Record<string, unknown>;
 }) {
   try {
-    const { shop, productIds, sessionId, customerId, source, metadata } = params;
+    const { storeHash, productIds, sessionId, customerId, source, metadata } = params;
 
     // Store multiple tracking events (one per product)
     const events = productIds.map((productId, index) => ({
-      shop,
+      storeHash,
       event: 'ml_recommendation_served',
       productId,
       sessionId: sessionId || 'anonymous',
@@ -194,13 +128,13 @@ export async function trackMLRecommendation(params: {
  * Get ML profile for user (respecting privacy settings)
  */
 export async function getMLUserProfile(params: {
-  shop: string;
+  storeHash: string;
   sessionId: string;
   customerId?: string;
   privacyLevel: 'basic' | 'standard' | 'advanced';
 }) {
   try {
-    const { shop, sessionId, customerId, privacyLevel } = params;
+    const { storeHash, sessionId, customerId, privacyLevel } = params;
 
     // For basic privacy, return minimal profile
     if (privacyLevel === 'basic') {
@@ -215,8 +149,8 @@ export async function getMLUserProfile(params: {
     // Try to find existing profile
     let profile = await prisma.mLUserProfile.findUnique({
       where: {
-        shop_sessionId: {
-          shop,
+        storeHash_sessionId: {
+          storeHash,
           sessionId
         }
       }
@@ -226,7 +160,7 @@ export async function getMLUserProfile(params: {
     if (!profile && (privacyLevel === 'standard' || privacyLevel === 'advanced')) {
       profile = await prisma.mLUserProfile.create({
         data: {
-          shop,
+          storeHash,
           sessionId,
           customerId: privacyLevel === 'advanced' ? customerId : null,
           privacyLevel,
@@ -246,7 +180,7 @@ export async function getMLUserProfile(params: {
  * Update ML user profile with new interaction
  */
 export async function updateMLUserProfile(params: {
-  shop: string;
+  storeHash: string;
   sessionId: string;
   interaction: {
     type: 'view' | 'cart' | 'purchase';
@@ -255,7 +189,7 @@ export async function updateMLUserProfile(params: {
   privacyLevel: 'basic' | 'standard' | 'advanced';
 }) {
   try {
-    const { shop, sessionId, interaction, privacyLevel } = params;
+    const { storeHash, sessionId, interaction, privacyLevel } = params;
 
     // Don't track for basic privacy
     if (privacyLevel === 'basic') {
@@ -264,8 +198,8 @@ export async function updateMLUserProfile(params: {
 
     const profile = await prisma.mLUserProfile.upsert({
       where: {
-        shop_sessionId: {
-          shop,
+        storeHash_sessionId: {
+          storeHash,
           sessionId
         }
       },
@@ -289,7 +223,7 @@ export async function updateMLUserProfile(params: {
         }),
       },
       create: {
-        shop,
+        storeHash,
         sessionId,
         privacyLevel,
         lastActivity: new Date(),

@@ -3,7 +3,7 @@ import type { ActionFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
 import db from "../db.server";
 import {
-  validateShopDomain,
+  validateStoreHash,
   validateProductId,
   sanitizeTextInput,
   validateCorsOrigin,
@@ -37,7 +37,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const bundleName = sanitizeTextInput(String(rawBundleName || ''), 200);
     const bundleType = sanitizeTextInput(String(rawBundleType || ''), 50);
     const event = sanitizeTextInput(String(rawEvent || ''), 50);
-    const shop = validateShopDomain(rawShop) ? rawShop : null;
+    const shop = validateStoreHash(rawShop) ? rawShop : null;
     const sessionId = validateSessionId(rawSessionId) || null;
 
     if (!bundleId || !event || !shop) {
@@ -85,7 +85,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     // Create tracking event with source='bundle'
     await db.trackingEvent.create({
       data: {
-        shop,
+        storeHash: shop,
         event,
         productId: bundleId, // Store bundle ID in productId field
         productTitle: bundleName,

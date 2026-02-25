@@ -2,22 +2,23 @@ import * as React from "react";
 import { json } from "@remix-run/node";
 import { useLoaderData } from "@remix-run/react";
 import {
-  Page,
-  Card,
-  TextField,
-  Select,
-  BlockStack,
-  Text,
-  Banner,
-  Checkbox,
-  Button,
-  InlineStack,
-  InlineGrid,
-  Badge,
-  Divider,
   Box,
-} from "@shopify/polaris";
-import { CheckIcon } from '@shopify/polaris-icons';
+  Flex,
+  Panel,
+  Text,
+  H1,
+  H2,
+  H3,
+  Small,
+  Button,
+  Badge,
+  Grid,
+  HR,
+  Input,
+  Select,
+  Checkbox,
+} from "@bigcommerce/big-design";
+import { CheckIcon } from "@bigcommerce/big-design-icons";
 import { withAuth } from "../utils/auth.server";
 import { getSettings } from "../models/settings.server";
 import { getDataQualityMetrics } from "../services/ml-analytics.server";
@@ -43,7 +44,7 @@ interface AppSettings {
 }
 
 export const loader = withAuth(async ({ auth }) => {
-  const shop = auth.session.shop;
+  const shop = auth.storeHash;
   const settings = await getSettings(shop);
 
   console.log('[Settings Loader] Cart Interaction fields from DB:', {
@@ -82,6 +83,18 @@ export const loader = withAuth(async ({ auth }) => {
   });
 });
 
+const mapBadgeVariant = (tone?: string): "success" | "warning" | "danger" | "primary" | "secondary" => {
+  switch (tone) {
+    case 'success': return 'success';
+    case 'warning':
+    case 'attention': return 'warning';
+    case 'critical': return 'danger';
+    case 'info':
+    case 'new': return 'primary';
+    default: return 'secondary';
+  }
+};
+
 export default function AppSettings() {
   const loaderData = useLoaderData<typeof loader>();
   const [formSettings, setFormSettings] = React.useState<AppSettings>(loaderData.settings || {});
@@ -107,30 +120,30 @@ export default function AppSettings() {
     try {
       const urlParams = new URLSearchParams(window.location.search);
       const sessionToken = urlParams.get('id_token') || '';
-      
+
       // Use shop from loader data instead of URL params
       const shop = loaderData.shop;
-      
+
       if (!shop) {
         setShowErrorBanner(true);
         setErrorMessage('Shop information missing. Please refresh the page.');
         setIsSaving(false);
         return;
       }
-      
+
       const payload = {
         shop,
         sessionToken,
         settings: formSettings
       };
-      
+
       console.log('[Settings Save] Payload:', payload);
       console.log('[Settings Save] Cart Interaction fields:', {
         enableRecommendationTitleCaps: formSettings.enableRecommendationTitleCaps,
         discountLinkText: formSettings.discountLinkText,
         notesLinkText: formSettings.notesLinkText
       });
-      
+
       const response = await fetch('/api/settings', {
         method: 'POST',
         headers: {
@@ -139,7 +152,7 @@ export default function AppSettings() {
         },
         body: JSON.stringify(payload),
       });
-      
+
       const data = await response.json();
       console.log('[Settings Save] API Response:', data);
       console.log('[Settings Save] Returned Cart Interaction:', {
@@ -170,343 +183,356 @@ export default function AppSettings() {
     }
   };
 
-  const badgeTone = dataQualityTone === 'info' ? 'info' :
-    dataQualityTone === 'success' ? 'success' :
-    dataQualityTone === 'warning' ? 'warning' :
-    dataQualityTone === 'critical' ? 'critical' : undefined;
+  const badgeVariant = mapBadgeVariant(dataQualityTone);
 
   return (
-    <Page
-      title="Settings"
-      fullWidth
-      primaryAction={
-        <Button
-          variant="primary"
-          tone={buttonSuccess ? "success" : undefined}
-          onClick={handleSaveSettings}
-          loading={isSaving}
-          icon={buttonSuccess ? CheckIcon : undefined}
-        >
-          {isSaving ? "Saving..." : buttonSuccess ? "Saved!" : "Save"}
-        </Button>
-      }
-    >
-      <Box paddingBlockEnd="800">
-        <BlockStack gap="500">
-          {/* Success/Error Banners */}
-          {showSuccessBanner && (
-            <Banner tone="success">Settings saved successfully!</Banner>
-          )}
-          {showErrorBanner && (
-            <Banner tone="critical">{errorMessage || 'Failed to save settings'}</Banner>
-          )}
+    <Box padding="medium">
+      <Flex flexDirection="column" flexGap="1.5rem">
+        {/* Page Header */}
+        <Flex justifyContent="space-between" alignItems="center">
+          <H1>Settings</H1>
+          <Button
+            variant={buttonSuccess ? "secondary" : "primary"}
+            onClick={handleSaveSettings}
+            isLoading={isSaving}
+            iconLeft={buttonSuccess ? <CheckIcon /> : undefined}
+          >
+            {isSaving ? "Saving..." : buttonSuccess ? "Saved!" : "Save"}
+          </Button>
+        </Flex>
+
+        {/* Success/Error Banners */}
+        {showSuccessBanner && (
+          <Box style={{ borderLeft: "4px solid #2e7d32", backgroundColor: "#e8f5e9", padding: "1rem", borderRadius: "6px" }}>
+            <Text>Settings saved successfully!</Text>
+          </Box>
+        )}
+        {showErrorBanner && (
+          <Box style={{ borderLeft: "4px solid #c62828", backgroundColor: "#ffebee", padding: "1rem", borderRadius: "6px" }}>
+            <Text>{errorMessage || 'Failed to save settings'}</Text>
+          </Box>
+        )}
 
         {/* Status Overview Cards */}
-        <InlineGrid columns={{ xs: 1, sm: 2, md: 2, lg: 4 }} gap="400">
-          <Card>
-            <BlockStack gap="200">
-              <Text as="p" variant="bodyMd" tone="subdued">Recommendations Status</Text>
-              <Badge tone={formSettings.enableRecommendations ? "success" : "info"}>
-                {formSettings.enableRecommendations ? "On" : "Off"}
-              </Badge>
-            </BlockStack>
-          </Card>
+        <Grid gridColumns="repeat(4, 1fr)" gridGap="1rem">
+          <Panel>
+            <Box padding="medium">
+              <Flex flexDirection="column" flexGap="0.5rem">
+                <Text color="secondary">Recommendations Status</Text>
+                <Badge
+                  variant={formSettings.enableRecommendations ? "success" : "primary"}
+                  label={formSettings.enableRecommendations ? "On" : "Off"}
+                />
+              </Flex>
+            </Box>
+          </Panel>
 
-          <Card>
-            <BlockStack gap="200">
-              <Text as="p" variant="bodyMd" tone="subdued">ML Recommendations</Text>
-              <Badge tone={formSettings.enableMLRecommendations ? "success" : "info"}>
-                {formSettings.enableMLRecommendations ? "On" : "Off"}
-              </Badge>
-            </BlockStack>
-          </Card>
+          <Panel>
+            <Box padding="medium">
+              <Flex flexDirection="column" flexGap="0.5rem">
+                <Text color="secondary">ML Recommendations</Text>
+                <Badge
+                  variant={formSettings.enableMLRecommendations ? "success" : "primary"}
+                  label={formSettings.enableMLRecommendations ? "On" : "Off"}
+                />
+              </Flex>
+            </Box>
+          </Panel>
 
-          <Card>
-            <BlockStack gap="200">
-              <Text as="p" variant="bodyMd" tone="subdued">Data Quality</Text>
-              <InlineStack gap="200" align="start" blockAlign="center">
-                <Text as="h2" variant="headingLg">{dataQualityLabel}</Text>
-                <Badge tone={badgeTone}>{ordersBadgeText}</Badge>
-              </InlineStack>
-            </BlockStack>
-          </Card>
+          <Panel>
+            <Box padding="medium">
+              <Flex flexDirection="column" flexGap="0.5rem">
+                <Text color="secondary">Data Quality</Text>
+                <Flex flexDirection="row" flexGap="0.5rem" alignItems="center">
+                  <H2>{dataQualityLabel}</H2>
+                  <Badge variant={badgeVariant} label={ordersBadgeText} />
+                </Flex>
+              </Flex>
+            </Box>
+          </Panel>
 
-          <Card>
-            <BlockStack gap="200">
-              <Text as="p" variant="bodyMd" tone="subdued">AI Learning Progress</Text>
-              <InlineStack gap="200" align="start" blockAlign="center">
-                <Text as="h2" variant="headingLg">{loaderData.dataMetrics.qualityScore}%</Text>
-                <Badge tone={
-                  loaderData.dataMetrics.qualityScore >= 75 ? "success" : 
-                  loaderData.dataMetrics.qualityScore >= 50 ? "attention" : "info"
-                }>
-                  {loaderData.dataMetrics.recommendedMode === 'advanced' ? 'Advanced' :
-                   loaderData.dataMetrics.recommendedMode === 'standard' ? 'Standard' : 'Basic'}
-                </Badge>
-              </InlineStack>
-              <Text as="p" variant="bodySm" tone="subdued">
-                {loaderData.dataMetrics.orderCount < 10 && "AI is learning from your store"}
-                {loaderData.dataMetrics.orderCount >= 10 && loaderData.dataMetrics.orderCount < 100 && "AI is actively learning patterns"}
-                {loaderData.dataMetrics.orderCount >= 100 && loaderData.dataMetrics.orderCount < 500 && "AI has strong learning data"}
-                {loaderData.dataMetrics.orderCount >= 500 && "AI fully optimized"}
-              </Text>
-            </BlockStack>
-          </Card>
-        </InlineGrid>
+          <Panel>
+            <Box padding="medium">
+              <Flex flexDirection="column" flexGap="0.5rem">
+                <Text color="secondary">AI Learning Progress</Text>
+                <Flex flexDirection="row" flexGap="0.5rem" alignItems="center">
+                  <H2>{loaderData.dataMetrics.qualityScore}%</H2>
+                  <Badge
+                    variant={
+                      loaderData.dataMetrics.qualityScore >= 75 ? "success" :
+                      loaderData.dataMetrics.qualityScore >= 50 ? "warning" : "primary"
+                    }
+                    label={
+                      loaderData.dataMetrics.recommendedMode === 'advanced' ? 'Advanced' :
+                      loaderData.dataMetrics.recommendedMode === 'standard' ? 'Standard' : 'Basic'
+                    }
+                  />
+                </Flex>
+                <Small color="secondary">
+                  {loaderData.dataMetrics.orderCount < 10 && "AI is learning from your store"}
+                  {loaderData.dataMetrics.orderCount >= 10 && loaderData.dataMetrics.orderCount < 100 && "AI is actively learning patterns"}
+                  {loaderData.dataMetrics.orderCount >= 100 && loaderData.dataMetrics.orderCount < 500 && "AI has strong learning data"}
+                  {loaderData.dataMetrics.orderCount >= 500 && "AI fully optimized"}
+                </Small>
+              </Flex>
+            </Box>
+          </Panel>
+        </Grid>
 
         {/* Main Settings */}
-        <InlineGrid columns={{ xs: 1, sm: 1, md: 2, lg: 3 }} gap="400">
+        <Grid gridColumns="repeat(3, 1fr)" gridGap="1rem">
           {/* Left Column */}
-          <BlockStack gap="400">
+          <Flex flexDirection="column" flexGap="1rem">
             {/* Recommendations */}
-            <Card>
-              <BlockStack gap="400">
-                <Text variant="headingMd" as="h2">Product Recommendations</Text>
-                
-                <Checkbox
-                  label="Enable product recommendations"
-                  checked={formSettings.enableRecommendations}
-                  onChange={(value) => updateSetting("enableRecommendations", value)}
-                  helpText="Show personalized product suggestions in cart"
-                />
+            <Panel>
+              <Box padding="medium">
+                <Flex flexDirection="column" flexGap="1rem">
+                  <H2>Product Recommendations</H2>
 
-                {formSettings.enableRecommendations && (
-                  <>
-                    <Divider />
-                    
-                    <Checkbox
-                      label="Use AI-powered recommendations"
-                      checked={formSettings.enableMLRecommendations}
-                      onChange={(value) => {
-                        updateSetting("enableMLRecommendations", value);
-                        if (value && !formSettings.enableRecommendations) {
-                          updateSetting("enableRecommendations", true);
-                        }
-                      }}
-                      helpText="Personalize suggestions with machine learning"
-                    />
+                  <Checkbox
+                    label="Enable product recommendations"
+                    checked={formSettings.enableRecommendations || false}
+                    onChange={(e) => updateSetting("enableRecommendations", e.target.checked)}
+                    description="Show personalized product suggestions in cart"
+                  />
 
-                    {formSettings.enableMLRecommendations && (
-                      <>
-                        <Divider />
-                        
-                        <Select
-                          label="Recommendation strategy"
-                          options={[
-                            { label: 'Balanced - Mix of AI and popular products', value: 'balanced' },
-                            { label: 'AI-First - Prioritize personalized suggestions', value: 'ai_first' },
-                            { label: 'Popular - Show bestsellers and trending items', value: 'popular' }
-                          ]}
-                          value={formSettings.mlPersonalizationMode || "balanced"}
-                          onChange={(value) => updateSetting("mlPersonalizationMode", value)}
-                        />
-                      </>
-                    )}
+                  {formSettings.enableRecommendations && (
+                    <>
+                      <HR />
 
-                    <Divider />
-                    
-                    <Checkbox
-                      label="Threshold-based suggestions"
-                      checked={formSettings.enableThresholdBasedSuggestions}
-                      onChange={(value) => updateSetting("enableThresholdBasedSuggestions", value)}
-                      helpText="Help customers reach free shipping and gift thresholds"
-                    />
-
-                    {formSettings.enableThresholdBasedSuggestions && (
-                      <>
-                        <Select
-                          label="Threshold strategy"
-                          options={[
-                            { label: 'Smart AI - Best relevance + price match', value: 'smart' },
-                            { label: 'Price Only - Cheapest path to threshold', value: 'price' },
-                            { label: 'Popular + Price - Trending items at right price', value: 'popular_price' }
-                          ]}
-                          value={formSettings.thresholdSuggestionMode || 'smart'}
-                          onChange={(value) => updateSetting("thresholdSuggestionMode", value)}
-                        />
-
-                        <Divider />
-                      </>
-                    )}
-
-                    <Checkbox
-                      label="Hide recommendations when thresholds met"
-                      checked={formSettings.hideRecommendationsAfterThreshold}
-                      onChange={(value) => updateSetting("hideRecommendationsAfterThreshold", value)}
-                      helpText="Collapse section after all rewards unlocked"
-                    />
-                  </>
-                )}
-              </BlockStack>
-            </Card>
-
-          </BlockStack>
-
-          {/* Middle Column - Privacy & Data */}
-          <BlockStack gap="400">
-            {formSettings.enableMLRecommendations && (
-              <Card>
-                <BlockStack gap="400">
-                  <BlockStack gap="200">
-                    <Text variant="headingMd" as="h2">Privacy & Data</Text>
-                    <Text as="p" variant="bodyMd" tone="subdued">
-                      Control what data the AI uses to learn
-                    </Text>
-                  </BlockStack>
-
-                  <Card background="bg-surface-secondary">
-                    <BlockStack gap="300">
-                      <InlineStack gap="200">
-                        <Badge tone={badgeTone}>{ordersBadgeText}</Badge>
-                        <Badge tone={badgeTone}>{`Quality: ${dataQualityLabel}`}</Badge>
-                      </InlineStack>
-
-                      <Select
-                        label="Data usage level"
-                        options={[
-                          { label: 'Basic - Product data only (no personal tracking)', value: 'basic' },
-                          { label: 'Standard - Session tracking (no customer ID)', value: 'standard' },
-                          { label: 'Advanced - Full personalization (customer profiles)', value: 'advanced' }
-                        ]}
-                        value={formSettings.mlPrivacyLevel || "basic"}
-                        onChange={(value) => {
-                          updateSetting("mlPrivacyLevel", value);
-                          if (value === 'standard' || value === 'advanced') {
-                            updateSetting("enableBehaviorTracking", true);
-                          } else {
-                            updateSetting("enableBehaviorTracking", false);
+                      <Checkbox
+                        label="Use AI-powered recommendations"
+                        checked={formSettings.enableMLRecommendations || false}
+                        onChange={(e) => {
+                          const value = e.target.checked;
+                          updateSetting("enableMLRecommendations", value);
+                          if (value && !formSettings.enableRecommendations) {
+                            updateSetting("enableRecommendations", true);
                           }
                         }}
+                        description="Personalize suggestions with machine learning"
                       />
 
-                      {formSettings.mlPrivacyLevel === 'basic' && (
-                        <Box paddingBlockStart="200">
-                          <Text as="p" variant="bodyMd" tone="subdued">
-                            <strong>Basic mode:</strong> Uses product order data and categories only. No session or customer tracking. Completely anonymous.
-                          </Text>
-                        </Box>
-                      )}
-                      {formSettings.mlPrivacyLevel === 'standard' && (
-                        <Box paddingBlockStart="200">
-                          <Text as="p" variant="bodyMd" tone="subdued">
-                            <strong>Standard mode:</strong> Tracks anonymous shopping sessions but no customer identity. Shows what products go well together.
-                          </Text>
-                        </Box>
-                      )}
-                      {formSettings.mlPrivacyLevel === 'advanced' && (
-                        <Box paddingBlockStart="200">
-                          <BlockStack gap="300">
-                            <Text as="p" variant="bodyMd" tone="subdued">
-                              <strong>Advanced mode:</strong> Full behavioral tracking with customer ID. Learns individual preferences for returning customers.
-                            </Text>
-                            <Banner tone="warning">
-                              <Text as="p" variant="bodyMd">
-                                Update your privacy policy to inform customers about shopping pattern analysis.
-                              </Text>
-                            </Banner>
-                          </BlockStack>
-                        </Box>
-                      )}
-                    </BlockStack>
-                  </Card>
+                      {formSettings.enableMLRecommendations && (
+                        <>
+                          <HR />
 
-                  <TextField
-                    label="Data retention period"
-                    type="number"
-                    value={formSettings.mlDataRetentionDays || "90"}
-                    onChange={(value) => updateSetting("mlDataRetentionDays", value)}
-                    suffix="days"
-                    helpText="How long to keep learning data"
-                    autoComplete="off"
-                  />
-                </BlockStack>
-              </Card>
+                          <Select
+                            label="Recommendation strategy"
+                            options={[
+                              { content: 'Balanced - Mix of AI and popular products', value: 'balanced' },
+                              { content: 'AI-First - Prioritize personalized suggestions', value: 'ai_first' },
+                              { content: 'Popular - Show bestsellers and trending items', value: 'popular' }
+                            ]}
+                            value={formSettings.mlPersonalizationMode || "balanced"}
+                            onOptionChange={(value) => updateSetting("mlPersonalizationMode", value)}
+                          />
+                        </>
+                      )}
+
+                      <HR />
+
+                      <Checkbox
+                        label="Threshold-based suggestions"
+                        checked={formSettings.enableThresholdBasedSuggestions || false}
+                        onChange={(e) => updateSetting("enableThresholdBasedSuggestions", e.target.checked)}
+                        description="Help customers reach free shipping and gift thresholds"
+                      />
+
+                      {formSettings.enableThresholdBasedSuggestions && (
+                        <>
+                          <Select
+                            label="Threshold strategy"
+                            options={[
+                              { content: 'Smart AI - Best relevance + price match', value: 'smart' },
+                              { content: 'Price Only - Cheapest path to threshold', value: 'price' },
+                              { content: 'Popular + Price - Trending items at right price', value: 'popular_price' }
+                            ]}
+                            value={formSettings.thresholdSuggestionMode || 'smart'}
+                            onOptionChange={(value) => updateSetting("thresholdSuggestionMode", value)}
+                          />
+
+                          <HR />
+                        </>
+                      )}
+
+                      <Checkbox
+                        label="Hide recommendations when thresholds met"
+                        checked={formSettings.hideRecommendationsAfterThreshold || false}
+                        onChange={(e) => updateSetting("hideRecommendationsAfterThreshold", e.target.checked)}
+                        description="Collapse section after all rewards unlocked"
+                      />
+                    </>
+                  )}
+                </Flex>
+              </Box>
+            </Panel>
+
+          </Flex>
+
+          {/* Middle Column - Privacy & Data */}
+          <Flex flexDirection="column" flexGap="1rem">
+            {formSettings.enableMLRecommendations && (
+              <Panel>
+                <Box padding="medium">
+                  <Flex flexDirection="column" flexGap="1rem">
+                    <Flex flexDirection="column" flexGap="0.5rem">
+                      <H2>Privacy &amp; Data</H2>
+                      <Text color="secondary">
+                        Control what data the AI uses to learn
+                      </Text>
+                    </Flex>
+
+                    <Panel>
+                      <Box padding="medium" backgroundColor="secondary">
+                        <Flex flexDirection="column" flexGap="0.75rem">
+                          <Flex flexDirection="row" flexGap="0.5rem">
+                            <Badge variant={badgeVariant} label={ordersBadgeText} />
+                            <Badge variant={badgeVariant} label={`Quality: ${dataQualityLabel}`} />
+                          </Flex>
+
+                          <Select
+                            label="Data usage level"
+                            options={[
+                              { content: 'Basic - Product data only (no personal tracking)', value: 'basic' },
+                              { content: 'Standard - Session tracking (no customer ID)', value: 'standard' },
+                              { content: 'Advanced - Full personalization (customer profiles)', value: 'advanced' }
+                            ]}
+                            value={formSettings.mlPrivacyLevel || "basic"}
+                            onOptionChange={(value) => {
+                              updateSetting("mlPrivacyLevel", value);
+                              if (value === 'standard' || value === 'advanced') {
+                                updateSetting("enableBehaviorTracking", true);
+                              } else {
+                                updateSetting("enableBehaviorTracking", false);
+                              }
+                            }}
+                          />
+
+                          {formSettings.mlPrivacyLevel === 'basic' && (
+                            <Box marginTop="small">
+                              <Text color="secondary">
+                                <strong>Basic mode:</strong> Uses product order data and categories only. No session or customer tracking. Completely anonymous.
+                              </Text>
+                            </Box>
+                          )}
+                          {formSettings.mlPrivacyLevel === 'standard' && (
+                            <Box marginTop="small">
+                              <Text color="secondary">
+                                <strong>Standard mode:</strong> Tracks anonymous shopping sessions but no customer identity. Shows what products go well together.
+                              </Text>
+                            </Box>
+                          )}
+                          {formSettings.mlPrivacyLevel === 'advanced' && (
+                            <Box marginTop="small">
+                              <Flex flexDirection="column" flexGap="0.75rem">
+                                <Text color="secondary">
+                                  <strong>Advanced mode:</strong> Full behavioral tracking with customer ID. Learns individual preferences for returning customers.
+                                </Text>
+                                <Box style={{ borderLeft: "4px solid #ed6c02", backgroundColor: "#fff3e0", padding: "1rem", borderRadius: "6px" }}>
+                                  <Text>
+                                    Update your privacy policy to inform customers about shopping pattern analysis.
+                                  </Text>
+                                </Box>
+                              </Flex>
+                            </Box>
+                          )}
+                        </Flex>
+                      </Box>
+                    </Panel>
+
+                    <Input
+                      label="Data retention period"
+                      type="number"
+                      value={formSettings.mlDataRetentionDays || "90"}
+                      onChange={(e) => updateSetting("mlDataRetentionDays", e.target.value)}
+                      description="How long to keep learning data"
+                    />
+                  </Flex>
+                </Box>
+              </Panel>
             )}
-          </BlockStack>
+          </Flex>
 
           {/* Right Column - Text Customization */}
-          <BlockStack gap="400">
-            <Card>
-              <BlockStack gap="400">
-                <Text variant="headingMd" as="h2">Text Customization</Text>
-                
-                <BlockStack gap="400">
-                  <Text variant="headingSm" as="h3">Cart Links</Text>
+          <Flex flexDirection="column" flexGap="1rem">
+            <Panel>
+              <Box padding="medium">
+                <Flex flexDirection="column" flexGap="1rem">
+                  <H2>Text Customization</H2>
 
-                  <TextField
-                    label="Promo code link"
-                    value={formSettings.discountLinkText || "+ Got a promotion code?"}
-                    onChange={(value) => updateSetting("discountLinkText", value)}
-                    helpText="Text for discount code link"
-                    placeholder="+ Got a promotion code?"
-                    autoComplete="off"
-                  />
+                  <Flex flexDirection="column" flexGap="1rem">
+                    <H3>Cart Links</H3>
 
-                  <TextField
-                    label="Order note link"
-                    value={formSettings.notesLinkText || "+ Add order notes"}
-                    onChange={(value) => updateSetting("notesLinkText", value)}
-                    helpText="Text for order notes link"
-                    placeholder="+ Add order notes"
-                    autoComplete="off"
-                  />
+                    <Input
+                      label="Promo code link"
+                      value={formSettings.discountLinkText || "+ Got a promotion code?"}
+                      onChange={(e) => updateSetting("discountLinkText", e.target.value)}
+                      description="Text for discount code link"
+                      placeholder="+ Got a promotion code?"
+                    />
 
-                  <Divider />
+                    <Input
+                      label="Order note link"
+                      value={formSettings.notesLinkText || "+ Add order notes"}
+                      onChange={(e) => updateSetting("notesLinkText", e.target.value)}
+                      description="Text for order notes link"
+                      placeholder="+ Add order notes"
+                    />
 
-                  <Text variant="headingSm" as="h3">Gift Settings</Text>
-                  
-                  <TextField
-                    label="Free gift price label"
-                    value={formSettings.giftPriceText || "FREE"}
-                    onChange={(value) => updateSetting("giftPriceText", value)}
-                    helpText="Text shown instead of price for free gifts"
-                    placeholder="FREE"
-                    autoComplete="off"
-                  />
+                    <HR />
 
-                  <Divider />
+                    <H3>Gift Settings</H3>
 
-                  <Text variant="headingSm" as="h3">Button Labels</Text>
+                    <Input
+                      label="Free gift price label"
+                      value={formSettings.giftPriceText || "FREE"}
+                      onChange={(e) => updateSetting("giftPriceText", e.target.value)}
+                      description="Text shown instead of price for free gifts"
+                      placeholder="FREE"
+                    />
 
-                  <TextField
-                    label="Checkout button"
-                    value={formSettings.checkoutButtonText || "CHECKOUT"}
-                    onChange={(value) => updateSetting("checkoutButtonText", value)}
-                    autoComplete="off"
-                  />
+                    <HR />
 
-                  <TextField
-                    label="Add button"
-                    value={formSettings.addButtonText || "Add"}
-                    onChange={(value) => updateSetting("addButtonText", value)}
-                    autoComplete="off"
-                  />
+                    <H3>Button Labels</H3>
 
-                  <TextField
-                    label="Apply button"
-                    value={formSettings.applyButtonText || "Apply"}
-                    onChange={(value) => updateSetting("applyButtonText", value)}
-                    autoComplete="off"
-                  />
-                </BlockStack>
-              </BlockStack>
-            </Card>
-          </BlockStack>
-        </InlineGrid>
-      </BlockStack>
-      </Box>
-    </Page>
+                    <Input
+                      label="Checkout button"
+                      value={formSettings.checkoutButtonText || "CHECKOUT"}
+                      onChange={(e) => updateSetting("checkoutButtonText", e.target.value)}
+                    />
+
+                    <Input
+                      label="Add button"
+                      value={formSettings.addButtonText || "Add"}
+                      onChange={(e) => updateSetting("addButtonText", e.target.value)}
+                    />
+
+                    <Input
+                      label="Apply button"
+                      value={formSettings.applyButtonText || "Apply"}
+                      onChange={(e) => updateSetting("applyButtonText", e.target.value)}
+                    />
+                  </Flex>
+                </Flex>
+              </Box>
+            </Panel>
+          </Flex>
+        </Grid>
+      </Flex>
+    </Box>
   );
 }
 
 export function ErrorBoundary() {
   return (
-    <Page title="Settings Error">
-      <Card>
-        <BlockStack gap="400">
-          <Text as="p">An error occurred while loading settings. Please refresh the page or contact support if the issue persists.</Text>
-        </BlockStack>
-      </Card>
-    </Page>
+    <Box padding="medium">
+      <H1>Settings Error</H1>
+      <Panel>
+        <Box padding="medium">
+          <Text>An error occurred while loading settings. Please refresh the page or contact support if the issue persists.</Text>
+        </Box>
+      </Panel>
+    </Box>
   );
 }

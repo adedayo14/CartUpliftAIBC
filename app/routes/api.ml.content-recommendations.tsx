@@ -1,18 +1,14 @@
 import { json } from "@remix-run/node";
 import type { ActionFunctionArgs } from "@remix-run/node";
-import { unauthenticated } from "~/shopify.server";
+import { getProducts, type BCProduct } from "~/services/bigcommerce-api.server";
 import { rateLimitRequest } from "../utils/rateLimiter.server";
 import { validateCorsOrigin } from "../services/security.server";
 import prismaClient from "~/db.server";
 
 const prisma = prismaClient;
 
-// Shopify Admin API client type
-type ShopifyAdminClient = Awaited<ReturnType<typeof unauthenticated.admin>>['admin'];
-
-// Request/Response types
 interface ContentRecommendationRequest {
-  shop: string;
+  storeHash: string;
   product_ids?: string[];
   exclude_ids?: string[];
   customer_preferences?: CustomerPreferences;
@@ -31,53 +27,24 @@ interface Recommendation {
   strategy: 'content_category' | 'content_personalized';
 }
 
-interface ShopifyProductNode {
-  id: string;
-  title: string;
-  productType: string;
-  vendor: string;
-  tags?: string[];
-}
-
-interface ShopifyProductsQueryResponse {
-  data?: {
-    nodes?: Array<ShopifyProductNode | null>;
-  };
-}
-
-interface ShopifySimilarProductsResponse {
-  data?: {
-    products?: {
-      edges: Array<{
-        node: {
-          id: string;
-          title: string;
-          productType: string;
-          vendor: string;
-        };
-      }>;
-    };
-  };
-}
-
 export async function action({ request }: ActionFunctionArgs) {
   try {
     const data = await request.json() as ContentRecommendationRequest;
-    const { shop, product_ids, exclude_ids, customer_preferences, privacy_level } = data;
+    const { storeHash, product_ids, exclude_ids, customer_preferences, privacy_level } = data;
 
-    if (!shop) {
-      return json({ error: 'Shop parameter required' }, { status: 400 });
+    if (!storeHash) {
+      return json({ error: 'storeHash parameter required' }, { status: 400 });
     }
 
     // SECURITY: Validate CORS origin for storefront access
     const origin = request.headers.get("origin") || "";
-    const allowedOrigin = await validateCorsOrigin(origin, shop);
+    const allowedOrigin = await validateCorsOrigin(origin, storeHash);
     if (!allowedOrigin) {
       return json({ error: "Invalid origin" }, { status: 403 });
     }
 
-    // SECURITY: Rate limiting - 50 requests per minute for ML recommendations
-    const rateLimitResult = await rateLimitRequest(request, shop, {
+    // SECURITY: Rate limiting
+    const rateLimitResult = await rateLimitRequest(request, storeHash, {
       maxRequests: 50,
       windowMs: 60 * 1000,
       burstMax: 20,
@@ -86,10 +53,7 @@ export async function action({ request }: ActionFunctionArgs) {
 
     if (!rateLimitResult.allowed) {
       return json(
-        {
-          error: "Rate limit exceeded",
-          retryAfter: rateLimitResult.retryAfter
-        },
+        { error: "Rate limit exceeded", retryAfter: rateLimitResult.retryAfter },
         {
           status: 429,
           headers: {
@@ -99,15 +63,15 @@ export async function action({ request }: ActionFunctionArgs) {
         }
       );
     }
-    
+
     const recommendations = await generateContentRecommendations(
-      shop,
+      storeHash,
       product_ids || [],
       exclude_ids || [],
       customer_preferences,
       privacy_level || 'basic'
     );
-    
+
     return json({ recommendations });
 
   } catch (error: unknown) {
@@ -117,52 +81,38 @@ export async function action({ request }: ActionFunctionArgs) {
 }
 
 async function generateContentRecommendations(
-  shop: string,
+  storeHash: string,
   productIds: string[],
   excludeIds: string[],
   customerPreferences: CustomerPreferences | undefined,
   privacyLevel: string
 ): Promise<Recommendation[]> {
   try {
-    const { admin } = await unauthenticated.admin(shop);
-    
-    const gids = productIds.map(id => `gid://shopify/Product/${id}`);
-    const baseProductsResp = await admin.graphql(
-      `#graphql
-        query getProducts($ids: [ID!]!) {
-          nodes(ids: $ids) {
-            ... on Product {
-              id
-              title
-              productType
-              vendor
-              tags
-            }
-          }
-        }
-      `,
-      { variables: { ids: gids } }
-    );
-    
-    if (!baseProductsResp.ok) {
-      return [];
+    // Fetch catalog products for similarity matching
+    const result = await getProducts(storeHash, {
+      limit: 50,
+      is_visible: true,
+    });
+    const catalogProducts = result.products;
+
+    if (catalogProducts.length === 0) return [];
+
+    // Find the base products from the catalog
+    const baseProducts = catalogProducts.filter(p => productIds.includes(String(p.id)));
+
+    if (baseProducts.length === 0 && productIds.length > 0) {
+      // Products weren't in the first page, fetch them individually
+      // For now use all catalog products as base for recommendations
+      return getBasicContentRecommendations(catalogProducts, excludeIds, productIds);
     }
 
-    const baseData = await baseProductsResp.json() as ShopifyProductsQueryResponse;
-    const baseProducts = baseData?.data?.nodes?.filter((node): node is ShopifyProductNode => node !== null) || [];
-    
-    if (baseProducts.length === 0) {
-      return [];
-    }
-    
     if (privacyLevel === 'basic') {
-      return await getBasicContentRecommendations(admin, baseProducts, excludeIds, productIds);
+      return getBasicContentRecommendations(catalogProducts, excludeIds, productIds);
     }
-    
+
     return await getPersonalizedContentRecommendations(
-      admin,
-      shop,
-      baseProducts,
+      storeHash,
+      catalogProducts,
       excludeIds,
       productIds,
       customerPreferences,
@@ -174,90 +124,61 @@ async function generateContentRecommendations(
   }
 }
 
-async function getBasicContentRecommendations(
-  admin: ShopifyAdminClient,
-  baseProducts: ShopifyProductNode[],
+function getBasicContentRecommendations(
+  catalogProducts: BCProduct[],
   excludeIds: string[],
   productIds: string[]
-): Promise<Recommendation[]> {
+): Recommendation[] {
   const recommendations: Recommendation[] = [];
-  
-  for (const product of baseProducts) {
-    const productType = product.productType;
-    const query = productType ? `product_type:${productType}` : '';
-    
-    const similarResp = await admin.graphql(
-      `#graphql
-        query findSimilar($query: String, $first: Int!) {
-          products(first: $first, query: $query, sortKey: RELEVANCE) {
-            edges {
-              node {
-                id
-                title
-                productType
-                vendor
-              }
-            }
-          }
-        }
-      `,
-      { variables: { query, first: 20 } }
-    );
 
-    if (similarResp.ok) {
-      const data = await similarResp.json() as ShopifySimilarProductsResponse;
-      const products = data?.data?.products?.edges || [];
-      
-      for (const edge of products) {
-        const p = edge.node;
-        const pid = p.id.replace('gid://shopify/Product/', '');
-        
-        if (excludeIds.includes(pid) || productIds.includes(pid)) continue;
-        
-        let score = 0.5;
-        if (p.productType === productType) score += 0.3;
-        if (p.vendor === product.vendor) score += 0.2;
-        
-        recommendations.push({
-          product_id: pid,
-          score,
-          reason: `Similar to ${product.title}`,
-          strategy: 'content_category'
-        });
-      }
+  // Simple category/brand based recommendations
+  const baseProduct = catalogProducts.find(p => productIds.includes(String(p.id)));
+
+  for (const product of catalogProducts) {
+    const pid = String(product.id);
+    if (excludeIds.includes(pid) || productIds.includes(pid)) continue;
+
+    let score = 0.5;
+    if (baseProduct) {
+      // Category match
+      if (product.categories?.some(c => baseProduct.categories?.includes(c))) score += 0.3;
+      // Brand match
+      if (product.brand_id && product.brand_id === baseProduct.brand_id) score += 0.2;
     }
+
+    recommendations.push({
+      product_id: pid,
+      score,
+      reason: baseProduct ? `Similar to ${baseProduct.name}` : 'Popular product',
+      strategy: 'content_category'
+    });
   }
-  
-  const uniqueRecommendations = Array.from(
-    new Map(recommendations.map(r => [r.product_id, r])).values()
-  );
-  
-  return uniqueRecommendations.sort((a, b) => b.score - a.score).slice(0, 20);
+
+  return recommendations.sort((a, b) => b.score - a.score).slice(0, 20);
 }
 
 async function getPersonalizedContentRecommendations(
-  admin: ShopifyAdminClient,
-  shop: string,
-  baseProducts: ShopifyProductNode[],
+  storeHash: string,
+  catalogProducts: BCProduct[],
   excludeIds: string[],
   productIds: string[],
   customerPreferences: CustomerPreferences | undefined,
   privacyLevel: string
 ): Promise<Recommendation[]> {
   const recommendations: Recommendation[] = [];
-  
+
   let userHistory: string[] = [];
   if (customerPreferences?.sessionId && privacyLevel !== 'basic') {
     try {
       const profile = await prisma.mLUserProfile.findUnique({
         where: {
-          shop_sessionId: {
-            shop: shop,
+          storeHash_sessionId: {
+            storeHash,
             sessionId: customerPreferences.sessionId
           }
         }
       });
-      
+
       if (profile) {
         userHistory = [
           ...(profile.viewedProducts || []),
@@ -269,27 +190,26 @@ async function getPersonalizedContentRecommendations(
       console.warn('Failed to fetch user profile:', e);
     }
   }
-  
-  for (const product of baseProducts) {
-    const productId = product.id.replace('gid://shopify/Product/', '');
-    
+
+  // Check for cached similarity data
+  for (const productId of productIds) {
     try {
       const cached = await prisma.mLProductSimilarity.findMany({
         where: {
-          shop: shop,
+          storeHash,
           productId1: productId
         },
         orderBy: { overallScore: 'desc' },
         take: 10
       });
-      
+
       if (cached.length > 0) {
         cached.forEach((sim) => {
           if (!excludeIds.includes(sim.productId2) && !productIds.includes(sim.productId2)) {
             recommendations.push({
               product_id: sim.productId2,
               score: sim.overallScore,
-              reason: `Frequently viewed together`,
+              reason: 'Frequently viewed together',
               strategy: 'content_personalized'
             });
           }
@@ -299,11 +219,13 @@ async function getPersonalizedContentRecommendations(
     } catch (e: unknown) {
       console.warn('Failed to fetch cached similarities:', e);
     }
-    
-    const basicRecs = await getBasicContentRecommendations(admin, [product], excludeIds, productIds);
+
+    // Fall back to basic recommendations
+    const basicRecs = getBasicContentRecommendations(catalogProducts, excludeIds, productIds);
     recommendations.push(...basicRecs);
   }
-  
+
+  // Boost products user has viewed
   if (userHistory.length > 0) {
     recommendations.forEach(rec => {
       if (userHistory.includes(rec.product_id)) {
@@ -312,10 +234,10 @@ async function getPersonalizedContentRecommendations(
       }
     });
   }
-  
+
   const uniqueRecommendations = Array.from(
     new Map(recommendations.map(r => [r.product_id, r])).values()
   );
-  
+
   return uniqueRecommendations.sort((a, b) => b.score - a.score).slice(0, 20);
 }

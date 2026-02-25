@@ -6,7 +6,7 @@
  * Provides ML system health data for dashboard display.
  * Returns recent job runs, error rates, performance metrics.
  * 
- * Usage: GET /api/system-health?shop=mystore.myshopify.com&days=7
+ * Usage: GET /api/system-health?days=7
  * 
  * No external notifications - all data stored in database for dashboard.
  */
@@ -14,23 +14,23 @@
 import type { LoaderFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
 import { getHealthSummary, getRecentHealthLogs } from "~/services/health-logger.server";
-import { authenticate } from "~/shopify.server";
+import { authenticateAdmin } from "~/bigcommerce.server";
 import { rateLimitRequest } from "../utils/rateLimiter.server";
 
 export async function loader({ request }: LoaderFunctionArgs) {
   try {
     // Authenticate merchant
-    const { session } = await authenticate.admin(request);
-    
-    if (!session?.shop) {
+    const { storeHash } = await authenticateAdmin(request);
+
+    if (!storeHash) {
       return json({ error: "Unauthorized" }, { status: 401 });
     }
-    
+
     const url = new URL(request.url);
     const days = parseInt(url.searchParams.get('days') || '7', 10);
     const limit = parseInt(url.searchParams.get('limit') || '50', 10);
-    
-    const shop = session.shop;
+
+    const shop = storeHash;
 
     // SECURITY: Rate limiting - 50 requests per minute (health check aggregation)
     const rateLimitResult = await rateLimitRequest(request, shop, {

@@ -1,7 +1,7 @@
 import { json, type LoaderFunctionArgs } from "@remix-run/node";
 import { Prisma } from "@prisma/client";
 import prisma from "../db.server";
-import { authenticate } from "../shopify.server";
+import { authenticateAdmin } from "../bigcommerce.server";
 import { rateLimitRequest } from "../utils/rateLimiter.server";
 
 export async function loader({ request }: LoaderFunctionArgs) {
@@ -20,12 +20,11 @@ export async function loader({ request }: LoaderFunctionArgs) {
       return json({ error: "Invalid experimentId" }, { status: 400 });
     }
 
-  const { session } = await authenticate.admin(request);
-  const shop = session.shop as string;
+  const { session, storeHash } = await authenticateAdmin(request);
 
     // Load experiment and variants
     const experiment = await prisma.experiment.findFirst({
-      where: { id: experimentId, shopId: shop },
+      where: { id: experimentId, shopId: storeHash },
       include: { variants: { orderBy: { id: "asc" } } },
     });
     if (!experiment) {

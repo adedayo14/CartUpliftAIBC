@@ -26,7 +26,7 @@ export default function PrivacyPolicy() {
 
       <section>
         <p>
-          Cart Uplift ("we", "us") provides a Shopify app that adds AI-driven
+          Cart Uplift ("we", "us") provides a BigCommerce app that adds AI-driven
           recommendations, smart product pairing, and spend-based incentives to
           your storefront. This policy explains what data we process, why, and
           your choices.
@@ -55,7 +55,7 @@ export default function PrivacyPolicy() {
       </ul>
       <p>
         We do not collect or store payment card data. Customer contact data is
-        processed only if provided by Shopify or by you for operating app
+        processed only if provided by BigCommerce or by you for operating app
         features.
       </p>
 
@@ -69,8 +69,8 @@ export default function PrivacyPolicy() {
 
       <h2>Legal basis</h2>
       <p>
-        We process data to perform the contract with the merchant (your Shopify
-        shop) and under our legitimate interests to improve and secure the
+        We process data to perform the contract with the merchant (your BigCommerce
+        store) and under our legitimate interests to improve and secure the
         service.
       </p>
 
@@ -83,7 +83,7 @@ export default function PrivacyPolicy() {
 
       <h2>Sharing</h2>
       <p>
-        We use Shopify as a platform and standard sub-processors for hosting and
+        We use BigCommerce as a platform and standard sub-processors for hosting and
         analytics (for example, cloud hosting and database providers). We do not
         sell personal information.
       </p>

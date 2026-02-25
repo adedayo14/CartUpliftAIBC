@@ -30,13 +30,13 @@ export interface LifetimeMetricsData {
 export async function getOrCreateLifetimeMetrics(shop: string): Promise<LifetimeMetricsData> {
   try {
     let metrics = await prisma.lifetimeMetrics.findUnique({
-      where: { shop },
+      where: { storeHash: shop },
     });
 
     if (!metrics) {
       metrics = await prisma.lifetimeMetrics.create({
         data: {
-          shop,
+          storeHash: shop,
           appInstalledAt: new Date(),
         },
       });
@@ -48,7 +48,7 @@ export async function getOrCreateLifetimeMetrics(shop: string): Promise<Lifetime
     );
 
     return {
-      shop: metrics.shop,
+      shop: metrics.storeHash,
       totalOrders: metrics.totalOrders,
       totalRevenue: metrics.totalRevenue,
       totalAttributedOrders: metrics.totalAttributedOrders,
@@ -93,7 +93,7 @@ export async function incrementLifetimeOrders(
 ): Promise<void> {
   try {
     const metrics = await prisma.lifetimeMetrics.findUnique({
-      where: { shop },
+      where: { storeHash: shop },
     });
 
     if (!metrics) {
@@ -134,7 +134,7 @@ export async function incrementLifetimeOrders(
     }
 
     await prisma.lifetimeMetrics.update({
-      where: { shop },
+      where: { storeHash: shop },
       data: updateData,
     });
   } catch (error) {
@@ -152,7 +152,7 @@ export async function incrementLifetimeEngagement(
 ): Promise<void> {
   try {
     const metrics = await prisma.lifetimeMetrics.findUnique({
-      where: { shop },
+      where: { storeHash: shop },
     });
 
     if (!metrics) {
@@ -171,7 +171,7 @@ export async function incrementLifetimeEngagement(
     const currentValue = metrics?.[field as keyof typeof metrics] as number || 0;
 
     await prisma.lifetimeMetrics.update({
-      where: { shop },
+      where: { storeHash: shop },
       data: {
         [field]: currentValue + count,
       },

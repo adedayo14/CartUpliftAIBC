@@ -1,11 +1,11 @@
 import type { LoaderFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
-import { authenticate } from "../shopify.server";
+import { authenticateAdmin, bigcommerceApi } from "../bigcommerce.server";
 import { rateLimitRequest } from "../utils/rateLimiter.server";
 
 /**
  * Admin API endpoint for bundle management data fetching
- * Uses /admin/api/ pattern for proper Shopify embedded app authentication
+ * Uses /admin/api/ pattern for proper BigCommerce embedded app authentication
  */
 
 // Type definitions
@@ -95,141 +95,42 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   console.log('🔥 [admin.api.bundle-data] Request received');
   
   try {
-    const { session, admin } = await authenticate.admin(request);
+    const { session, storeHash } = await authenticateAdmin(request);
     const url = new URL(request.url);
     const action = url.searchParams.get("action");
-    
-    console.log('🔥 [admin.api.bundle-data] Action:', action, 'Shop:', session.shop);
+
+    console.log('🔥 [admin.api.bundle-data] Action:', action, 'Store:', storeHash);
 
     // Fetch products
     if (action === "products") {
       const categoryId = url.searchParams.get("categoryId");
       const query = url.searchParams.get("query") || "";
 
-      let graphqlQuery = `
-        #graphql
-        query getProducts($query: String!) {
-          products(first: 100, query: $query) {
-            edges {
-              node {
-                id
-                title
-                handle
-                status
-                totalInventory
-                variants(first: 10) {
-                  edges {
-                    node {
-                      id
-                      title
-                      price
-                      inventoryQuantity
-                    }
-                  }
-                }
-                featuredImage {
-                  url
-                  altText
-                }
-              }
-            }
-          }
-        }
-      `;
-
+      let apiPath = `/catalog/products?include=variants,images&is_visible=true&limit=50`;
+      if (query) {
+        apiPath += `&keyword=${encodeURIComponent(query)}`;
+      }
       if (categoryId) {
-        graphqlQuery = `
-          #graphql
-          query getProductsByCollection($id: ID!, $query: String!) {
-            collection(id: $id) {
-              products(first: 100, query: $query) {
-                edges {
-                  node {
-                    id
-                    title
-                    handle
-                    status
-                    totalInventory
-                    variants(first: 10) {
-                      edges {
-                        node {
-                          id
-                          title
-                          price
-                          inventoryQuantity
-                        }
-                      }
-                    }
-                    featuredImage {
-                      url
-                      altText
-                    }
-                  }
-                }
-              }
-            }
-          }
-        `;
+        apiPath += `&categories:in=${encodeURIComponent(categoryId)}`;
       }
 
-      const variables = categoryId 
-        ? { id: categoryId, query: query || "status:active" } 
-        : { query: query || "status:active" };
+      const productsResponse = await bigcommerceApi(storeHash, apiPath);
+      const productsData = await productsResponse.json();
 
-      console.log('🔥 [admin.api.bundle-data] Fetching products with variables:', variables);
-
-      // Add timeout protection
-      const graphqlPromise = admin.graphql(graphqlQuery, { variables });
-      const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error('Products request timed out')), 10000)
-      );
-
-      const response = await Promise.race([graphqlPromise, timeoutPromise]) as Response;
-      
-      if (!response.ok) {
-        console.error('🔥 [admin.api.bundle-data] GraphQL request failed:', response.status);
-        return json({ 
-          success: false, 
-          error: `GraphQL request failed with status ${response.status}`,
-          products: []
-        }, { status: 500 });
-      }
-
-      const responseJson = await response.json() as GraphQLProductsData;
-
-      if (responseJson.errors) {
-        console.error('🔥 [admin.api.bundle-data] GraphQL errors:', responseJson.errors);
-        return json({
-          success: false,
-          error: 'GraphQL query failed',
-          products: [],
-          graphqlErrors: responseJson.errors
-        }, { status: 500 });
-      }
-
-      let productEdges = [];
-      if (categoryId) {
-        productEdges = responseJson.data?.collection?.products?.edges || [];
-      } else {
-        productEdges = responseJson.data?.products?.edges || [];
-      }
-
-      console.log(`🔥 [admin.api.bundle-data] Successfully fetched ${productEdges.length} products`);
-
-      const products: Product[] = productEdges.map((edge: { node: GraphQLProductNode }) => ({
-        id: edge.node.id,
-        title: edge.node.title,
-        handle: edge.node.handle,
-        status: edge.node.status,
-        totalInventory: edge.node.totalInventory,
-        variants: edge.node.variants.edges.map((v: { node: GraphQLVariantNode }) => ({
-          id: v.node.id,
-          title: v.node.title,
-          price: parseFloat(v.node.price),
-          inventoryQuantity: v.node.inventoryQuantity
+      const products: Product[] = (productsData.data || []).map((p: Record<string, unknown>) => ({
+        id: String(p.id),
+        title: (p.name as string) || 'Untitled Product',
+        handle: ((p.custom_url as { url?: string })?.url || `/${p.id}/`).replace(/^\/|\/$/g, ''),
+        status: (p.is_visible as boolean) ? 'ACTIVE' : 'DRAFT',
+        totalInventory: (p.inventory_level as number) || 0,
+        variants: ((p.variants as Array<Record<string, unknown>>) || []).map((v: Record<string, unknown>) => ({
+          id: String(v.id),
+          title: ((v.option_values as Array<{ label: string }>) || []).map((o: { label: string }) => o.label).join(' / ') || 'Default',
+          price: Number(v.price) || Number(p.price) || 0,
+          inventoryQuantity: (v.inventory_level as number) || 0,
         })),
-        price: edge.node.variants.edges[0]?.node?.price || "0.00",
-        image: edge.node.featuredImage?.url
+        price: String(p.price || '0.00'),
+        image: ((p.images as Array<{ url_standard?: string }>) || [])[0]?.url_standard || undefined,
       }));
 
       return json({
@@ -240,58 +141,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
     // Fetch collections/categories
     if (action === "categories") {
-      console.log('🔥 [admin.api.bundle-data] Fetching collections');
-      
-      const graphqlPromise = admin.graphql(`
-        #graphql
-        query getCollections {
-          collections(first: 100) {
-            edges {
-              node {
-                id
-                title
-                handle
-                productsCount
-              }
-            }
-          }
-        }
-      `);
+      const categoriesResponse = await bigcommerceApi(storeHash, `/catalog/categories?is_visible=true&limit=50`);
+      const categoriesData = await categoriesResponse.json();
 
-      const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error('Collections request timed out')), 10000)
-      );
-
-      const response = await Promise.race([graphqlPromise, timeoutPromise]) as Response;
-      
-      if (!response.ok) {
-        console.error('🔥 [admin.api.bundle-data] Collections request failed:', response.status);
-        return json({ 
-          success: false, 
-          error: 'Failed to fetch collections',
-          categories: []
-        }, { status: 500 });
-      }
-
-      const responseJson = await response.json() as GraphQLCollectionsData;
-
-      if (responseJson.errors) {
-        console.error('🔥 [admin.api.bundle-data] Collections GraphQL errors:', responseJson.errors);
-        return json({
-          success: false,
-          error: 'Failed to fetch collections',
-          categories: []
-        }, { status: 500 });
-      }
-
-      const collectionEdges = responseJson.data?.collections?.edges || [];
-      console.log(`🔥 [admin.api.bundle-data] Successfully fetched ${collectionEdges.length} collections`);
-
-      const categories: Category[] = collectionEdges.map((edge: { node: GraphQLCollectionNode }) => ({
-        id: edge.node.id,
-        title: edge.node.title,
-        handle: edge.node.handle,
-        productsCount: edge.node.productsCount
+      const categories: Category[] = (categoriesData.data || []).map((c: Record<string, unknown>) => ({
+        id: String(c.id),
+        title: (c.name as string) || 'Untitled Category',
+        handle: ((c.custom_url as { url?: string })?.url || `/${c.id}/`).replace(/^\/|\/$/g, ''),
+        productsCount: 0, // BigCommerce categories API does not return product count directly
       }));
 
       return json({

@@ -77,7 +77,7 @@ export async function trackCartEvent(event: CartEvent): Promise<void> {
     // Schema optionality varies between dev/prod, so we guard with try/catch
     await db.cartEvent.create({
       data: {
-        shop: event.shop,
+        storeHash: event.shop,
         sessionId: event.sessionId,
         eventType: event.eventType,
         productId: event.productId ?? null,
@@ -188,7 +188,7 @@ export async function getCartAnalytics(
     // Get all cart events for the time period
     // Prefer reading from dedicated cartEvent table; fall back to empty array
     const rows: CartEventRow[] = await db.cartEvent.findMany?.({
-      where: { shop },
+      where: { storeHash: shop },
     }).catch(() => []) ?? [];
 
     // Parse and filter events by date

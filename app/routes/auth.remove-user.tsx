@@ -1,5 +1,5 @@
 import type { LoaderFunctionArgs } from "@remix-run/node";
-import { verifySignedPayload } from "../bigcommerce.server";
+import { verifySignedPayload, deleteStoreUser } from "../bigcommerce.server";
 import { logger } from "~/utils/logger.server";
 
 /**
@@ -21,6 +21,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     const payload = verifySignedPayload(signedPayload);
 
     logger.info("User removed from store", {
+      storeHash: payload.store_hash,
+      userId: payload.user.id,
+    });
+
+    await deleteStoreUser({
       storeHash: payload.store_hash,
       userId: payload.user.id,
     });

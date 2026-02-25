@@ -48,7 +48,7 @@ export const LIMIT_BUFFER_PERCENTAGE = 0.10; // 10% grace buffer
 export const ML_THRESHOLDS = {
   /**
    * Minimum orders needed before ML can learn patterns
-   * Below this, fall back to Shopify recommendations
+   * Below this, fall back to rule-based recommendations
    */
   MIN_ORDERS_FOR_LEARNING: 20,
 

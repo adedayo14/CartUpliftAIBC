@@ -1,6 +1,6 @@
 import { type ActionFunctionArgs } from "@remix-run/node";
 import db from "~/db.server";
-import { authenticate } from "~/shopify.server";
+import { authenticateWebhook } from "~/bigcommerce.server";
 import { incrementOrderCount, canUseApp, getOrCreateSubscription } from "~/services/billing.server";
 import { incrementLifetimeOrders } from "~/services/lifetimeMetrics.server";
 import { sendOrderLimitWarning } from "~/services/email.server";
@@ -9,14 +9,14 @@ import type { TrackingEventModel, BundleModel, MLUserProfileModel } from "~/type
 import { logger } from "~/utils/logger.server";
 
 /**
- * Shopify Webhook Payload Types
+ * BigCommerce Webhook Payload Types
  */
 interface LineItemProperty {
   name: string;
   value: string;
 }
 
-interface ShopifyLineItemWebhook {
+interface OrderLineItemWebhook {
   id: string | number;
   product_id?: string | number;
   variant_id?: string | number;
@@ -26,21 +26,21 @@ interface ShopifyLineItemWebhook {
   properties?: LineItemProperty[];
 }
 
-interface ShopifyCustomerWebhook {
+interface OrderCustomerWebhook {
   id: string | number;
   email?: string;
   first_name?: string;
   last_name?: string;
 }
 
-interface ShopifyOrderWebhook {
+interface BCOrderWebhook {
   id: string | number;
   order_number?: number;
   number?: number;
   total_price?: string | number;
   email?: string;
-  customer?: ShopifyCustomerWebhook;
-  line_items?: ShopifyLineItemWebhook[];
+  customer?: OrderCustomerWebhook;
+  line_items?: OrderLineItemWebhook[];
 }
 
 interface ProductSourceQuantities {
@@ -49,7 +49,7 @@ interface ProductSourceQuantities {
   manual: number;
 }
 
-interface BundleGroupItem extends ShopifyLineItemWebhook {
+interface BundleGroupItem extends OrderLineItemWebhook {
   bundleName?: string | null;
 }
 
@@ -60,7 +60,7 @@ interface BundleGroupItem extends ShopifyLineItemWebhook {
  * Triggered: Every time a customer completes an order
  * 
  * Process:
- * 1. Receive order data from Shopify
+ * 1. Receive order data from BigCommerce
  * 2. Increment order count for billing limits
  * 3. Extract purchased product IDs
  * 4. Look up recommendations shown in last 7 days for this customer
@@ -74,7 +74,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   try {
     logger.info("Order webhook started", { timestamp: new Date().toISOString() });
 
-    const { topic, shop, payload } = await authenticate.webhook(request);
+    const { storeHash, payload } = await authenticateWebhook(request);
+    const shop = storeHash;
+    const topic = "ORDERS_CREATE"; // BigCommerce webhook scope: store/order/created
 
     logger.info("Webhook authenticated", {
       topic,
@@ -94,7 +96,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const orderId = payload.id?.toString();
     const alreadyCounted = await db.billedOrder?.findFirst({
       where: {
-        shop,
+        storeHash: shop,
         orderId
       }
     });
@@ -130,7 +132,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         // Mark this order as counted to prevent duplicates
         await db.billedOrder?.create({
           data: {
-            shop,
+            storeHash: shop,
             orderId,
             orderNumber: payload.order_number || payload.number,
             countedAt: new Date()
@@ -140,7 +142,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         // Send email warning if approaching limit
         if (shouldShowWarning) {
           const subscription = await getOrCreateSubscription(shop);
-          // Get merchant email from Shopify
+          // Get merchant email from order payload
           const merchantEmail = payload.email || payload.customer?.email;
           
           if (merchantEmail) {
@@ -193,10 +195,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
       if (error.status === 401) {
         logger.error("Webhook unauthorized", {
-          shopHeader: request.headers.get("X-Shopify-Shop-Domain"),
-          topicHeader: request.headers.get("X-Shopify-Topic"),
-          hmacPresent: request.headers.has("X-Shopify-Hmac-Sha256"),
-          apiSecretConfigured: Boolean(process.env.SHOPIFY_API_SECRET),
+          storeHash: request.headers.get("X-BigCommerce-Store-Hash"),
+          topicHeader: request.headers.get("X-BigCommerce-Topic"),
+          webhookIdPresent: request.headers.has("webhook-id") || request.headers.has("svix-id"),
+          webhookTimestampPresent: request.headers.has("webhook-timestamp") || request.headers.has("svix-timestamp"),
+          webhookSignaturePresent: request.headers.has("webhook-signature") || request.headers.has("svix-signature"),
+          apiSecretConfigured: Boolean(process.env.BC_CLIENT_SECRET),
         });
       }
 
@@ -208,7 +212,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 };
 
-async function processOrderForAttribution(shop: string, order: ShopifyOrderWebhook): Promise<{usedApp: boolean, attributedRevenue: number}> {
+async function processOrderForAttribution(shop: string, order: BCOrderWebhook): Promise<{usedApp: boolean, attributedRevenue: number}> {
   let usedAppFeatures = false;
   let totalAttributedRevenue = 0;
 
@@ -225,7 +229,7 @@ async function processOrderForAttribution(shop: string, order: ShopifyOrderWebho
     });
 
     // Log all purchased products with their details
-    const lineItems = order.line_items?.map((item: ShopifyLineItemWebhook) => ({
+    const lineItems = order.line_items?.map((item: OrderLineItemWebhook) => ({
       productId: item.product_id?.toString(),
       variantId: item.variant_id?.toString(),
       title: item.title,
@@ -244,7 +248,7 @@ async function processOrderForAttribution(shop: string, order: ShopifyOrderWebho
     // 🛡️ DUPLICATE PREVENTION: Check if we already processed this order
     const existingAttribution = await db.recommendationAttribution?.findFirst({
       where: {
-        shop,
+        storeHash: shop,
         orderId: order.id?.toString()
       }
     });
@@ -274,7 +278,7 @@ async function processOrderForAttribution(shop: string, order: ShopifyOrderWebho
     const variantToProductMap = new Map<string, string>();
     const productToVariantsMap = new Map<string, string[]>();
     
-    order.line_items?.forEach((item: ShopifyLineItemWebhook) => {
+    order.line_items?.forEach((item: OrderLineItemWebhook) => {
       const productId = item.product_id?.toString();
       const variantId = item.variant_id?.toString();
 
@@ -334,7 +338,7 @@ async function processOrderForAttribution(shop: string, order: ShopifyOrderWebho
     // Find recent tracking events for this shop - get impressions AND clicks
     const recentEvents = await db.trackingEvent?.findMany({
       where: {
-        shop,
+        storeHash: shop,
         event: { in: ['impression', 'ml_recommendation_served', 'click'] },
         createdAt: { gte: sevenDaysAgo }
       },
@@ -430,7 +434,7 @@ async function processOrderForAttribution(shop: string, order: ShopifyOrderWebho
     // Track how many of each product came from bundles, recommendations, and manual adds
     const productSourceQuantities = new Map<string, ProductSourceQuantities>();
 
-    order.line_items?.forEach((item: ShopifyLineItemWebhook) => {
+    order.line_items?.forEach((item: OrderLineItemWebhook) => {
       if (!item.product_id) return;
 
       const productId = item.product_id.toString();
@@ -600,7 +604,7 @@ async function processOrderForAttribution(shop: string, order: ShopifyOrderWebho
 
       return db.recommendationAttribution?.create({
         data: {
-          shop,
+          storeHash: shop,
           productId,
           orderId: order.id?.toString(),
           orderNumber,
@@ -652,14 +656,14 @@ async function trackMissedOpportunity(shop: string, purchasedIds: string[], last
       const anchorId = String(anchors[0] || 'unknown');
       await db.mLProductSimilarity?.upsert({
         where: {
-          shop_productId1_productId2: {
-            shop,
+          storeHash_productId1_productId2: {
+            storeHash: shop,
             productId1: anchorId,
             productId2: productId
           }
         },
         create: {
-          shop,
+          storeHash: shop,
           productId1: anchorId,
           productId2: productId,
           overallScore: 0.5,
@@ -680,15 +684,15 @@ async function trackMissedOpportunity(shop: string, purchasedIds: string[], last
   }
 }
 
-function calculateProductRevenue(order: ShopifyOrderWebhook, productId: string, quantity?: number): number {
+function calculateProductRevenue(order: BCOrderWebhook, productId: string, quantity?: number): number {
   // First try matching by product_id
-  let lineItem = order.line_items?.find((item: ShopifyLineItemWebhook) =>
+  let lineItem = order.line_items?.find((item: OrderLineItemWebhook) =>
     item.product_id?.toString() === productId
   );
 
   // If not found, try matching by variant_id (since attributed products could be variants)
   if (!lineItem) {
-    lineItem = order.line_items?.find((item: ShopifyLineItemWebhook) =>
+    lineItem = order.line_items?.find((item: OrderLineItemWebhook) =>
       item.variant_id?.toString() === productId
     );
   }
@@ -725,7 +729,7 @@ async function updateUserProfilePurchase(shop: string, customerId: string, produ
   try {
     // Find or create user profile
     const profiles = await db.mLUserProfile?.findMany({
-      where: { shop, customerId }
+      where: { storeHash: shop, customerId }
     });
 
     if (profiles && profiles.length > 0) {
@@ -756,7 +760,7 @@ async function updateUserProfilePurchase(shop: string, customerId: string, produ
  * 🎁 Process Bundle Purchases
  * Track bundle purchases and update analytics
  */
-async function processBundlePurchases(shop: string, order: ShopifyOrderWebhook): Promise<{usedBundles: boolean, bundleRevenue: number}> {
+async function processBundlePurchases(shop: string, order: BCOrderWebhook): Promise<{usedBundles: boolean, bundleRevenue: number}> {
   try {
     const orderId = order.id?.toString();
     const customerId = order.customer?.id ? order.customer.id.toString() : null;
@@ -765,7 +769,7 @@ async function processBundlePurchases(shop: string, order: ShopifyOrderWebhook):
     // 🛡️ DUPLICATE PREVENTION: Check if we already tracked bundles for this order
     const existingBundleTracking = await db.bundlePurchase?.findFirst({
       where: {
-        shop,
+        storeHash: shop,
         orderId
       }
     });
@@ -782,7 +786,7 @@ async function processBundlePurchases(shop: string, order: ShopifyOrderWebhook):
     logger.debug("Analyzing line items for bundle properties", {
       lineItemCount: order.line_items?.length || 0
     });
-    order.line_items?.forEach((item: ShopifyLineItemWebhook, index: number) => {
+    order.line_items?.forEach((item: OrderLineItemWebhook, index: number) => {
       const properties = item.properties || [];
 
       logger.debug("Processing line item", {
@@ -794,7 +798,7 @@ async function processBundlePurchases(shop: string, order: ShopifyOrderWebhook):
           : undefined
       });
 
-      // Find bundle properties (Shopify stores custom properties as array of {name, value} objects)
+      // Find bundle properties (stored as custom properties in array of {name, value} objects)
       let bundleId: string | null = null;
       let bundleName: string | null = null;
 
@@ -881,7 +885,7 @@ async function processBundlePurchases(shop: string, order: ShopifyOrderWebhook):
         const dbBundleId = bundleId.startsWith('ai-') ? bundleId.replace('ai-', '') : bundleId;
         let bundle = await db.bundle?.findFirst({
           where: {
-            shop,
+            storeHash: shop,
             id: dbBundleId
           }
         });
@@ -897,7 +901,7 @@ async function processBundlePurchases(shop: string, order: ShopifyOrderWebhook):
           // Find ML bundle assigned to this specific product or "all products"
           const mlBundles = await db.bundle?.findMany({
             where: {
-              shop,
+              storeHash: shop,
               type: { in: ['ml', 'ai_suggested'] },
               status: 'active',
               OR: [
@@ -930,7 +934,7 @@ async function processBundlePurchases(shop: string, order: ShopifyOrderWebhook):
           logger.debug("Trying original bundle ID", { bundleId });
           bundle = await db.bundle?.findFirst({
             where: {
-              shop,
+              storeHash: shop,
               id: bundleId
             }
           });
@@ -993,7 +997,7 @@ async function processBundlePurchases(shop: string, order: ShopifyOrderWebhook):
         try {
           await db.customerBundle?.create({
             data: {
-              shop,
+              storeHash: shop,
               customerId,
               bundleId: trackedBundleId,
               sessionId: null,
@@ -1023,7 +1027,7 @@ async function processBundlePurchases(shop: string, order: ShopifyOrderWebhook):
     try {
       await db.bundlePurchase?.create({
         data: {
-          shop,
+          storeHash: shop,
           orderId: order.id?.toString(),
           orderNumber: order.order_number || order.number,
           bundleCount: bundleGroups.size,

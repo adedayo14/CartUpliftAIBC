@@ -1,37 +1,34 @@
 import { useEffect, useState } from "react";
-import { useAppBridge } from "@shopify/app-bridge-react";
-import appBridgeUtils from "@shopify/app-bridge-utils";
 import type { LoaderFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
 import { useLoaderData, useRevalidator } from "@remix-run/react";
 import {
-  Page,
-  Layout,
-  Card,
-  Button,
-  Modal,
-  TextField,
-  InlineStack,
-  BlockStack,
+  Box,
+  Flex,
+  Panel,
   Text,
+  H1,
+  H2,
+  H3,
+  Small,
+  Button,
   Badge,
-  EmptyState,
-  Banner,
-  Divider,
+  HR,
+  Modal,
+  Input,
   Select,
-  ButtonGroup,
   Checkbox,
-} from "@shopify/polaris";
-import type { BadgeProps } from "@shopify/polaris";
+} from "@bigcommerce/big-design";
+import { CloseIcon } from "@bigcommerce/big-design-icons";
 import { Prisma } from "@prisma/client";
-import { authenticate } from "../shopify.server";
+import { authenticateAdmin } from "../bigcommerce.server";
 import prisma from "../db.server";
 import type {
   AttributionWindow,
   AttributionWindowDB,
   ValueFormat,
   ExperimentType,
-  ExtendedShopifySession,
+  ExtendedSession,
   ExtendedExperiment,
   ExtendedVariant,
 } from "~/types/common";
@@ -96,7 +93,7 @@ const toNumber = (value: Prisma.Decimal | number | string | null | undefined): n
 };
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  const { session, storeHash } = await authenticateAdmin(request);
 
   try {
     const [experiments] = await Promise.all([
@@ -138,8 +135,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     });
 
   // Try to infer currency from session or shop data
-  // Shopify session may not include a currency; fall back to Settings if available later
-  const extSession = session as unknown as ExtendedShopifySession;
+  // Session may not include a currency; fall back to Settings if available later
+  const extSession = session as unknown as ExtendedSession;
   const currencyCode = extSession?.currency || 'USD';
   return json({ experiments: serialized, currencyCode });
   } catch (err: unknown) {
@@ -148,6 +145,30 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     return json({ experiments: [] as LoaderExperiment[] });
   }
 };
+
+// Helper to map badge tone strings to BigDesign Badge variant
+function mapBadgeVariant(tone?: string): "danger" | "secondary" | "success" | "warning" | "primary" {
+  switch (tone) {
+    case "success": return "success";
+    case "warning": return "warning";
+    case "attention": return "warning";
+    case "critical": return "danger";
+    case "info": return "primary";
+    case "new": return "primary";
+    default: return "secondary";
+  }
+}
+
+// Helper to map banner tone to border/background colors
+function mapBannerColors(tone?: string): { border: string; background: string } {
+  switch (tone) {
+    case "success": return { border: "#2e7d32", background: "#e8f5e9" };
+    case "warning": return { border: "#ed6c02", background: "#fff3e0" };
+    case "critical": return { border: "#c62828", background: "#ffebee" };
+    case "info":
+    default: return { border: "#1565c0", background: "#e3f2fd" };
+  }
+}
 
 export default function ABTestingPage() {
   const data = useLoaderData<{ experiments: LoaderExperiment[]; currencyCode?: string | undefined }>();
@@ -161,24 +182,23 @@ export default function ABTestingPage() {
   }, [data.experiments, syncPauseUntil]);
   const storeCurrency = data.currencyCode || 'USD';
   const revalidator = useRevalidator();
-  const app = useAppBridge();
-  // Remove navigate usage
+  // Cookie-based auth: no App Bridge needed
   const money = new Intl.NumberFormat(undefined, { style: "currency", currency: storeCurrency || "USD" });
 
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [newName, setNewName] = useState("");
-  
+
   // Control variant settings
   const [controlType, setControlType] = useState<"discount"|"bundle"|"shipping"|"upsell">("shipping");
   const [controlFormat, setControlFormat] = useState<"percent"|"currency"|"number">("currency");
   const [controlDiscount, setControlDiscount] = useState("50");
-  
+
   // Challenger variant settings
   const [challengerType, setChallengerType] = useState<"discount"|"bundle"|"shipping"|"upsell">("discount");
   const [challengerFormat, setChallengerFormat] = useState<"percent"|"currency"|"number">("percent");
   const [variantDiscount, setVariantDiscount] = useState("10");
   const [variantName, setVariantName] = useState("10% Off");
-  
+
   const [attributionWindow, setAttributionWindow] = useState<"session"|"24h"|"7d">("session");
   const [activateNow, setActivateNow] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
@@ -194,7 +214,7 @@ export default function ABTestingPage() {
   const [resultsPayload, setResultsPayload] = useState<ResultsPayload | null>(null);
   const [resultsError, setResultsError] = useState<string | null>(null);
   const [resultsLoading, setResultsLoading] = useState(false);
-  
+
   // Auto-apply discount codes setting
   const [autoApplyABDiscounts, setAutoApplyABDiscounts] = useState(false);
   const [settingsSaving, setSettingsSaving] = useState(false);
@@ -203,26 +223,13 @@ export default function ABTestingPage() {
   const handleSaveAutoApply = async (newValue: boolean) => {
     setSettingsSaving(true);
     try {
-      const params = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : new URLSearchParams();
-      let sessionToken = '';
-      try {
-        if (app) {
-          sessionToken = await appBridgeUtils.getSessionToken(app);
-        }
-      } catch (_e) {
-        // ignore
-      }
-      if (!sessionToken) sessionToken = params.get('id_token') || '';
-
       const response = await fetch('/api/settings', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${sessionToken}`,
         },
+        credentials: 'include',
         body: JSON.stringify({
-          shop: params.get('shop') || '',
-          sessionToken,
           settings: { autoApplyABDiscounts: newValue }
         }),
       });
@@ -245,25 +252,14 @@ export default function ABTestingPage() {
   // Toggle running/paused
   const handleToggleStatus = async (experiment: LoaderExperiment) => {
     try {
-      const params = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : new URLSearchParams();
-      let sessionToken = '';
-      try {
-        if (app) {
-          sessionToken = await appBridgeUtils.getSessionToken(app);
-        }
-      } catch (_e) {
-        // ignore token fetch error
-      }
-      if (!sessionToken) sessionToken = params.get('id_token') || '';
-
       const next = experiment.status === 'running' ? 'paused' : 'running';
       const response = await fetch(`/api/ab-testing-admin`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'X-Requested-With': 'XMLHttpRequest',
-          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
         },
+        credentials: 'include',
         body: JSON.stringify({
           action: 'update',
           experimentId: experiment.id,
@@ -297,18 +293,8 @@ export default function ABTestingPage() {
         setLoading(true);
         setError(null);
         try {
-          const params = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : new URLSearchParams();
-          let sessionToken = '';
-          try {
-            if (app) {
-              sessionToken = await appBridgeUtils.getSessionToken(app);
-            }
-          } catch (_e) {
-            // ignore token fetch error
-          }
-          if (!sessionToken) sessionToken = params.get('id_token') || '';
           const res = await fetch(`/api/ab-results?experimentId=${experiment.id}&period=7d`, {
-            headers: { ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}) },
+            credentials: 'include',
           });
           if (!res.ok) {
             const msg = await res.text();
@@ -330,8 +316,8 @@ export default function ABTestingPage() {
       };
     }, [experiment.id]);
 
-    if (loading) return <Text as="p" tone="subdued">Loading last 7 days…</Text>;
-    if (error || !summary) return <Text as="p" tone="subdued">{error || 'No recent data'}</Text>;
+    if (loading) return <Text color="secondary">Loading last 7 days…</Text>;
+    if (error || !summary) return <Text color="secondary">{error || 'No recent data'}</Text>;
 
     const moneyLocal = new Intl.NumberFormat(undefined, { style: 'currency', currency: storeCurrency || 'USD' });
     const [a, b] = summary.results.sort((x, y) => (x.isControl === y.isControl ? 0 : x.isControl ? -1 : 1));
@@ -353,13 +339,10 @@ export default function ABTestingPage() {
     const rolloutLeader = async () => {
       if (!leader) return;
       try {
-        const params = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : new URLSearchParams();
-        let sessionToken = '';
-        try { if (app) { sessionToken = await appBridgeUtils.getSessionToken(app); } } catch (_e) { /* ignore */ }
-        if (!sessionToken) sessionToken = params.get('id_token') || '';
         const res = await fetch('/api/ab-rollout', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}) },
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
           body: JSON.stringify({ experimentId: experiment.id, winnerVariantId: leader.variantId }),
         });
         if (!res.ok) {
@@ -376,68 +359,72 @@ export default function ABTestingPage() {
 
     if (totalVisitors === 0) {
       return (
-        <BlockStack gap="200">
-          <Text as="p" tone="subdued">No traffic yet. We’ll show metrics once visitors arrive.</Text>
-          <InlineStack align="space-between">
-            <Text as="p" tone="subdued">Window: {new Date(summary.start).toLocaleDateString()} - {new Date(summary.end).toLocaleDateString()}</Text>
-            <Text as="p" tone="subdued">Split: {split}</Text>
-          </InlineStack>
-        </BlockStack>
+        <Flex flexDirection="column" flexGap="0.5rem">
+          <Text color="secondary">No traffic yet. We'll show metrics once visitors arrive.</Text>
+          <Flex flexDirection="row" justifyContent="space-between" alignItems="center">
+            <Text color="secondary">Window: {new Date(summary.start).toLocaleDateString()} - {new Date(summary.end).toLocaleDateString()}</Text>
+            <Text color="secondary">Split: {split}</Text>
+          </Flex>
+        </Flex>
       );
     }
 
     return (
-      <BlockStack gap="400">
-        <InlineStack gap="400" wrap>
-          <Card background="bg-surface-secondary" padding="400">
-            <BlockStack gap="150">
-              <Text as="p" tone="subdued">Last 7 days</Text>
-              <Text variant="headingLg" as="h3">{`${revenueDelta >= 0 ? '+' : '-'}${moneyLocal.format(Math.abs(revenueDelta))} vs control`}</Text>
-              <InlineStack gap="400" wrap>
-                <Text as="p" tone="subdued">Orders: <Text as="span" tone="inherit" fontWeight="bold">{leader?.conversions ?? '—'}</Text></Text>
-                <Text as="p" tone="subdued">AOV: <Text as="span" tone="inherit" fontWeight="bold">{leader && leader.conversions > 0 ? moneyLocal.format(leader.revenue / leader.conversions) : '—'}</Text></Text>
-                <Text as="p" tone="subdued">$/visitor: <Text as="span" tone="inherit" fontWeight="bold">{rpvLeader > 0 ? moneyLocal.format(rpvLeader) : '—'}</Text></Text>
-              </InlineStack>
-              {costOfDelay > 0 && (
-                <Badge tone="attention">{`Cost of delay: ${moneyLocal.format(costOfDelay)}/day`}</Badge>
-              )}
-            </BlockStack>
-          </Card>
+      <Flex flexDirection="column" flexGap="1rem">
+        <Flex flexDirection="row" flexGap="1rem" flexWrap="wrap">
+          <Panel>
+            <Box style={{ padding: "1rem", borderRadius: "6px" }} backgroundColor="secondary10">
+              <Flex flexDirection="column" flexGap="0.375rem">
+                <Text color="secondary">Last 7 days</Text>
+                <H2>{`${revenueDelta >= 0 ? '+' : '-'}${moneyLocal.format(Math.abs(revenueDelta))} vs control`}</H2>
+                <Flex flexDirection="row" flexGap="1rem" flexWrap="wrap" alignItems="center">
+                  <Text color="secondary">Orders: <span style={{ fontWeight: "bold" }}>{leader?.conversions ?? '—'}</span></Text>
+                  <Text color="secondary">AOV: <span style={{ fontWeight: "bold" }}>{leader && leader.conversions > 0 ? moneyLocal.format(leader.revenue / leader.conversions) : '—'}</span></Text>
+                  <Text color="secondary">$/visitor: <span style={{ fontWeight: "bold" }}>{rpvLeader > 0 ? moneyLocal.format(rpvLeader) : '—'}</span></Text>
+                </Flex>
+                {costOfDelay > 0 && (
+                  <Badge label={`Cost of delay: ${moneyLocal.format(costOfDelay)}/day`} variant="warning" />
+                )}
+              </Flex>
+            </Box>
+          </Panel>
 
-          <Card background="bg-surface-secondary" padding="400">
-            <BlockStack gap="150">
-              {leader && !leader.isControl && totalVisitors >= 100 && totalConversions >= 20 && (
-                <InlineStack>
-                  <Button variant="primary" onClick={rolloutLeader}>{`Roll out ${leader.variantName}`}</Button>
-                </InlineStack>
-              )}
-              <BlockStack gap="100">
-                <Text as="p" tone="subdued">Threshold progress</Text>
-                <InlineStack align="space-between">
-                  <Text as="p" tone="subdued">Exposures</Text>
-                  <Text as="p" tone="subdued">{totalVisitors} / 100</Text>
-                </InlineStack>
-                <InlineStack align="space-between">
-                  <Text as="p" tone="subdued">Conversions</Text>
-                  <Text as="p" tone="subdued">{(leader?.conversions ?? 0) + (control?.conversions ?? 0)} / 20</Text>
-                </InlineStack>
-              </BlockStack>
-            </BlockStack>
-          </Card>
-        </InlineStack>
+          <Panel>
+            <Box style={{ padding: "1rem", borderRadius: "6px" }} backgroundColor="secondary10">
+              <Flex flexDirection="column" flexGap="0.375rem">
+                {leader && !leader.isControl && totalVisitors >= 100 && totalConversions >= 20 && (
+                  <Flex flexDirection="row">
+                    <Button variant="primary" onClick={rolloutLeader}>{`Roll out ${leader.variantName}`}</Button>
+                  </Flex>
+                )}
+                <Flex flexDirection="column" flexGap="0.25rem">
+                  <Text color="secondary">Threshold progress</Text>
+                  <Flex flexDirection="row" justifyContent="space-between" alignItems="center">
+                    <Text color="secondary">Exposures</Text>
+                    <Text color="secondary">{totalVisitors} / 100</Text>
+                  </Flex>
+                  <Flex flexDirection="row" justifyContent="space-between" alignItems="center">
+                    <Text color="secondary">Conversions</Text>
+                    <Text color="secondary">{(leader?.conversions ?? 0) + (control?.conversions ?? 0)} / 20</Text>
+                  </Flex>
+                </Flex>
+              </Flex>
+            </Box>
+          </Panel>
+        </Flex>
 
         {rpvLiftPct !== null && (
-          <Text as="p">{`Lift (RPV): ${rpvLiftPct >= 0 ? '+' : ''}${rpvLiftPct.toFixed(1)}%`}</Text>
+          <Text>{`Lift (RPV): ${rpvLiftPct >= 0 ? '+' : ''}${rpvLiftPct.toFixed(1)}%`}</Text>
         )}
-        <InlineStack align="space-between">
-          <InlineStack gap="200" align="center">
-            <Text as="p" tone="subdued">Leader:</Text>
-            <Badge tone="success">{leader?.variantName || '—'}</Badge>
-            <Text as="p" tone="subdued">• Split: {split}</Text>
-          </InlineStack>
-          <Text as="p" tone="subdued">Window: {new Date(summary.start).toLocaleDateString()} - {new Date(summary.end).toLocaleDateString()}</Text>
-        </InlineStack>
-      </BlockStack>
+        <Flex flexDirection="row" justifyContent="space-between" alignItems="center">
+          <Flex flexDirection="row" flexGap="0.5rem" alignItems="center">
+            <Text color="secondary">Leader:</Text>
+            <Badge label={leader?.variantName || '—'} variant="success" />
+            <Text color="secondary">• Split: {split}</Text>
+          </Flex>
+          <Text color="secondary">Window: {new Date(summary.start).toLocaleDateString()} - {new Date(summary.end).toLocaleDateString()}</Text>
+        </Flex>
+      </Flex>
     );
   }
 
@@ -539,17 +526,6 @@ export default function ABTestingPage() {
     setIsSaving(true);
 
     try {
-      const params = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : new URLSearchParams();
-      let sessionToken = '';
-      try {
-        if (app) {
-          sessionToken = await appBridgeUtils.getSessionToken(app);
-        }
-      } catch (_e) {
-        // ignore and fallback to id_token
-      }
-      if (!sessionToken) sessionToken = params.get('id_token') || '';
-
       const payload = {
         action: "create",
         experiment: {
@@ -586,8 +562,8 @@ export default function ABTestingPage() {
         headers: {
           "Content-Type": "application/json",
           "X-Requested-With": "XMLHttpRequest",
-          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
         },
+        credentials: 'include',
         body: JSON.stringify(payload),
         signal: controller.signal,
       });
@@ -670,27 +646,13 @@ export default function ABTestingPage() {
     setSuccessBanner(null);
 
     try {
-      const params = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : new URLSearchParams();
-      // Prefer App Bridge session token; fallback to id_token in URL if present
-      let sessionToken = '';
-      try {
-        if (app) {
-          sessionToken = await appBridgeUtils.getSessionToken(app);
-        }
-      } catch (_e) {
-        // ignore and fallback
-      }
-      if (!sessionToken) {
-        sessionToken = params.get('id_token') || '';
-      }
-
       const response = await fetch(`/api/ab-testing-admin`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           "X-Requested-With": "XMLHttpRequest",
-          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
         },
+        credentials: 'include',
         body: JSON.stringify({ action: "delete", experimentId }),
       });
 
@@ -721,22 +683,8 @@ export default function ABTestingPage() {
     setResultsModalOpen(true);
 
     try {
-      // Include App Bridge session token for authenticated request
-      const params = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : new URLSearchParams();
-      let sessionToken = '';
-      try {
-        if (app) {
-          sessionToken = await appBridgeUtils.getSessionToken(app);
-        }
-      } catch (_e) {
-        // ignore
-      }
-      if (!sessionToken) sessionToken = params.get('id_token') || '';
-
       const response = await fetch(`/api/ab-results?experimentId=${experiment.id}&period=7d`, {
-        headers: {
-          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
-        },
+        credentials: 'include',
       });
       if (!response.ok) {
         const msg = await extractErrorMessage(response);
@@ -770,11 +718,11 @@ export default function ABTestingPage() {
   };
 
   const renderExperimentCard = (experiment: LoaderExperiment) => {
-    const statusTone: BadgeProps["tone"] = experiment.status === "running"
+    const statusBadgeVariant = experiment.status === "running"
       ? "success"
       : experiment.status === "completed"
-        ? "attention"
-        : "critical";
+        ? "warning"
+        : "danger";
     const typeLabel = `${experiment.type?.slice(0,1).toUpperCase()}${experiment.type?.slice(1)}`;
     const prettyAttribution = (key: string | null | undefined) => {
       switch (key) {
@@ -789,7 +737,7 @@ export default function ABTestingPage() {
           return 'Same session';
       }
     };
-    
+
     // Helper to format value based on valueFormat
     const formatValue = (value: number, valueFormat: ValueFormat): string => {
       switch(valueFormat) {
@@ -803,164 +751,170 @@ export default function ABTestingPage() {
           return String(value);
       }
     };
-    
+
     const control = experiment.variants.find((variant) => variant.isControl);
     const challenger = experiment.variants.find((variant) => !variant.isControl);
 
     return (
-      <Card key={experiment.id} padding="400">
-        <BlockStack gap="400">
-          <InlineStack align="space-between">
-            <BlockStack gap="200">
-              <Text variant="headingMd" as="h2">{experiment.name}</Text>
-              <InlineStack gap="200">
-                <Badge>{typeLabel}</Badge>
-                <Badge tone={statusTone}>{experiment.status}</Badge>
-                <Badge tone="info">{`Attribution: ${prettyAttribution(experiment.attribution)}`}</Badge>
-                {experiment.startDate && (
-                  <Badge tone="attention">{`Started ${new Date(experiment.startDate).toLocaleDateString()}`}</Badge>
-                )}
-              </InlineStack>
-            </BlockStack>
-            <ButtonGroup>
-              <Button onClick={() => openResultsModal(experiment)}>View results</Button>
-              <Button onClick={() => openEditModal(experiment)}>Edit</Button>
-              <Button onClick={() => handleToggleStatus(experiment)}>
-                {experiment.status === 'running' ? 'Pause' : 'Resume'}
-              </Button>
-              <Button tone="critical" onClick={() => handleDelete(experiment.id)}>
-                Delete
-              </Button>
-            </ButtonGroup>
-          </InlineStack>
+      <Panel key={experiment.id}>
+        <Box style={{ padding: "1rem" }}>
+          <Flex flexDirection="column" flexGap="1rem">
+            <Flex flexDirection="row" justifyContent="space-between" alignItems="center">
+              <Flex flexDirection="column" flexGap="0.5rem">
+                <H2>{experiment.name}</H2>
+                <Flex flexDirection="row" flexGap="0.5rem" alignItems="center">
+                  <Badge label={typeLabel} variant="secondary" />
+                  <Badge label={experiment.status} variant={statusBadgeVariant as "success" | "warning" | "danger"} />
+                  <Badge label={`Attribution: ${prettyAttribution(experiment.attribution)}`} variant="primary" />
+                  {experiment.startDate && (
+                    <Badge label={`Started ${new Date(experiment.startDate).toLocaleDateString()}`} variant="warning" />
+                  )}
+                </Flex>
+              </Flex>
+              <Flex flexDirection="row" flexGap="0.5rem" flexWrap="wrap">
+                <Button variant="secondary" onClick={() => openResultsModal(experiment)}>View results</Button>
+                <Button variant="secondary" onClick={() => openEditModal(experiment)}>Edit</Button>
+                <Button variant="secondary" onClick={() => handleToggleStatus(experiment)}>
+                  {experiment.status === 'running' ? 'Pause' : 'Resume'}
+                </Button>
+                <Button variant="secondary" onClick={() => handleDelete(experiment.id)}>
+                  Delete
+                </Button>
+              </Flex>
+            </Flex>
 
-          <InlineStack gap="400" wrap>
-            {control && (
-              <Card key={`${experiment.id}-control`} background="bg-surface-secondary" padding="400">
-                <BlockStack gap="150">
-                  <Text variant="headingSm" as="h3">Control</Text>
-                  <Text as="p" tone="subdued">Value: {formatValue(control.value, control.valueFormat)}</Text>
-                  <Text as="p" tone="subdued">Traffic: {control.trafficPct}%</Text>
-                </BlockStack>
-              </Card>
-            )}
-            {challenger && (
-              <Card key={`${experiment.id}-challenger`} background="bg-surface-secondary" padding="400">
-                <BlockStack gap="150">
-                  <Text variant="headingSm" as="h3">{challenger.name}</Text>
-                  <Text as="p" tone="subdued">Value: {formatValue(challenger.value, challenger.valueFormat)}</Text>
-                  <Text as="p" tone="subdued">Traffic: {challenger.trafficPct}%</Text>
-                </BlockStack>
-              </Card>
-            )}
-          </InlineStack>
+            <Flex flexDirection="row" flexGap="1rem" flexWrap="wrap">
+              {control && (
+                <Panel key={`${experiment.id}-control`}>
+                  <Box style={{ padding: "1rem", borderRadius: "6px" }} backgroundColor="secondary10">
+                    <Flex flexDirection="column" flexGap="0.375rem">
+                      <H3>Control</H3>
+                      <Text color="secondary">Value: {formatValue(control.value, control.valueFormat)}</Text>
+                      <Text color="secondary">Traffic: {control.trafficPct}%</Text>
+                    </Flex>
+                  </Box>
+                </Panel>
+              )}
+              {challenger && (
+                <Panel key={`${experiment.id}-challenger`}>
+                  <Box style={{ padding: "1rem", borderRadius: "6px" }} backgroundColor="secondary10">
+                    <Flex flexDirection="column" flexGap="0.375rem">
+                      <H3>{challenger.name}</H3>
+                      <Text color="secondary">Value: {formatValue(challenger.value, challenger.valueFormat)}</Text>
+                      <Text color="secondary">Traffic: {challenger.trafficPct}%</Text>
+                    </Flex>
+                  </Box>
+                </Panel>
+              )}
+            </Flex>
 
-          {/* Compact last-7-days summary */}
-          <ExperimentSummary experiment={experiment} />
-        </BlockStack>
-      </Card>
+            {/* Compact last-7-days summary */}
+            <ExperimentSummary experiment={experiment} />
+          </Flex>
+        </Box>
+      </Panel>
     );
   };
 
   const renderResults = () => {
     if (resultsLoading) {
-      return <Text as="p">Crunching numbers…</Text>;
+      return <Text>Crunching numbers…</Text>;
     }
 
     if (resultsError) {
       return (
-        <BlockStack gap="300">
-          <Banner tone="warning" title="Unable to show results">
-            <Text as="p">{resultsError}</Text>
-          </Banner>
-          <Text as="p" tone="subdued">Common reasons:</Text>
-          <BlockStack gap="100">
-            <Text as="p" tone="subdued">• Your experiment just started and hasn't collected data yet</Text>
-            <Text as="p" tone="subdued">• The experiment isn't receiving traffic (check it's published and active)</Text>
-            <Text as="p" tone="subdued">• Events aren't being tracked properly</Text>
-          </BlockStack>
-        </BlockStack>
+        <Flex flexDirection="column" flexGap="0.75rem">
+          <Box style={{ borderLeft: "4px solid #ed6c02", backgroundColor: "#fff3e0", padding: "1rem", borderRadius: "6px" }}>
+            <Flex flexDirection="row" justifyContent="space-between" alignItems="flex-start" flexGap="1rem">
+              <Box>
+                <H3>Unable to show results</H3>
+                <Text>{resultsError}</Text>
+              </Box>
+            </Flex>
+          </Box>
+          <Text color="secondary">Common reasons:</Text>
+          <Flex flexDirection="column" flexGap="0.25rem">
+            <Text color="secondary">• Your experiment just started and hasn't collected data yet</Text>
+            <Text color="secondary">• The experiment isn't receiving traffic (check it's published and active)</Text>
+            <Text color="secondary">• Events aren't being tracked properly</Text>
+          </Flex>
+        </Flex>
       );
     }
 
     if (!resultsPayload) {
-      return <Text as="p">No data yet.</Text>;
+      return <Text>No data yet.</Text>;
     }
 
     const { results, leader, start, end } = resultsPayload;
 
     // Check if there's any actual data
     const hasData = results.some(v => v.visitors > 0);
-    
+
     if (!hasData) {
       return (
-        <BlockStack gap="300">
-          <Banner tone="info" title="Not enough data yet">
-            <Text as="p">Your experiment is running, but we haven't collected enough traffic yet.</Text>
-            <Text as="p">Check back in a few hours once visitors start seeing your variants.</Text>
-          </Banner>
-          <Text as="p" tone="subdued">
+        <Flex flexDirection="column" flexGap="0.75rem">
+          <Box style={{ borderLeft: "4px solid #1565c0", backgroundColor: "#e3f2fd", padding: "1rem", borderRadius: "6px" }}>
+            <Flex flexDirection="row" justifyContent="space-between" alignItems="flex-start" flexGap="1rem">
+              <Box>
+                <H3>Not enough data yet</H3>
+                <Text>Your experiment is running, but we haven't collected enough traffic yet.</Text>
+                <Text>Check back in a few hours once visitors start seeing your variants.</Text>
+              </Box>
+            </Flex>
+          </Box>
+          <Text color="secondary">
             Window: {new Date(start).toLocaleDateString()} - {new Date(end).toLocaleDateString()}
           </Text>
-        </BlockStack>
+        </Flex>
       );
     }
 
     return (
-      <BlockStack gap="400">
-        <Text as="p" tone="subdued">
+      <Flex flexDirection="column" flexGap="1rem">
+        <Text color="secondary">
           Window: {new Date(start).toLocaleDateString()} - {new Date(end).toLocaleDateString()}
         </Text>
         {results.map((variant: ResultsVariant) => {
           const isLeader = leader === variant.variantId;
           return (
-            <Card key={variant.variantId} padding="400">
-              <BlockStack gap="200">
-                <InlineStack align="space-between" blockAlign="start">
-                  <BlockStack gap="100">
-                    <InlineStack gap="200" align="center">
-                      <Text variant="headingSm" as="h3">{variant.variantName}</Text>
-                      {isLeader && <Badge tone="success">Recommended</Badge>}
-                    </InlineStack>
-                    <InlineStack gap="400">
-                      <Text as="p" tone="subdued">Visitors: {variant.visitors}</Text>
-                      <Text as="p" tone="subdued">Orders: {variant.conversions}</Text>
-                      <Text as="p" tone="subdued">Revenue: {money.format(variant.revenue)}</Text>
-                    </InlineStack>
-                  </BlockStack>
-                  <BlockStack gap="150" align="end">
-                    <Text as="p">Revenue / visitor: {money.format(variant.revenuePerVisitor)}</Text>
-                    <Text as="p">Conversion rate: {(variant.conversionRate * 100).toFixed(2)}%</Text>
-                  </BlockStack>
-                </InlineStack>
-              </BlockStack>
-            </Card>
+            <Panel key={variant.variantId}>
+              <Box style={{ padding: "1rem" }}>
+                <Flex flexDirection="column" flexGap="0.5rem">
+                  <Flex flexDirection="row" justifyContent="space-between" alignItems="flex-start">
+                    <Flex flexDirection="column" flexGap="0.25rem">
+                      <Flex flexDirection="row" flexGap="0.5rem" alignItems="center">
+                        <H3>{variant.variantName}</H3>
+                        {isLeader && <Badge label="Recommended" variant="success" />}
+                      </Flex>
+                      <Flex flexDirection="row" flexGap="1rem" alignItems="center">
+                        <Text color="secondary">Visitors: {variant.visitors}</Text>
+                        <Text color="secondary">Orders: {variant.conversions}</Text>
+                        <Text color="secondary">Revenue: {money.format(variant.revenue)}</Text>
+                      </Flex>
+                    </Flex>
+                    <Flex flexDirection="column" flexGap="0.375rem" alignItems="flex-end">
+                      <Text>Revenue / visitor: {money.format(variant.revenuePerVisitor)}</Text>
+                      <Text>Conversion rate: {(variant.conversionRate * 100).toFixed(2)}%</Text>
+                    </Flex>
+                  </Flex>
+                </Flex>
+              </Box>
+            </Panel>
           );
         })}
         {leader && selectedExperiment && (
-          <InlineStack align="end">
+          <Flex flexDirection="row" justifyContent="flex-end">
             <Button
               variant="primary"
               onClick={async () => {
                 try {
-                  // Include App Bridge session token for rollout request
-                  const params = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : new URLSearchParams();
-                  let sessionToken = '';
-                  try {
-                    if (app) {
-                      sessionToken = await appBridgeUtils.getSessionToken(app);
-                    }
-                  } catch (_e) {
-                    // ignore
-                  }
-                  if (!sessionToken) sessionToken = params.get('id_token') || '';
-
                   const res = await fetch("/api/ab-rollout", {
                     method: "POST",
                     headers: {
                       "Content-Type": "application/json",
-                      ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
                     },
+                    credentials: 'include',
                     body: JSON.stringify({ experimentId: selectedExperiment.id, winnerVariantId: leader }),
                   });
                   if (res.ok) {
@@ -979,366 +933,381 @@ export default function ABTestingPage() {
             >
               Roll out winner
             </Button>
-          </InlineStack>
+          </Flex>
         )}
-      </BlockStack>
+      </Flex>
     );
   };
 
+  // Build modal actions for create modal
+  const createModalActions = [
+    {
+      text: "Cancel",
+      variant: "subtle" as const,
+      onClick: closeCreateModal,
+    },
+    {
+      text: isSaving ? "Saving…" : "Launch experiment",
+      variant: "primary" as any,
+      onClick: handleCreate,
+      disabled: isSaving,
+    },
+  ];
+
+  // Build modal actions for edit modal
+  const editModalSaveHandler = async () => {
+    if (!editingExperiment) return;
+    setIsSaving(true);
+    try {
+      const controlVal = Number(controlDiscount);
+      const challengerVal = Number(variantDiscount);
+
+      const control = editingExperiment.variants.find(v => v.isControl);
+      const challenger = editingExperiment.variants.find(v => !v.isControl);
+
+      const payload = {
+        action: "update",
+        experimentId: editingExperiment.id,
+        experiment: {
+          name: newName.trim(),
+          type: controlType,
+          attributionWindow: attributionWindow,
+        },
+        variants: [
+          {
+            id: control?.id,
+            name: "Control",
+            isControl: true,
+            value: controlVal,
+            valueFormat: controlFormat,
+            trafficPct: 50,
+          },
+          {
+            id: challenger?.id,
+            name: variantName.trim() || "Variant",
+            isControl: false,
+            value: challengerVal,
+            valueFormat: challengerFormat,
+            trafficPct: 50,
+          },
+        ],
+      };
+
+      const response = await fetch(`/api/ab-testing-admin`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Requested-With": "XMLHttpRequest",
+        },
+        credentials: 'include',
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        const msg = await extractErrorMessage(response);
+        throw new Error(msg || "Failed to update experiment");
+      }
+
+      setSuccessBanner("Experiment updated successfully!");
+      // Optimistically update the list
+      try {
+        const mapAttr = (w: AttributionWindow): AttributionWindowDB => {
+          switch (w) {
+            case '24h': return 'hours24';
+            case '7d': return 'days7';
+            case 'session':
+            default: return 'session';
+          }
+        };
+        setExperiments((prev) => prev.map((e) => {
+          if (e.id !== editingExperiment.id) return e;
+          const controlExisting = e.variants.find(v => v.isControl);
+          const challengerExisting = e.variants.find(v => !v.isControl);
+          return {
+            ...e,
+            name: newName.trim(),
+            type: controlType,
+            attribution: mapAttr(attributionWindow),
+            updatedAt: new Date().toISOString(),
+            variants: [
+              controlExisting ? { ...controlExisting, name: 'Control', value: Number(controlDiscount), valueFormat: controlFormat, trafficPct: 50 } : {
+                id: Math.floor(Math.random() * -1000000), name: 'Control', isControl: true, value: Number(controlDiscount), valueFormat: controlFormat, trafficPct: 50
+              },
+              challengerExisting ? { ...challengerExisting, name: variantName.trim() || 'Variant', value: Number(variantDiscount), valueFormat: challengerFormat, trafficPct: 50 } : {
+                id: Math.floor(Math.random() * -1000000), name: variantName.trim() || 'Variant', isControl: false, value: Number(variantDiscount), valueFormat: challengerFormat, trafficPct: 50
+              },
+            ],
+          };
+        }));
+      } catch (_) {
+        // ignore optimistic failures
+      }
+      closeEditModal();
+      // Pause loader sync briefly, then revalidate
+      setSyncPauseUntil(Date.now() + 2000);
+      setTimeout(() => revalidator.revalidate(), 600);
+    } catch (error: unknown) {
+      console.error("[ABTesting] Update error", error);
+      const errorMessage = error instanceof Error ? error.message : "Failed to update experiment. Try again.";
+      setErrorBanner(errorMessage);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const editModalActions = [
+    {
+      text: "Cancel",
+      variant: "subtle" as const,
+      onClick: closeEditModal,
+    },
+    {
+      text: "Save Changes",
+      variant: "primary" as any,
+      onClick: editModalSaveHandler,
+      disabled: isSaving,
+      isLoading: isSaving,
+    },
+  ];
+
   return (
-    <Page
-      title="A/B Experiments"
-      primaryAction={{
-        content: "New experiment",
-        onAction: () => setCreateModalOpen(true),
-      }}
-    >
-      <Layout>
-        <Layout.Section>
+    <Box padding="medium" style={{ maxWidth: "1200px", margin: "0 auto" }}>
+      <Flex flexDirection="column" flexGap="0.5rem" marginBottom="medium">
+        <H1>A/B Experiments</H1>
+        <Flex flexDirection="row" flexGap="0.5rem" flexWrap="wrap">
+          <Button variant="primary" onClick={() => setCreateModalOpen(true)}>New experiment</Button>
+        </Flex>
+      </Flex>
+
+      <Flex flexDirection="column" flexGap="1.5rem">
+        <Box>
           {errorBanner && (
-            <Banner tone="critical" title="Something went wrong" onDismiss={() => setErrorBanner(null)}>
-              {errorBanner}
-            </Banner>
+            <Box style={{ borderLeft: "4px solid #c62828", backgroundColor: "#ffebee", padding: "1rem", borderRadius: "6px" }}>
+              <Flex flexDirection="row" justifyContent="space-between" alignItems="flex-start" flexGap="1rem">
+                <Box>
+                  <H3>Something went wrong</H3>
+                  <Text>{errorBanner}</Text>
+                </Box>
+                <Button variant="subtle" iconOnly={<CloseIcon />} onClick={() => setErrorBanner(null)} />
+              </Flex>
+            </Box>
           )}
           {successBanner && (
-            <Banner tone="success" title="All set" onDismiss={() => setSuccessBanner(null)}>
-              {successBanner}
-            </Banner>
+            <Box style={{ borderLeft: "4px solid #2e7d32", backgroundColor: "#e8f5e9", padding: "1rem", borderRadius: "6px" }}>
+              <Flex flexDirection="row" justifyContent="space-between" alignItems="flex-start" flexGap="1rem">
+                <Box>
+                  <H3>All set</H3>
+                  <Text>{successBanner}</Text>
+                </Box>
+                <Button variant="subtle" iconOnly={<CloseIcon />} onClick={() => setSuccessBanner(null)} />
+              </Flex>
+            </Box>
           )}
-        </Layout.Section>
+        </Box>
 
         {/* A/B Testing Settings */}
-        <Layout.Section>
-          <Card>
-            <BlockStack gap="400">
-              <Text variant="headingMd" as="h2">⚙️ A/B Testing Settings</Text>
-              <Checkbox
-                label="Auto-apply A/B discount codes"
-                helpText="When an A/B test assigns a discount code, automatically apply it to the cart if none is present"
-                checked={autoApplyABDiscounts}
-                onChange={handleSaveAutoApply}
-                disabled={settingsSaving}
-              />
-            </BlockStack>
-          </Card>
-        </Layout.Section>
+        <Box>
+          <Panel>
+            <Box style={{ padding: "1rem" }}>
+              <Flex flexDirection="column" flexGap="1rem">
+                <H2>A/B Testing Settings</H2>
+                <Checkbox
+                  label="Auto-apply A/B discount codes"
+                  description="When an A/B test assigns a discount code, automatically apply it to the cart if none is present"
+                  checked={autoApplyABDiscounts}
+                  onChange={(event) => handleSaveAutoApply(event.target.checked)}
+                  disabled={settingsSaving}
+                />
+              </Flex>
+            </Box>
+          </Panel>
+        </Box>
 
-        <Layout.Section>
+        <Box>
           {experiments.length === 0 ? (
-            <Card padding="400">
-              <EmptyState
-                heading="Launch your first test"
-                action={{ content: "Create experiment", onAction: () => setCreateModalOpen(true) }}
-                image="https://cdn.shopify.com/s/files/1/0780/2207/collections/empty-state.svg"
-              >
-                Try a simple price incentive: keep one drawer as-is, and offer a sweeter discount to half of shoppers.
-              </EmptyState>
-            </Card>
+            <Panel>
+              <Box style={{ padding: "1rem" }}>
+                <Box style={{ textAlign: "center", padding: "2rem" }}>
+                  <H2>Launch your first test</H2>
+                  <Text color="secondary">Try a simple price incentive: keep one drawer as-is, and offer a sweeter discount to half of shoppers.</Text>
+                  <Box marginTop="medium">
+                    <Button variant="primary" onClick={() => setCreateModalOpen(true)}>Create experiment</Button>
+                  </Box>
+                </Box>
+              </Box>
+            </Panel>
           ) : (
-            <BlockStack gap="400">
+            <Flex flexDirection="column" flexGap="1rem">
               {experiments.map((experiment) => renderExperimentCard(experiment))}
-            </BlockStack>
+            </Flex>
           )}
-        </Layout.Section>
-      </Layout>
+        </Box>
+      </Flex>
 
       <Modal
-        open={createModalOpen}
+        isOpen={createModalOpen}
         onClose={closeCreateModal}
-  title="Start a new test"
-        primaryAction={{
-          content: isSaving ? "Saving…" : "Launch experiment",
-          onAction: handleCreate,
-          disabled: isSaving,
-        }}
-        secondaryActions={[{ content: "Cancel", onAction: closeCreateModal }]}
+        header="Start a new test"
+        actions={createModalActions}
       >
-        <Modal.Section>
-          <BlockStack gap="400">
-            <TextField
+        <Box padding="medium">
+          <Flex flexDirection="column" flexGap="1rem">
+            <Input
               label="Experiment name"
               value={newName}
               placeholder="e.g., Free Shipping vs 10% Off"
-              onChange={setNewName}
+              onChange={(e) => setNewName(e.target.value)}
               autoComplete="off"
             />
 
-            <BlockStack gap="150">
-              <Text as="p">How long should we count orders for this test?</Text>
+            <Flex flexDirection="column" flexGap="0.375rem">
+              <Text>How long should we count orders for this test?</Text>
               <Select
                 label="Attribution window"
-                labelHidden
                 value={attributionWindow}
-                onChange={(value) => setAttributionWindow(value as "session"|"24h"|"7d")}
+                onOptionChange={(value) => setAttributionWindow(value as "session"|"24h"|"7d")}
                 options={[
-                  { label: "Same session only", value: "session" },
-                  { label: "Orders placed within 24 hours", value: "24h" },
-                  { label: "Orders placed within 7 days", value: "7d" },
+                  { content: "Same session only", value: "session" },
+                  { content: "Orders placed within 24 hours", value: "24h" },
+                  { content: "Orders placed within 7 days", value: "7d" },
                 ]}
               />
-            </BlockStack>
+            </Flex>
 
-            <BlockStack gap="150">
-              <Text as="p">Start test immediately?</Text>
+            <Flex flexDirection="column" flexGap="0.375rem">
+              <Text>Start test immediately?</Text>
               <Select
                 label="Start test immediately?"
-                labelHidden
                 value={activateNow ? "yes" : "no"}
-                onChange={(value) => setActivateNow(value === "yes")}
+                onOptionChange={(value) => setActivateNow(value === "yes")}
                 options={[
-                  { label: "Yes, start now", value: "yes" },
-                  { label: "No, save as draft", value: "no" },
+                  { content: "Yes, start now", value: "yes" },
+                  { content: "No, save as draft", value: "no" },
                 ]}
               />
-            </BlockStack>
+            </Flex>
 
-            <Divider />
+            <HR />
 
-            <BlockStack gap="300">
-              <Text variant="headingMd" as="h3">Control (Current Offer)</Text>
+            <Flex flexDirection="column" flexGap="0.75rem">
+              <H2>Control (Current Offer)</H2>
               <Select
                 label="Control type"
                 value={controlType}
-                onChange={(value) => setControlType(value as "discount"|"bundle"|"shipping"|"upsell")}
+                onOptionChange={(value) => setControlType(value as "discount"|"bundle"|"shipping"|"upsell")}
                 options={[
-                  { label: "Discount offer", value: "discount" },
-                  { label: "Bundle deal", value: "bundle" },
-                  { label: "Shipping threshold", value: "shipping" },
-                  { label: "Upsell", value: "upsell" },
+                  { content: "Discount offer", value: "discount" },
+                  { content: "Bundle deal", value: "bundle" },
+                  { content: "Shipping threshold", value: "shipping" },
+                  { content: "Upsell", value: "upsell" },
                 ]}
               />
               <Select
                 label="Control format"
                 value={controlFormat}
-                onChange={(value) => setControlFormat(value as "percent"|"currency"|"number")}
+                onOptionChange={(value) => setControlFormat(value as "percent"|"currency"|"number")}
                 options={[
-                  { label: "Percentage (e.g., 10%)", value: "percent" },
-                  { label: "Currency (e.g., $50)", value: "currency" },
-                  { label: "Number (e.g., 2 items)", value: "number" },
+                  { content: "Percentage (e.g., 10%)", value: "percent" },
+                  { content: "Currency (e.g., $50)", value: "currency" },
+                  { content: "Number (e.g., 2 items)", value: "number" },
                 ]}
               />
-              <TextField
+              <Input
                 label="Control value"
                 value={controlDiscount}
-                onChange={setControlDiscount}
+                onChange={(e) => setControlDiscount(e.target.value)}
                 type="number"
-                suffix={controlFormat === 'percent' ? '%' : controlFormat === 'currency' ? storeCurrency : ''}
-                min="0"
-                autoComplete="off"
-                helpText={
+                iconRight={controlFormat === 'percent' ? <Small>%</Small> : controlFormat === 'currency' ? <Small>{storeCurrency}</Small> : undefined}
+                description={
                   controlFormat === 'percent' ? 'Enter percentage (e.g., 5 for 5% off)' :
                   controlFormat === 'currency' ? 'Enter dollar amount (e.g., 50 for $50)' :
                   'Enter numeric value'
                 }
+                autoComplete="off"
               />
-            </BlockStack>
+            </Flex>
 
-            <Divider />
+            <HR />
 
-            <BlockStack gap="300">
-              <Text variant="headingMd" as="h3">Challenger (New Offer)</Text>
-              <TextField
+            <Flex flexDirection="column" flexGap="0.75rem">
+              <H2>Challenger (New Offer)</H2>
+              <Input
                 label="Challenger name"
                 value={variantName}
-                onChange={setVariantName}
+                onChange={(e) => setVariantName(e.target.value)}
                 placeholder="e.g., 10% Off"
                 autoComplete="off"
               />
               <Select
                 label="Challenger type"
                 value={challengerType}
-                onChange={(value) => setChallengerType(value as "discount"|"bundle"|"shipping"|"upsell")}
+                onOptionChange={(value) => setChallengerType(value as "discount"|"bundle"|"shipping"|"upsell")}
                 options={[
-                  { label: "Discount offer", value: "discount" },
-                  { label: "Bundle deal", value: "bundle" },
-                  { label: "Shipping threshold", value: "shipping" },
-                  { label: "Upsell", value: "upsell" },
+                  { content: "Discount offer", value: "discount" },
+                  { content: "Bundle deal", value: "bundle" },
+                  { content: "Shipping threshold", value: "shipping" },
+                  { content: "Upsell", value: "upsell" },
                 ]}
               />
               <Select
                 label="Challenger format"
                 value={challengerFormat}
-                onChange={(value) => setChallengerFormat(value as "percent"|"currency"|"number")}
+                onOptionChange={(value) => setChallengerFormat(value as "percent"|"currency"|"number")}
                 options={[
-                  { label: "Percentage (e.g., 10%)", value: "percent" },
-                  { label: "Currency (e.g., $100)", value: "currency" },
-                  { label: "Number (e.g., 3 items)", value: "number" },
+                  { content: "Percentage (e.g., 10%)", value: "percent" },
+                  { content: "Currency (e.g., $100)", value: "currency" },
+                  { content: "Number (e.g., 3 items)", value: "number" },
                 ]}
               />
-              <TextField
+              <Input
                 label="Challenger value"
                 value={variantDiscount}
-                onChange={setVariantDiscount}
+                onChange={(e) => setVariantDiscount(e.target.value)}
                 type="number"
-                suffix={challengerFormat === 'percent' ? '%' : challengerFormat === 'currency' ? storeCurrency : ''}
-                min="0"
-                autoComplete="off"
-                helpText={
+                iconRight={challengerFormat === 'percent' ? <Small>%</Small> : challengerFormat === 'currency' ? <Small>{storeCurrency}</Small> : undefined}
+                description={
                   challengerFormat === 'percent' ? 'Enter percentage (e.g., 10 for 10% off)' :
                   challengerFormat === 'currency' ? 'Enter dollar amount (e.g., 100 for $100)' :
                   'Enter numeric value'
                 }
+                autoComplete="off"
               />
-            </BlockStack>
-          </BlockStack>
-        </Modal.Section>
+            </Flex>
+          </Flex>
+        </Box>
       </Modal>
 
       <Modal
-        open={resultsModalOpen}
+        isOpen={resultsModalOpen}
         onClose={closeResultsModal}
-        title={selectedExperiment ? `${selectedExperiment.name} results` : "Experiment results"}
+        header={selectedExperiment ? `${selectedExperiment.name} results` : "Experiment results"}
       >
-        <Modal.Section>
+        <Box padding="medium">
           {renderResults()}
-        </Modal.Section>
+        </Box>
       </Modal>
 
-      {/* Edit Modal - reuses same form state as create */
-      }
+      {/* Edit Modal - reuses same form state as create */}
       <Modal
-        open={editModalOpen}
+        isOpen={editModalOpen}
         onClose={closeEditModal}
-        title="Edit Experiment"
-        primaryAction={{
-          content: "Save Changes",
-          onAction: async () => {
-            if (!editingExperiment) return;
-            setIsSaving(true);
-            try {
-              const params = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : new URLSearchParams();
-              // Prefer App Bridge session token; fallback to id_token in URL if present
-              let sessionToken = '';
-              try {
-                if (app) {
-                  sessionToken = await appBridgeUtils.getSessionToken(app);
-                }
-              } catch (_e) {
-                // ignore
-              }
-              if (!sessionToken) {
-                sessionToken = params.get('id_token') || '';
-              }
-
-              const controlVal = Number(controlDiscount);
-              const challengerVal = Number(variantDiscount);
-
-              const control = editingExperiment.variants.find(v => v.isControl);
-              const challenger = editingExperiment.variants.find(v => !v.isControl);
-
-              const payload = {
-                action: "update",
-                experimentId: editingExperiment.id,
-                experiment: {
-                  name: newName.trim(),
-                  type: controlType, // Use control type as the experiment type
-                  attributionWindow: attributionWindow,
-                },
-                variants: [
-                  {
-                    id: control?.id,
-                    name: "Control",
-                    isControl: true,
-                    value: controlVal,
-                    valueFormat: controlFormat,
-                    trafficPct: 50,
-                  },
-                  {
-                    id: challenger?.id,
-                    name: variantName.trim() || "Variant",
-                    isControl: false,
-                    value: challengerVal,
-                    valueFormat: challengerFormat,
-                    trafficPct: 50,
-                  },
-                ],
-              };
-
-              const response = await fetch(`/api/ab-testing-admin`, {
-                method: "POST",
-                headers: {
-                  "Content-Type": "application/json",
-                  "X-Requested-With": "XMLHttpRequest",
-                  ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
-                },
-                body: JSON.stringify(payload),
-              });
-
-              if (!response.ok) {
-                const msg = await extractErrorMessage(response);
-                throw new Error(msg || "Failed to update experiment");
-              }
-
-              setSuccessBanner("Experiment updated successfully!");
-              // Optimistically update the list
-              try {
-                const mapAttr = (w: AttributionWindow): AttributionWindowDB => {
-                  switch (w) {
-                    case '24h': return 'hours24';
-                    case '7d': return 'days7';
-                    case 'session':
-                    default: return 'session';
-                  }
-                };
-                setExperiments((prev) => prev.map((e) => {
-                  if (e.id !== editingExperiment.id) return e;
-                  const controlExisting = e.variants.find(v => v.isControl);
-                  const challengerExisting = e.variants.find(v => !v.isControl);
-                  return {
-                    ...e,
-                    name: newName.trim(),
-                    type: controlType,
-                    attribution: mapAttr(attributionWindow),
-                    updatedAt: new Date().toISOString(),
-                    variants: [
-                      controlExisting ? { ...controlExisting, name: 'Control', value: Number(controlDiscount), valueFormat: controlFormat, trafficPct: 50 } : {
-                        id: Math.floor(Math.random() * -1000000), name: 'Control', isControl: true, value: Number(controlDiscount), valueFormat: controlFormat, trafficPct: 50
-                      },
-                      challengerExisting ? { ...challengerExisting, name: variantName.trim() || 'Variant', value: Number(variantDiscount), valueFormat: challengerFormat, trafficPct: 50 } : {
-                        id: Math.floor(Math.random() * -1000000), name: variantName.trim() || 'Variant', isControl: false, value: Number(variantDiscount), valueFormat: challengerFormat, trafficPct: 50
-                      },
-                    ],
-                  };
-                }));
-              } catch (_) {
-                // ignore optimistic failures
-              }
-              closeEditModal();
-              // Pause loader sync briefly, then revalidate
-              setSyncPauseUntil(Date.now() + 2000);
-              setTimeout(() => revalidator.revalidate(), 600);
-            } catch (error: unknown) {
-              console.error("[ABTesting] Update error", error);
-              const errorMessage = error instanceof Error ? error.message : "Failed to update experiment. Try again.";
-              setErrorBanner(errorMessage);
-            } finally {
-              setIsSaving(false);
-            }
-          },
-          disabled: isSaving,
-          loading: isSaving,
-        }}
-        secondaryActions={[
-          {
-            content: "Cancel",
-            onAction: closeEditModal,
-          },
-        ]}
+        header="Edit Experiment"
+        actions={editModalActions}
       >
-        <Modal.Section>
-          <BlockStack gap="400">
-            <Banner tone="info">
-              <Text as="p">Only the experiment name can be edited. To change variants, values, or traffic allocation, you'll need to create a new experiment.</Text>
-            </Banner>
-            <TextField
+        <Box padding="medium">
+          <Flex flexDirection="column" flexGap="1rem">
+            <Box style={{ borderLeft: "4px solid #1565c0", backgroundColor: "#e3f2fd", padding: "1rem", borderRadius: "6px" }}>
+              <Text>Only the experiment name can be edited. To change variants, values, or traffic allocation, you'll need to create a new experiment.</Text>
+            </Box>
+            <Input
               label="Experiment Name"
               value={newName}
-              onChange={setNewName}
+              onChange={(e) => setNewName(e.target.value)}
               autoComplete="off"
             />
-          </BlockStack>
-        </Modal.Section>
+          </Flex>
+        </Box>
       </Modal>
-    </Page>
+    </Box>
   );
 }

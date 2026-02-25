@@ -6,7 +6,7 @@
  */
 
 import * as React from "react";
-import { Card, BlockStack, Text, Button, Banner, Box } from "@shopify/polaris";
+import { Message } from "@bigcommerce/big-design";
 
 interface ErrorBoundaryProps {
   children: React.ReactNode;
@@ -49,17 +49,17 @@ export class OnboardingErrorBoundary extends React.Component<
         return this.props.fallback;
       }
 
-      // Default fallback: Simple banner
+      // Default fallback: Simple message
       return (
-        <Banner
-          title="Onboarding setup temporarily unavailable"
-          tone="info"
-        >
-          <p>
-            The setup checklist is temporarily unavailable. You can still use all app features normally.
-            Visit Settings to configure your cart and bundles.
-          </p>
-        </Banner>
+        <Message
+          type="info"
+          header="Onboarding setup temporarily unavailable"
+          messages={[
+            {
+              text: "The setup checklist is temporarily unavailable. You can still use all app features normally. Visit Settings to configure your cart and bundles.",
+            },
+          ]}
+        />
       );
     }
 

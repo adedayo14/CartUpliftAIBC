@@ -1,7 +1,7 @@
 import { json } from "@remix-run/node";
 import type { ActionFunctionArgs } from "@remix-run/node";
 import type { PrismaClient } from "@prisma/client";
-import { authenticate } from "../shopify.server";
+import { authenticateAdmin } from "../bigcommerce.server";
 import { rateLimitRequest } from "../utils/rateLimiter.server";
 import prismaClient from "~/db.server";
 
@@ -75,8 +75,8 @@ interface MLUserProfile {
 
 export async function action({ request }: ActionFunctionArgs) {
   // SECURITY: Require admin authentication for ML data access
-  const { session } = await authenticate.admin(request);
-  const authenticatedShop = session.shop;
+  const { session, storeHash } = await authenticateAdmin(request);
+  const authenticatedShop = storeHash;
 
   try {
     const data = await request.json() as RequestData;
@@ -143,7 +143,7 @@ export async function action({ request }: ActionFunctionArgs) {
 async function getAggregatedItemSimilarities(shop: string): Promise<ItemSimilarity[]> {
   try {
     const similarities = await prisma.mLProductSimilarity.findMany({
-      where: { shop },
+      where: { storeHash: shop },
       orderBy: { overallScore: 'desc' },
       take: 100,
       select: {
@@ -167,7 +167,7 @@ async function getAggregatedItemSimilarities(shop: string): Promise<ItemSimilari
 async function getItemSimilarities(shop: string): Promise<ItemSimilarity[]> {
   try {
     const similarities = await prisma.mLProductSimilarity.findMany({
-      where: { shop },
+      where: { storeHash: shop },
       orderBy: { overallScore: 'desc' },
       take: 200
     });
@@ -193,7 +193,7 @@ async function getGlobalStats(shop: string): Promise<GlobalStats> {
     
     const trackingEvents = await prisma.trackingEvent.findMany({
       where: {
-        shop,
+        storeHash: shop,
         createdAt: { gte: thirtyDaysAgo }
       },
       select: {
@@ -240,8 +240,8 @@ async function getUserItemInteractions(shop: string, sessionId?: string): Promis
 
     const profile = await prisma.mLUserProfile.findUnique({
       where: {
-        shop_sessionId: {
-          shop,
+        storeHash_sessionId: {
+          storeHash: shop,
           sessionId
         }
       }
@@ -298,8 +298,8 @@ async function getUserSimilarities(shop: string, sessionId?: string): Promise<Us
 
     const currentProfile = await prisma.mLUserProfile.findUnique({
       where: {
-        shop_sessionId: {
-          shop,
+        storeHash_sessionId: {
+          storeHash: shop,
           sessionId
         }
       }
@@ -311,7 +311,7 @@ async function getUserSimilarities(shop: string, sessionId?: string): Promise<Us
 
     const allProfiles = await prisma.mLUserProfile.findMany({
       where: {
-        shop,
+        storeHash: shop,
         sessionId: { not: sessionId }
       },
       take: 50

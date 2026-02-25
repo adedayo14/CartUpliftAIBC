@@ -1,62 +1,8 @@
 import { json, type LoaderFunctionArgs } from "@remix-run/node";
-import { authenticate } from "../shopify.server";
+import { authenticateAdmin } from "../bigcommerce.server";
 import { rateLimitRequest } from "../utils/rateLimiter.server";
 import { getShopCurrency } from "../services/currency.server";
-
-// Type definitions
-interface GraphQLVariantNode {
-  id: string;
-  title: string;
-  price: string;
-  availableForSale: boolean;
-}
-
-interface GraphQLMetafieldNode {
-  namespace: string;
-  key: string;
-  value: string;
-}
-
-interface GraphQLProductNode {
-  id: string;
-  title: string;
-  handle: string;
-  status: string;
-  featuredImage?: {
-    url: string;
-    altText: string;
-  };
-  priceRangeV2: {
-    minVariantPrice: {
-      amount: string;
-      currencyCode: string;
-    };
-  };
-  metafields: {
-    edges: Array<{
-      node: GraphQLMetafieldNode;
-    }>;
-  };
-  variants: {
-    edges: Array<{
-      node: GraphQLVariantNode;
-    }>;
-  };
-}
-
-interface GraphQLProductsResponse {
-  data?: {
-    products: {
-      edges: Array<{
-        node: GraphQLProductNode;
-      }>;
-      pageInfo: {
-        hasNextPage: boolean;
-        hasPreviousPage: boolean;
-      };
-    };
-  };
-}
+import { getProducts, type BCProduct } from "../services/bigcommerce-api.server";
 
 interface Variant {
   id: string;
@@ -81,11 +27,10 @@ interface Product {
 
 export async function loader({ request }: LoaderFunctionArgs) {
   try {
-    const { admin, session } = await authenticate.admin(request);
-    const shop = session.shop;
+    const { storeHash } = await authenticateAdmin(request);
 
     // SECURITY: Rate limiting - 100 requests per minute
-    const rateLimitResult = await rateLimitRequest(request, shop, {
+    const rateLimitResult = await rateLimitRequest(request, storeHash, {
       maxRequests: 100,
       windowMs: 60 * 1000,
       burstMax: 40,
@@ -99,107 +44,54 @@ export async function loader({ request }: LoaderFunctionArgs) {
       );
     }
 
-    // Fetch shop currency
-    const shopCurrency = await getShopCurrency(shop);
+    // Fetch store currency
+    const shopCurrency = await getShopCurrency(storeHash);
 
     const url = new URL(request.url);
     const query = url.searchParams.get('query') || '';
     const limit = parseInt(url.searchParams.get('limit') || '50');
 
-  const response = await admin.graphql(`
-      query getProducts($first: Int!, $query: String) {
-        products(first: $first, query: $query) {
-          edges {
-            node {
-              id
-              title
-              handle
-              status
-              featuredImage { url altText }
-        priceRangeV2 { minVariantPrice { amount currencyCode } }
-              metafields(first: 10) {
-                edges {
-                  node {
-                    namespace
-                    key
-                    value
-                  }
-                }
-              }
-              variants(first: 10) {
-                edges {
-                  node {
-                    id
-                    title
-          price
-                    availableForSale
-                  }
-                }
-              }
-            }
-          }
-          pageInfo { hasNextPage hasPreviousPage }
-        }
-      }
-    `, {
-      variables: {
-        first: limit,
-        query: query ? "title:*" + query + "* OR vendor:*" + query + "* OR tag:*" + query + "*" : '',
-      },
+    // Fetch products from BigCommerce REST API
+    const result = await getProducts(storeHash, {
+      limit,
+      keyword: query || undefined,
+      include: "images,variants",
+      is_visible: true,
     });
 
-    const data = await response.json() as GraphQLProductsResponse;
-
-    if (!data || !data.data) {
-      console.error('Invalid GraphQL response:', data);
-      return json({ products: [], error: 'Failed to fetch products' });
-    }
-
-    // Transform the data to a simpler format
-    const products: Product[] = data.data.products.edges.map((edge: { node: GraphQLProductNode }) => {
-      const product = edge.node;
-      const variants: Variant[] = (product.variants?.edges || []).map((variantEdge: { node: GraphQLVariantNode }) => ({
-        id: variantEdge.node.id,
-        title: variantEdge.node.title,
-        price: typeof variantEdge.node.price === 'number' ? variantEdge.node.price : parseFloat(variantEdge.node.price ?? '0') || 0,
-        availableForSale: variantEdge.node.availableForSale,
+    // Transform BC products to match the frontend's expected format
+    const products: Product[] = result.products.map((product: BCProduct) => {
+      const variants: Variant[] = (product.variants || []).map((v) => ({
+        id: String(v.id),
+        title: v.option_values.map(ov => ov.label).join(' / ') || 'Default',
+        price: v.calculated_price || v.price || product.price,
+        availableForSale: !v.purchasing_disabled && v.inventory_level !== 0,
       }));
 
-      // Transform metafields to a more usable format
-      const metafields: Record<string, Record<string, unknown>> = {};
-      (product.metafields?.edges || []).forEach((metafield: { node: GraphQLMetafieldNode }) => {
-        const { namespace, key, value } = metafield.node;
-        if (!metafields[namespace]) metafields[namespace] = {};
-        try {
-          metafields[namespace][key] = JSON.parse(value);
-        } catch {
-          metafields[namespace][key] = value;
-        }
-      });
+      const thumbnail = product.images?.find(img => img.is_thumbnail);
+      const firstImage = product.images?.[0];
+      const imageUrl = thumbnail?.url_standard || firstImage?.url_standard || null;
 
-      const minVariant = variants.find((v: Variant) => typeof v.price === 'number') || variants[0];
-      const minPriceAmount = product.priceRangeV2?.minVariantPrice?.amount;
-      const currencyCode = product.priceRangeV2?.minVariantPrice?.currencyCode || shopCurrency.code;
-      const minPrice = typeof minPriceAmount === 'number' ? minPriceAmount : parseFloat(minPriceAmount ?? '0') || (minVariant?.price ?? 0);
+      const minPrice = product.calculated_price || product.price;
+
       return {
-        id: product.id,
-        title: product.title,
-        handle: product.handle,
-        status: product.status,
-        image: product.featuredImage?.url || null,
-        imageAlt: product.featuredImage?.altText || product.title,
+        id: String(product.id),
+        title: product.name,
+        handle: product.custom_url?.url?.replace(/^\/|\/$/g, '') || String(product.id),
+        status: product.is_visible ? 'ACTIVE' : 'DRAFT',
+        image: imageUrl,
+        imageAlt: product.name,
         minPrice,
-        currency: currencyCode,
-        // Back-compat for UIs expecting `price`
+        currency: shopCurrency.code,
         price: minPrice,
         variants,
-        metafields,
+        metafields: {},
       };
     });
 
     return json({
       products,
-      hasNextPage: data.data.products.pageInfo.hasNextPage,
+      hasNextPage: result.hasNextPage,
       currency: shopCurrency.code,
       currencyFormat: shopCurrency.format
     });

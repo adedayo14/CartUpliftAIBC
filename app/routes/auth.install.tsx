@@ -6,6 +6,7 @@ import {
   saveStoreSession,
   cookieSessionStorage,
   afterAuthSetup,
+  upsertStoreUser,
 } from "../bigcommerce.server";
 import { logger } from "~/utils/logger.server";
 
@@ -45,6 +46,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       email: tokenData.user.email,
     });
 
+    // Track installing user (owner status will be updated on /auth/load)
+    await upsertStoreUser({
+      storeHash,
+      userId: tokenData.user.id,
+      email: tokenData.user.email,
+      isOwner: false,
+    });
+
     logger.info("App installed successfully", {
       storeHash,
       userId: tokenData.user.id,
@@ -53,7 +62,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
     // Run post-install setup (webhooks, scripts, starter bundle)
     // Run async - don't block the redirect
-    afterAuthSetup(storeHash).catch((error) => {
+    afterAuthSetup(storeHash, tokenData.account_uuid).catch((error) => {
       logger.error("afterAuthSetup failed", { storeHash, error });
     });
 

@@ -2,6 +2,7 @@ import prisma from "./db.server";
 import { logger } from "~/utils/logger.server";
 import { createCookieSessionStorage, redirect } from "@remix-run/node";
 import jwt from "jsonwebtoken";
+import { createHmac, timingSafeEqual } from "node:crypto";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -130,12 +131,89 @@ export function verifySignedPayload(signedPayload: string): BCSignedPayload {
   try {
     const decoded = jwt.verify(signedPayload, bcConfig.clientSecret, {
       algorithms: ["HS256", "HS384", "HS512"],
+      audience: bcConfig.clientId,
+      issuer: "bc",
     });
     return decoded as BCSignedPayload;
   } catch (error) {
     logger.error("Failed to verify BigCommerce signed payload", { error });
     throw new Error("Invalid signed_payload");
   }
+}
+
+// ─── Webhook Signature Verification ─────────────────────────────────────────
+
+const STANDARD_WEBHOOK_TOLERANCE_SECONDS = 300;
+
+function decodeWebhookSecret(secret: string): Buffer {
+  const trimmed = secret.trim();
+  if (trimmed.startsWith("whsec_")) {
+    const base64Part = trimmed.slice("whsec_".length);
+    try {
+      return Buffer.from(base64Part, "base64");
+    } catch (_e) {
+      return Buffer.from(base64Part, "utf8");
+    }
+  }
+
+  const looksBase64 = /^[A-Za-z0-9+/=]+$/.test(trimmed) && trimmed.length % 4 === 0;
+  if (looksBase64) {
+    try {
+      return Buffer.from(trimmed, "base64");
+    } catch (_e) {
+      // fall through to utf8
+    }
+  }
+
+  return Buffer.from(trimmed, "utf8");
+}
+
+function verifyStandardWebhookSignature(
+  body: string,
+  headers: Headers,
+  secret: string
+): { valid: boolean; reason?: string } {
+  const id = headers.get("webhook-id") || headers.get("svix-id");
+  const timestamp = headers.get("webhook-timestamp") || headers.get("svix-timestamp");
+  const signatureHeader = headers.get("webhook-signature") || headers.get("svix-signature");
+
+  if (!id || !timestamp || !signatureHeader) {
+    return { valid: false, reason: "missing_headers" };
+  }
+
+  const ts = Number(timestamp);
+  if (!Number.isFinite(ts)) {
+    return { valid: false, reason: "invalid_timestamp" };
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  if (Math.abs(now - ts) > STANDARD_WEBHOOK_TOLERANCE_SECONDS) {
+    return { valid: false, reason: "timestamp_out_of_tolerance" };
+  }
+
+  const signedPayload = `${id}.${timestamp}.${body}`;
+  const secretBytes = decodeWebhookSecret(secret);
+  const expectedSignature = createHmac("sha256", secretBytes)
+    .update(signedPayload, "utf8")
+    .digest("base64");
+
+  const expectedBuffer = Buffer.from(expectedSignature);
+  const providedSignatures = signatureHeader
+    .split(" ")
+    .map((entry) => entry.split(",", 2)[1] || entry)
+    .filter(Boolean);
+
+  for (const signature of providedSignatures) {
+    const signatureBuffer = Buffer.from(signature);
+    if (
+      signatureBuffer.length === expectedBuffer.length &&
+      timingSafeEqual(signatureBuffer, expectedBuffer)
+    ) {
+      return { valid: true };
+    }
+  }
+
+  return { valid: false, reason: "signature_mismatch" };
 }
 
 // ─── Session Management ──────────────────────────────────────────────────────
@@ -203,6 +281,61 @@ export async function deleteStoreSessions(storeHash: string): Promise<void> {
   });
 }
 
+// ─── Store Users (Multi-User Support) ───────────────────────────────────────
+
+/**
+ * Upsert a BigCommerce control panel user for a store.
+ */
+export async function upsertStoreUser(data: {
+  storeHash: string;
+  userId: number;
+  email: string;
+  isOwner?: boolean;
+}): Promise<void> {
+  await prisma.storeUser.upsert({
+    where: {
+      storeHash_bcUserId: {
+        storeHash: data.storeHash,
+        bcUserId: BigInt(data.userId),
+      },
+    },
+    update: {
+      email: data.email,
+      isOwner: data.isOwner ?? false,
+    },
+    create: {
+      storeHash: data.storeHash,
+      bcUserId: BigInt(data.userId),
+      email: data.email,
+      isOwner: data.isOwner ?? false,
+    },
+  });
+}
+
+/**
+ * Remove a specific store user (called on /auth/remove-user).
+ */
+export async function deleteStoreUser(data: {
+  storeHash: string;
+  userId: number;
+}): Promise<void> {
+  await prisma.storeUser.deleteMany({
+    where: {
+      storeHash: data.storeHash,
+      bcUserId: BigInt(data.userId),
+    },
+  });
+}
+
+/**
+ * Remove all store users (called on uninstall).
+ */
+export async function deleteStoreUsers(storeHash: string): Promise<void> {
+  await prisma.storeUser.deleteMany({
+    where: { storeHash },
+  });
+}
+
 // ─── Request Authentication ──────────────────────────────────────────────────
 
 /**
@@ -257,6 +390,29 @@ export async function authenticateWebhook(request: Request): Promise<{
   payload: Record<string, unknown>;
 }> {
   const body = await request.text();
+  const hasStandardHeaders =
+    request.headers.has("webhook-id") ||
+    request.headers.has("svix-id") ||
+    request.headers.has("webhook-signature") ||
+    request.headers.has("svix-signature");
+
+  if (hasStandardHeaders) {
+    const verification = verifyStandardWebhookSignature(body, request.headers, bcConfig.clientSecret);
+    if (!verification.valid) {
+      logger.warn("Webhook signature verification failed", {
+        reason: verification.reason,
+        hasId: request.headers.has("webhook-id") || request.headers.has("svix-id"),
+        hasTimestamp: request.headers.has("webhook-timestamp") || request.headers.has("svix-timestamp"),
+        hasSignature: request.headers.has("webhook-signature") || request.headers.has("svix-signature"),
+      });
+      throw new Response("Invalid webhook signature", { status: 401 });
+    }
+  } else if (process.env.NODE_ENV === "production") {
+    logger.warn("Missing Standard Webhooks headers in production");
+    throw new Response("Missing webhook signature headers", { status: 401 });
+  } else {
+    logger.warn("Missing Standard Webhooks headers; skipping signature verification in non-production");
+  }
 
   let payload: Record<string, unknown>;
   try {
@@ -325,29 +481,101 @@ export async function bigcommerceApi(
   return response;
 }
 
+function getStorefrontScripts(appUrl: string) {
+  return [
+    {
+      name: "CartUplift Cart Drawer",
+      src: `${appUrl}/storefront/cart-uplift.js`,
+      auto_uninstall: true,
+      load_method: "default",
+      location: "footer",
+      visibility: "storefront",
+      kind: "src",
+      consent_category: "functional",
+    },
+    {
+      name: "CartUplift Bundles",
+      src: `${appUrl}/storefront/cart-bundles.js`,
+      auto_uninstall: true,
+      load_method: "default",
+      location: "footer",
+      visibility: "storefront",
+      kind: "src",
+      consent_category: "functional",
+    },
+  ];
+}
+
+/**
+ * Remove storefront scripts installed by Cart Uplift.
+ */
+export async function cleanupStorefrontScripts(storeHash: string): Promise<void> {
+  try {
+    const listResponse = await bigcommerceApi(storeHash, "/content/scripts");
+    if (!listResponse.ok) {
+      const errorData = await listResponse.json().catch(() => ({}));
+      logger.warn("Failed to list storefront scripts", { storeHash, error: errorData });
+      return;
+    }
+
+    const listData = await listResponse.json();
+    const existing = (listData?.data as Array<{ id: string | number; name?: string; src?: string }>) || [];
+    const targets = getStorefrontScripts(bcConfig.appUrl);
+
+    const toRemove = existing.filter(script =>
+      targets.some(target => target.name === script.name || target.src === script.src)
+    );
+
+    for (const script of toRemove) {
+      const response = await bigcommerceApi(storeHash, `/content/scripts/${script.id}`, {
+        method: "DELETE",
+      });
+      if (response.ok) {
+        logger.info("Storefront script removed", { storeHash, scriptId: script.id, name: script.name });
+      } else {
+        const errorData = await response.json().catch(() => ({}));
+        logger.warn("Failed to remove storefront script", { storeHash, scriptId: script.id, error: errorData });
+      }
+    }
+  } catch (error) {
+    logger.warn("Storefront script cleanup failed", { storeHash, error });
+  }
+}
+
 // ─── After Auth Hook ─────────────────────────────────────────────────────────
 
 /**
  * Run post-install tasks: register webhooks, create starter bundle, fetch store info.
  */
-export async function afterAuthSetup(storeHash: string): Promise<void> {
+export async function afterAuthSetup(storeHash: string, accountUuid?: string): Promise<void> {
   const appUrl = bcConfig.appUrl;
+
+  if (accountUuid) {
+    await prisma.settings.upsert({
+      where: { storeHash },
+      update: { accountUuid },
+      create: { storeHash, accountUuid },
+    });
+  }
 
   // 1. Fetch store info (currency, name, email)
   try {
     const storeResponse = await bigcommerceApi(storeHash, "/store", { version: "v2" });
     if (storeResponse.ok) {
       const storeData = await storeResponse.json();
+      const resolvedAccountUuid = accountUuid || storeData.account_uuid || storeData.accountUuid;
       await prisma.settings.upsert({
         where: { storeHash },
         update: {
           ownerEmail: storeData.admin_email || null,
           currencyCode: storeData.currency || null,
+          accountUuid: resolvedAccountUuid || undefined,
         },
         create: {
           storeHash,
           ownerEmail: storeData.admin_email || null,
           currencyCode: storeData.currency || null,
+          accountUuid: resolvedAccountUuid || null,
         },
       });
       logger.info("Store info captured", { storeHash, email: storeData.admin_email });
@@ -360,6 +588,8 @@ export async function afterAuthSetup(storeHash: string): Promise<void> {
   const webhooks = [
     { scope: "store/order/created", destination: `${appUrl}/webhooks/orders/create` },
     { scope: "store/app/uninstalled", destination: `${appUrl}/webhooks/app/uninstalled` },
+    { scope: "store/app/updated", destination: `${appUrl}/webhooks/app/scopes_update` },
+    { scope: "store/subscription/updated", destination: `${appUrl}/webhooks/app-subscriptions/update` },
   ];
 
   for (const webhook of webhooks) {
@@ -429,28 +659,7 @@ export async function afterAuthSetup(storeHash: string): Promise<void> {
 
   // 4. Install storefront scripts via Scripts API
   try {
-    const scripts = [
-      {
-        name: "CartUplift Cart Drawer",
-        src: `${appUrl}/storefront/cart-uplift.js`,
-        auto_uninstall: true,
-        load_method: "default",
-        location: "footer",
-        visibility: "storefront",
-        kind: "src",
-        consent_category: "functional",
-      },
-      {
-        name: "CartUplift Bundles",
-        src: `${appUrl}/storefront/cart-bundles.js`,
-        auto_uninstall: true,
-        load_method: "default",
-        location: "footer",
-        visibility: "storefront",
-        kind: "src",
-        consent_category: "functional",
-      },
-    ];
+    const scripts = getStorefrontScripts(appUrl);
 
     for (const script of scripts) {
       const response = await bigcommerceApi(storeHash, "/content/scripts", {

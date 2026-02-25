@@ -1,7 +1,7 @@
 import type { ActionFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
 import { Resend } from 'resend';
-import { validateShopDomain, sanitizeTextInput, validateEmail, getClientIP } from "../services/security.server";
+import { validateStoreHash, sanitizeTextInput, validateEmail, getClientIP } from "../services/security.server";
 import { rateLimitByIP } from "../utils/rateLimiter.server";
 
 const resend = new Resend(process.env.RESEND_API_KEY);
@@ -51,7 +51,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     // Phase 3: Input validation and sanitization
     const subject = sanitizeTextInput(rawSubject, 200);
     const message = sanitizeTextInput(rawMessage, 5000);
-    const shop = validateShopDomain(rawShop) ? rawShop : null;
+    const shop = validateStoreHash(rawShop) ? rawShop : null;
     const email = validateEmail(rawEmail);
 
     if (!subject || !message) {
@@ -62,7 +62,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     // Build basic support request - send email immediately without DB lookup
     const supportRequest: SupportRequest = {
       name: shop || "Unknown Store",
-      email: email || "merchant@shopify.com", // Use validated email or placeholder
+      email: email || "merchant@unknown.com", // Use validated email or fallback placeholder
       subject,
       message,
       shop: shop || "unknown",

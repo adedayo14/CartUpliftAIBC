@@ -73,7 +73,7 @@ export async function sendWelcomeEmail(merchantEmail: string, _shopDomain: strin
       <h2 style="color: #1e40af; font-size: 18px;">Quick Start (5 minutes):</h2>
       
       <ol style="line-height: 1.8;">
-        <li><strong>Enable the App</strong> → Go to your Shopify Theme Editor → Enable the "Cart Uplift" app embed</li>
+        <li><strong>Enable the App</strong> → Go to your BigCommerce control panel → Enable the "Cart Uplift" script</li>
         <li><strong>Customize Your Cart</strong> → Visit the <a href="https://cartuplift.com/app/settings">Settings page</a> to match your brand colors</li>
         <li><strong>Create Your First Bundle</strong> → Head to the <a href="https://cartuplift.com/admin/bundles">Bundles page</a> to create manual product bundles</li>
         <li><strong>Watch It Work</strong> → The AI starts learning from your orders immediately!</li>
@@ -193,7 +193,7 @@ export async function sendTrialEndingEmail(
       <h3 style="color: #1e40af;">Want to Change or Cancel?</h3>
       <ul style="line-height: 1.8;">
         <li><strong>Upgrade/downgrade:</strong> Visit <a href="https://cartuplift.com/admin/billing">Billing Settings</a></li>
-        <li><strong>Cancel:</strong> Uninstall the app from your Shopify admin (no charges)</li>
+        <li><strong>Cancel:</strong> Uninstall the app from your BigCommerce control panel (no charges)</li>
       </ul>
       
       <div style="background: #f0f9ff; padding: 20px; border-radius: 8px; margin: 20px 0;">

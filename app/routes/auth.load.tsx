@@ -4,6 +4,7 @@ import {
   verifySignedPayload,
   getStoreSession,
   cookieSessionStorage,
+  upsertStoreUser,
 } from "../bigcommerce.server";
 import { logger } from "~/utils/logger.server";
 
@@ -44,6 +45,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       storeHash,
       userId: payload.user.id,
       email: payload.user.email,
+    });
+
+    // Track control panel users for multi-user access
+    await upsertStoreUser({
+      storeHash,
+      userId: payload.user.id,
+      email: payload.user.email,
+      isOwner: payload.user.id === payload.owner.id,
     });
 
     // Set session cookie and redirect to admin dashboard

@@ -1,16 +1,16 @@
 import type { ActionFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
-import { authenticate } from "../shopify.server";
+import { authenticateAdmin } from "../bigcommerce.server";
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   try {
     // This will refresh/validate the session
-    const { session } = await authenticate.admin(request);
-    
-    return json({ 
-      success: true, 
+    const { session, storeHash } = await authenticateAdmin(request);
+
+    return json({
+      success: true,
       message: "Session refreshed successfully",
-      shop: session.shop
+      shop: storeHash
     });
   } catch (_error) {
     return json({ 

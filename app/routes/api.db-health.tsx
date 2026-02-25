@@ -1,5 +1,5 @@
 import { json, type LoaderFunctionArgs } from "@remix-run/node";
-import { authenticate } from "../shopify.server";
+import { authenticateAdmin } from "../bigcommerce.server";
 import { validateCorsOrigin, getCorsHeaders } from "../services/security.server";
 import prisma from "../db.server";
 
@@ -28,10 +28,9 @@ interface HealthCheckResult {
 }
 export async function loader({ request }: LoaderFunctionArgs) {
   // SECURITY: Require admin authentication for health check endpoint
-  const { session } = await authenticate.admin(request);
-  const shop = session.shop;
+  const { session, storeHash } = await authenticateAdmin(request);
   const origin = request.headers.get("origin") || "";
-  const allowedOrigin = await validateCorsOrigin(origin, shop);
+  const allowedOrigin = await validateCorsOrigin(origin, storeHash);
   const baseHeaders = {
     'Cache-Control': 'no-store',
     ...getCorsHeaders(allowedOrigin),

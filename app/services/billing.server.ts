@@ -1,106 +1,42 @@
 /**
- * Billing Service - Shopify Managed Pricing
- *
- * This app uses Shopify Managed Pricing - all billing is handled through the
- * Shopify App Store. Merchants upgrade/downgrade via the App Store pricing page.
+ * Billing Service - BigCommerce Unified Billing
  *
  * This service:
- * - Syncs plan changes from Shopify to our database
  * - Tracks order counts for billing limits
  * - Enforces plan limits (free/starter/growth/pro)
+ * - Syncs with BigCommerce Unified Billing when enabled
  */
 
 import prisma from "~/db.server";
 import { PRICING_PLANS, getOrderLimit, getHardOrderLimit } from "../config/billing.server";
 import type { PlanTier, SubscriptionInfo } from "../types/billing";
-import { logger } from "~/utils/logger.server";
-
-// Simplified admin context type - we only need graphql method
-interface AdminContext {
-  graphql: (query: string, options?: { variables?: Record<string, unknown> }) => Promise<Response>;
-}
+import { env } from "~/utils/env.server";
+import { syncUnifiedBillingSubscription } from "./unified-billing.server";
 
 /**
- * Get current plan from Shopify Managed Pricing
- * Maps Shopify's plan name to our internal tier
- */
-async function getShopifyManagedPlan(admin: AdminContext): Promise<PlanTier | null> {
-  try {
-    const response = await admin.graphql(`#graphql
-      query {
-        currentAppInstallation {
-          activeSubscriptions {
-            name
-            status
-            test
-          }
-        }
-      }
-    `);
-
-    const result = await response.json();
-    const subscriptions = result.data?.currentAppInstallation?.activeSubscriptions;
-
-    if (!subscriptions || subscriptions.length === 0) {
-      return null;
-    }
-
-    // Get the first active subscription
-    const activeSub = subscriptions[0];
-    const planName = activeSub.name?.toLowerCase() || '';
-
-    // Map Shopify plan name to our tier
-    // Shopify will use names like "Cart Uplift - Starter", "Cart Uplift - Growth", etc.
-    if (planName.includes('starter')) return 'starter';
-    if (planName.includes('growth')) return 'growth';
-    if (planName.includes('pro')) return 'pro';
-
-    // Default to starter if we can't match
-    return 'starter';
-  } catch (error) {
-    logger.error('Failed to fetch Shopify Managed Pricing plan:', error);
-    return null;
-  }
-}
-
-/**
- * Get or create subscription for a shop
- * Now syncs with Shopify Managed Pricing
+ * Get or create subscription for a store
+ * Syncs Unified Billing subscription status when available
  */
 export async function getOrCreateSubscription(
-  shop: string,
-  admin?: AdminContext
+  storeHash: string
 ): Promise<SubscriptionInfo> {
   let subscription = await prisma.subscription.findUnique({
-    where: { shop },
+    where: { storeHash },
   });
 
-  // Sync with Shopify Managed Pricing if admin context provided
-  if (admin) {
-    const shopifyPlan = await getShopifyManagedPlan(admin);
-    if (shopifyPlan && subscription) {
-      // Update plan if different from Shopify's record
-      if (subscription.planTier !== shopifyPlan) {
-        subscription = await prisma.subscription.update({
-          where: { shop },
-          data: {
-            planTier: shopifyPlan,
-            planStatus: "active",
-          },
-        });
-        logger.log(`✅ Synced plan from Shopify Managed Pricing: ${shopifyPlan}`);
-      }
-    }
+  if (env.billingProvider === 'bigcommerce') {
+    await syncUnifiedBillingSubscription(storeHash);
+    subscription = await prisma.subscription.findUnique({ where: { storeHash } }) || subscription;
   }
 
   if (!subscription) {
-    // Create starter trial subscription for new shops
+    // Create starter trial subscription for new stores
     const now = new Date();
     const trialEnd = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000); // 14 days from now
 
     subscription = await prisma.subscription.create({
       data: {
-        shop,
+        storeHash,
         planTier: "starter",
         planStatus: "trial",
         billingPeriodStart: now,
@@ -119,7 +55,7 @@ export async function getOrCreateSubscription(
   if (daysSinceReset >= 30 && subscription.monthlyOrderCount > 0) {
     // Auto-reset for new billing period
     subscription = await prisma.subscription.update({
-      where: { shop },
+      where: { storeHash },
       data: {
         monthlyOrderCount: 0,
         lastOrderCountReset: now,
@@ -135,12 +71,11 @@ export async function getOrCreateSubscription(
   const hardLimit = getHardOrderLimit(planTier);
   const orderCount = subscription.monthlyOrderCount;
 
-  // Detect development stores - they can't purchase plans, so disable limits
-  const isDevelopmentStore = shop.includes('.myshopify.com') &&
-    (process.env.NODE_ENV === 'development' || process.env.SHOPIFY_BILLING_TEST_MODE === 'true');
+  // Detect development mode
+  const isDevelopmentStore = process.env.NODE_ENV === 'development';
 
   return {
-    shop,
+    storeHash,
     planTier,
     planStatus: subscription.planStatus,
     orderCount,
@@ -159,13 +94,13 @@ export async function getOrCreateSubscription(
 /**
  * Increment order count and check limits
  */
-export async function incrementOrderCount(shop: string): Promise<{
+export async function incrementOrderCount(storeHash: string): Promise<{
   newCount: number;
   limitReached: boolean;
   shouldShowWarning: boolean;
 }> {
   const subscription = await prisma.subscription.findUnique({
-    where: { shop },
+    where: { storeHash },
   });
 
   if (!subscription) {
@@ -193,13 +128,13 @@ export async function incrementOrderCount(shop: string): Promise<{
   const planTier = subscription.planTier as PlanTier;
   const orderLimit = getOrderLimit(planTier);
   const hardLimit = getHardOrderLimit(planTier);
-  
+
   const limitReached = hardLimit !== Infinity && newCount >= hardLimit;
   const shouldShowWarning = orderLimit !== Infinity && newCount >= orderLimit * 0.9 && !subscription.orderLimitWarningShown;
 
   // Update database
   await prisma.subscription.update({
-    where: { shop },
+    where: { storeHash },
     data: {
       monthlyOrderCount: newCount,
       orderLimitReached: limitReached,
@@ -222,9 +157,9 @@ export async function incrementOrderCount(shop: string): Promise<{
 /**
  * Reset monthly order count (called at billing cycle reset)
  */
-export async function resetOrderCount(shop: string): Promise<void> {
+export async function resetOrderCount(storeHash: string): Promise<void> {
   await prisma.subscription.update({
-    where: { shop },
+    where: { storeHash },
     data: {
       monthlyOrderCount: 0,
       lastOrderCountReset: new Date(),
@@ -235,9 +170,9 @@ export async function resetOrderCount(shop: string): Promise<void> {
 }
 
 /**
- * Check if shop can use app (not over hard limit)
+ * Check if store can use app (not over hard limit)
  */
-export async function canUseApp(shop: string): Promise<boolean> {
-  const info = await getOrCreateSubscription(shop);
+export async function canUseApp(storeHash: string): Promise<boolean> {
+  const info = await getOrCreateSubscription(storeHash);
   return !info.isLimitReached;
 }

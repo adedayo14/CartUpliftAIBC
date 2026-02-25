@@ -11,6 +11,7 @@ interface EnvVar {
   description: string;
   validation?: (value: string) => boolean;
   errorMessage?: string;
+  requiredIf?: (env: NodeJS.ProcessEnv) => boolean;
 }
 
 const ENV_VARS: EnvVar[] = [
@@ -96,6 +97,38 @@ const ENV_VARS: EnvVar[] = [
     description: 'Shared secret for BigCommerce webhook verification'
   },
 
+  // Unified Billing (BigCommerce)
+  {
+    key: 'BILLING_PROVIDER',
+    required: false,
+    description: 'Billing provider (bigcommerce or stripe)',
+    validation: (v) => v === 'bigcommerce' || v === 'stripe',
+    errorMessage: 'Must be either "bigcommerce" or "stripe"'
+  },
+  {
+    key: 'BC_PARTNER_ACCOUNT_UUID',
+    required: false,
+    description: 'Partner account UUID for GraphQL Account API',
+    requiredIf: (env) => (env.BILLING_PROVIDER || 'bigcommerce') === 'bigcommerce' && env.NODE_ENV === 'production'
+  },
+  {
+    key: 'BC_ACCOUNT_API_TOKEN',
+    required: false,
+    description: 'Account-level API token for GraphQL Account API',
+    requiredIf: (env) => (env.BILLING_PROVIDER || 'bigcommerce') === 'bigcommerce' && env.NODE_ENV === 'production'
+  },
+  {
+    key: 'BC_APPLICATION_ID',
+    required: false,
+    description: 'BigCommerce application ID (used to build product ID)',
+    requiredIf: (env) => (env.BILLING_PROVIDER || 'bigcommerce') === 'bigcommerce' && env.NODE_ENV === 'production'
+  },
+  {
+    key: 'BC_BILLING_RETURN_URL',
+    required: false,
+    description: 'Optional override for billing return URL'
+  },
+
   // Optional Configuration
   {
     key: 'NODE_ENV',
@@ -137,8 +170,9 @@ export function validateEnv(): ValidationResult {
 
   for (const envVar of ENV_VARS) {
     const value = process.env[envVar.key];
+    const isRequired = envVar.required || (envVar.requiredIf ? envVar.requiredIf(process.env) : false);
 
-    if (envVar.required && !value) {
+    if (isRequired && !value) {
       missing.push(envVar.key);
       errors.push(
         `Missing required environment variable: ${envVar.key}\n   Description: ${envVar.description}`
@@ -146,7 +180,7 @@ export function validateEnv(): ValidationResult {
       continue;
     }
 
-    if (!envVar.required && !value) {
+    if (!isRequired && !value) {
       warnings.push(
         `Optional environment variable not set: ${envVar.key}\n   Description: ${envVar.description}`
       );
@@ -247,6 +281,13 @@ export const env = {
 
   // BigCommerce Webhook
   get bcWebhookSecret() { return getOptionalEnv('BC_WEBHOOK_SECRET'); },
+
+  // Billing
+  get billingProvider() { return getOptionalEnv('BILLING_PROVIDER', 'bigcommerce'); },
+  get bcPartnerAccountUuid() { return getRequiredEnv('BC_PARTNER_ACCOUNT_UUID'); },
+  get bcAccountApiToken() { return getRequiredEnv('BC_ACCOUNT_API_TOKEN'); },
+  get bcApplicationId() { return getRequiredEnv('BC_APPLICATION_ID'); },
+  get bcBillingReturnUrl() { return getOptionalEnv('BC_BILLING_RETURN_URL'); },
 
   // Services
   get resendApiKey() { return getOptionalEnv('RESEND_API_KEY'); },

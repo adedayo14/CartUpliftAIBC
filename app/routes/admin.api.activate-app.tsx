@@ -1,6 +1,6 @@
 import type { ActionFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
-import { authenticate } from "../shopify.server";
+import { authenticateAdmin } from "../bigcommerce.server";
 import prisma from "../db.server";
 
 // Admin-authenticated endpoint to mark the app embed as activated
@@ -13,8 +13,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 
   try {
-    const { session } = await authenticate.admin(request);
-    const { shop } = session;
+    const { session, storeHash } = await authenticateAdmin(request);
 
     // Accept either JSON or form submissions
     let intent = "";
@@ -32,19 +31,19 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }
 
     const result = await prisma.settings.upsert({
-      where: { shop },
+      where: { storeHash },
       update: { appEmbedActivated: true, appEmbedActivatedAt: new Date() },
-      create: { shop, appEmbedActivated: true, appEmbedActivatedAt: new Date() },
+      create: { storeHash, appEmbedActivated: true, appEmbedActivatedAt: new Date() },
     });
 
     // Verify the save with a fresh query
     const verification = await prisma.settings.findUnique({
-      where: { shop },
+      where: { storeHash },
       select: { appEmbedActivated: true, appEmbedActivatedAt: true }
     });
 
     console.log("[admin.api.activate-app] ===============================");
-    console.log("[admin.api.activate-app] Shop:", shop);
+    console.log("[admin.api.activate-app] Store:", storeHash);
     console.log("[admin.api.activate-app] Upsert result:", result.appEmbedActivated);
     console.log("[admin.api.activate-app] Verification query:", JSON.stringify(verification, null, 2));
     console.log("[admin.api.activate-app] ===============================");

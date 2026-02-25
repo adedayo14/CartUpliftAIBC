@@ -23,7 +23,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     // Get ALL unique shops that ever installed - query from Settings (persists after uninstall)
     const allSettings = await prisma.settings.findMany({
       select: {
-        shop: true,
+        storeHash: true,
         createdAt: true,
         enableRecommendations: true,
         ownerEmail: true,
@@ -33,7 +33,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     // Get session data for shops that are still installed
     const allSessions = await prisma.session.findMany({
       select: {
-        shop: true,
+        storeHash: true,
         email: true,
         firstName: true,
         lastName: true,
@@ -43,18 +43,18 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     // Create session map for quick lookup
     const sessionMap = new Map();
     allSessions.forEach(session => {
-      if (!sessionMap.has(session.shop) || session.email) {
-        sessionMap.set(session.shop, session);
+      if (!sessionMap.has(session.storeHash) || session.email) {
+        sessionMap.set(session.storeHash, session);
       }
     });
 
     // Fetch real data for each unique shop
     const storeData = await Promise.all(
       allSettings.map(async (settings) => {
-        const session = sessionMap.get(settings.shop);
+        const session = sessionMap.get(settings.storeHash);
         // Get subscription data
         const subscription = await prisma.subscription.findUnique({
-          where: { shop: settings.shop },
+          where: { storeHash: settings.storeHash },
           select: {
             planTier: true,
             planStatus: true,
@@ -70,14 +70,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         const isUninstalled = !session;
         const billingStatus = isUninstalled ? "uninstalled" : (subscription?.planStatus || "active");
 
-        // Extract store name from shop URL
-        const storeName = settings.shop.split('.myshopify.com')[0]
-          .split('-')
-          .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-          .join(' ');
+        // Use store hash directly as the store name
+        const storeName = settings.storeHash || 'Unknown';
 
         return {
-          shop: settings.shop,
+          shop: settings.storeHash,
           storeName,
           email: settings.ownerEmail || session?.email || "",
           ownerName: session?.firstName && session?.lastName

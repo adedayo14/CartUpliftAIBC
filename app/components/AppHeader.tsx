@@ -1,4 +1,4 @@
-import { InlineStack, Text } from "@shopify/polaris";
+import { Flex, H1 } from "@bigcommerce/big-design";
 import { PlanBadge } from "./PlanBadge";
 import type { PlanTier } from "../types/billing";
 
@@ -11,16 +11,16 @@ interface AppHeaderProps {
 
 export function AppHeader({ planTier, orderCount, orderLimit, isApproaching }: AppHeaderProps) {
   return (
-    <InlineStack gap="400" align="space-between" blockAlign="center" wrap={false}>
-      <Text variant="heading2xl" as="h1">
+    <Flex flexDirection="row" flexGap="1rem" justifyContent="space-between" alignItems="center" flexWrap="nowrap">
+      <H1>
         Cart Uplift
-      </Text>
+      </H1>
       <PlanBadge
         plan={planTier}
         orderCount={orderCount}
         orderLimit={orderLimit}
         isApproaching={isApproaching}
       />
-    </InlineStack>
+    </Flex>
   );
 }

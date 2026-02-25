@@ -3,24 +3,22 @@ import { json } from "@remix-run/node";
 import { useLoaderData } from "@remix-run/react";
 import { useState, useEffect } from "react";
 import {
-  Page,
-  Layout,
+  Box,
+  Flex,
+  Panel,
   Text,
-  Card,
+  H1,
+  H2,
+  H3,
+  Small,
   Button,
-  BlockStack,
-  InlineStack,
   Badge,
-  Grid,
-  DataTable,
   Select,
   Modal,
-  Box,
   ProgressBar,
-  Banner,
-} from "@shopify/polaris";
-import { TitleBar } from "@shopify/app-bridge-react";
-import { authenticate } from "../shopify.server";
+  Message,
+} from "@bigcommerce/big-design";
+import { authenticateAdmin } from "../bigcommerce.server";
 import { getSettings } from "../models/settings.server";
 import prisma from "../db.server";
 import { getShopCurrency } from "../services/currency.server";
@@ -31,67 +29,26 @@ import type { PlanTier } from "../types/billing";
 import { generateInsights } from "../utils/insights";
 import dashboardStyles from "../styles/dashboard.module.css";
 import { InsightCard } from "../components/InsightCard";
-import type { AnalyticsEventModel, TrackingEventModel, RecommendationAttributionModel, MLProductPerformanceModel, SubscriptionModel, BundleModel, BundleProductModel } from "~/types/prisma";
+import { getOrders, getOrderProducts, getStoreInfo } from "../services/bigcommerce-api.server";
+import type { BCOrder, BCStoreInfo } from "../services/bigcommerce-api.server";
+import type { TrackingEventModel, RecommendationAttributionModel, MLProductPerformanceModel } from "~/types/prisma";
 import type { JsonValue } from "~/types/common";
 
-// GraphQL Response Types
-interface ShopifyOrderNode {
-  id: string;
-  name: string;
-  totalPriceSet: {
-    shopMoney: {
-      amount: string;
-      currencyCode: string;
-    };
-  };
+// BigCommerce Dashboard Types
+interface DashboardOrder {
+  id: number;
+  total: number;
+  currencyCode: string;
   createdAt: string;
-  processedAt: string;
-  lineItems: {
-    edges: Array<{
-      node: {
-        id: string;
-        quantity: number;
-        originalTotalSet: {
-          shopMoney: {
-            amount: string;
-          };
-        };
-        product: {
-          title: string;
-          id: string;
-        } | null;
-        variant: {
-          id: string;
-          title: string;
-        } | null;
-      };
-    }>;
-  };
+  lineItems: DashboardLineItem[];
 }
 
-interface ShopifyOrderEdge {
-  node: ShopifyOrderNode;
-}
-
-interface ShopifyOrdersData {
-  data: {
-    orders: {
-      edges: ShopifyOrderEdge[];
-    };
-  };
-  errors?: Array<{ message: string }>;
-}
-
-interface ShopifyShopData {
-  data: {
-    shop: {
-      name: string;
-      myshopifyDomain: string;
-      plan: {
-        displayName: string;
-      };
-    };
-  };
+interface DashboardLineItem {
+  productId: string;
+  name: string;
+  quantity: number;
+  totalPrice: number;
+  variantId: string;
 }
 
 // Dashboard Data Types
@@ -211,22 +168,9 @@ interface TopUpsell {
   ctr: string;
 }
 
-interface BundlePurchaseRecord {
-  orderId: number;
-  totalValue: number;
-}
-
-interface AttributionRecord {
-  orderId: string;
-  orderNumber: string;
-  orderValue: number;
-  attributedRevenue: number;
-  productId: string;
-}
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  // ... keeping all existing loader code unchanged ...
-  const { admin, session } = await authenticate.admin(request);
-  
+  const { session, storeHash } = await authenticateAdmin(request);
+
   const url = new URL(request.url);
   const timeframe = url.searchParams.get("timeframe") || "30d";
   const search = url.search;
@@ -276,7 +220,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const previousPeriodStart = new Date(previousPeriodEnd.getTime() - periodDuration);
 
   try {
-    if (!session || !session.shop) {
+    if (!session || !storeHash) {
       throw new Error('No authenticated session');
     }
 
@@ -368,154 +312,101 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       throw new Error(`Database connection error: ${dbError instanceof Error ? dbError.message : 'Unknown DB error'}`);
     }
 
-    let ordersData: ShopifyOrdersData | null = null;
-    let shopData: ShopifyShopData | null = null;
     let hasOrderAccess = true;
+    let allDashboardOrders: DashboardOrder[] = [];
+    let storeInfo: BCStoreInfo | null = null;
 
     try {
-      // Fetch orders with pagination to get ALL orders (not just first 250)
-      // Shopify allows up to 250 per page, we'll fetch in batches
-      const allOrders: any[] = [];
-      let hasNextPage = true;
-      let cursor: string | null = null;
-      let pageCount = 0;
+      // Fetch orders with pagination from BigCommerce REST API (V2)
+      // BC V2 orders API returns up to 250 per page
+      const allBCOrders: BCOrder[] = [];
+      let page = 1;
       const maxPages = 20; // Safety limit: 20 pages * 250 = 5000 orders max
 
-      while (hasNextPage && pageCount < maxPages) {
-        const ordersResponse = await admin.graphql(`
-          #graphql
-          query getAllOrders${cursor ? `($cursor: String!)` : ''} {
-            orders(first: 250, reverse: true${cursor ? ', after: $cursor' : ''}) {
-              pageInfo {
-                hasNextPage
-                endCursor
-              }
-              edges {
-                node {
-                  id
-                  name
-                  totalPriceSet {
-                    shopMoney {
-                      amount
-                      currencyCode
-                    }
-                  }
-                  createdAt
-                  processedAt
-                  lineItems(first: 50) {
-                    edges {
-                      node {
-                        id
-                        quantity
-                        originalTotalSet {
-                          shopMoney {
-                            amount
-                          }
-                        }
-                        product {
-                          title
-                          id
-                        }
-                        variant {
-                          id
-                          title
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        `, cursor ? { variables: { cursor } } : undefined);
+      while (page <= maxPages) {
+        const pageOrders = await getOrders(storeHash, {
+          limit: 250,
+          page,
+          sort: "date_created:desc",
+        });
 
-        const pageData = await ordersResponse.json();
-
-        if (pageData.errors) {
-          hasOrderAccess = false;
-          ordersData = null;
-          break;
-        }
-
-        if (!pageData?.data?.orders) {
-          hasOrderAccess = false;
-          ordersData = null;
-          break;
-        }
-
-        // Add this page's orders to our collection
-        allOrders.push(...(pageData.data.orders.edges || []));
-
-        // Check if there are more pages
-        hasNextPage = pageData.data.orders.pageInfo?.hasNextPage || false;
-        cursor = pageData.data.orders.pageInfo?.endCursor || null;
-        pageCount++;
+        if (!pageOrders || pageOrders.length === 0) break;
+        allBCOrders.push(...pageOrders);
+        if (pageOrders.length < 250) break; // No more pages
+        page++;
       }
 
-      if (hasOrderAccess) {
-        // Reconstruct the ordersData structure with all orders
-        ordersData = {
-          data: {
-            orders: {
-              edges: allOrders
-            }
+      // Fetch line items for each order and build DashboardOrder objects
+      allDashboardOrders = await Promise.all(
+        allBCOrders.map(async (order) => {
+          let lineItems: DashboardLineItem[] = [];
+          try {
+            const orderProducts = await getOrderProducts(storeHash, order.id);
+            lineItems = orderProducts.map((p) => ({
+              productId: String(p.product_id),
+              name: p.name,
+              quantity: p.quantity,
+              totalPrice: parseFloat(p.total_inc_tax),
+              variantId: String(p.variant_id),
+            }));
+          } catch {
+            // If we can't get line items for an order, continue with empty
           }
-        };
-      }
+          return {
+            id: order.id,
+            total: parseFloat(order.total_inc_tax),
+            currencyCode: order.currency_code || '',
+            createdAt: order.date_created,
+            lineItems,
+          };
+        })
+      );
     } catch (_orderError) {
       console.error('[Dashboard] Error fetching orders:', _orderError);
       hasOrderAccess = false;
-      ordersData = null;
+      allDashboardOrders = [];
     }
 
-    const shopResponse = await admin.graphql(`
-      #graphql
-      query getShop {
-        shop {
-          name
-          myshopifyDomain
-          plan {
-            displayName
-          }
-        }
-      }
-    `);
+    // Fetch store info from BigCommerce REST API
+    try {
+      storeInfo = await getStoreInfo(storeHash);
+    } catch (e) {
+      console.error('[Dashboard] Error fetching store info:', e);
+    }
 
-    shopData = await shopResponse.json();
-    const settings = await getSettings(session.shop);
+    const settings = await getSettings(storeHash);
 
     // Get subscription to calculate accurate app cost based on tier
     const subscription = await prisma.subscription.findUnique({
-      where: { shop: session.shop },
+      where: { storeHash },
       select: { planTier: true, planStatus: true, createdAt: true }
     });
-    
-    const allOrders = (hasOrderAccess && ordersData?.data?.orders?.edges) ? ordersData.data.orders.edges : [];
 
-    const orders = allOrders.filter((order: ShopifyOrderEdge) => {
-      const orderDate = new Date(order.node.createdAt);
+    const allOrders = hasOrderAccess ? allDashboardOrders : [];
+
+    const orders = allOrders.filter((order: DashboardOrder) => {
+      const orderDate = new Date(order.createdAt);
       return orderDate >= startDate && orderDate <= endDate;
     });
 
-    const previousOrders = allOrders.filter((order: ShopifyOrderEdge) => {
-      const orderDate = new Date(order.node.createdAt);
+    const previousOrders = allOrders.filter((order: DashboardOrder) => {
+      const orderDate = new Date(order.createdAt);
       return orderDate >= previousPeriodStart && orderDate <= previousPeriodEnd;
     });
+
+    const shopCurrency = await getShopCurrency(storeHash);
+    const storeCurrency = orders.length > 0 && orders[0].currencyCode
+      ? orders[0].currencyCode : shopCurrency.code;
     
-    const shop = shopData.data?.shop;
-    const shopCurrency = await getShopCurrency(session.shop);
-    const storeCurrency = orders.length > 0 ? 
-      orders[0].node.totalPriceSet?.shopMoney?.currencyCode || shopCurrency.code : shopCurrency.code;
-    
-    const calculatePeriodMetrics = (periodOrders: ShopifyOrderEdge[]): PeriodMetrics => {
+    const calculatePeriodMetrics = (periodOrders: DashboardOrder[]): PeriodMetrics => {
       const totalOrders = periodOrders.length;
-      const totalRevenue = periodOrders.reduce((sum: number, order: ShopifyOrderEdge) => {
-        return sum + parseFloat(order.node.totalPriceSet.shopMoney.amount);
+      const totalRevenue = periodOrders.reduce((sum: number, order: DashboardOrder) => {
+        return sum + order.total;
       }, 0);
       const averageOrderValue = totalOrders > 0 ? totalRevenue / totalOrders : 0;
 
-      const multiProductOrders = periodOrders.filter((order: ShopifyOrderEdge) => {
-        const lineItemCount = order.node.lineItems?.edges?.length || 0;
+      const multiProductOrders = periodOrders.filter((order: DashboardOrder) => {
+        const lineItemCount = order.lineItems?.length || 0;
         return lineItemCount > 1;
       });
 
@@ -539,7 +430,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     try {
       const cartOpenEvents = await db.analyticsEvent.findMany({
         where: {
-          shop: session.shop,
+          shop: storeHash,
           eventType: 'cart_open',
           createdAt: { gte: startDate, lte: endDate }
         }
@@ -551,7 +442,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
         const todayEvents = await db.analyticsEvent.findMany({
           where: {
-            shop: session.shop,
+            shop: storeHash,
             eventType: 'cart_open',
             createdAt: { gte: todayStart, lte: endDate }
           }
@@ -577,8 +468,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     let freeShippingRevenue = 0;
     let nonFreeShippingRevenue = 0;
     
-    orders.forEach((order: ShopifyOrderEdge) => {
-      const orderTotal = parseFloat(order.node.totalPriceSet.shopMoney.amount);
+    orders.forEach((order: DashboardOrder) => {
+      const orderTotal = order.total;
       if (orderTotal >= freeShippingThreshold) {
         ordersWithFreeShipping += 1;
         freeShippingRevenue += orderTotal;
@@ -624,8 +515,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       const lowestThreshold = Math.min(...giftThresholds.map(g => g.threshold));
       
       if (lowestThreshold > 0) {
-        orders.forEach((order: ShopifyOrderEdge) => {
-          const orderTotal = parseFloat(order.node.totalPriceSet.shopMoney.amount);
+        orders.forEach((order: DashboardOrder) => {
+          const orderTotal = order.total;
           if (orderTotal >= lowestThreshold) {
             ordersReachingGifts += 1;
             giftRevenue += orderTotal;
@@ -639,8 +530,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         avgAOVWithoutGift = ordersNotReachingGifts > 0 ? nonGiftRevenue / ordersNotReachingGifts : 0;
 
         giftThresholdBreakdown = giftThresholds.map(gift => {
-          const ordersReached = orders.filter((order: ShopifyOrderEdge) =>
-            parseFloat(order.node.totalPriceSet.shopMoney.amount) >= gift.threshold
+          const ordersReached = orders.filter((order: DashboardOrder) =>
+            order.total >= gift.threshold
           ).length;
           return {
             threshold: gift.threshold,
@@ -663,14 +554,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       : 0;
     
     const productStats = new Map<string, ProductStats>();
-    orders.forEach((order: ShopifyOrderEdge) => {
-      order.node.lineItems?.edges?.forEach((lineItem) => {
-        const productTitle = lineItem.node.product?.title;
+    orders.forEach((order: DashboardOrder) => {
+      order.lineItems?.forEach((lineItem) => {
+        const productTitle = lineItem.name;
         if (productTitle) {
           const existing = productStats.get(productTitle) || { orders: 0, revenue: 0, quantity: 0 };
           existing.orders += 1;
-          existing.revenue += parseFloat(lineItem.node.originalTotalSet?.shopMoney?.amount || '0');
-          existing.quantity += lineItem.node.quantity;
+          existing.revenue += lineItem.totalPrice || 0;
+          existing.quantity += lineItem.quantity;
           productStats.set(productTitle, existing);
         }
       });
@@ -695,11 +586,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       const productPairs = new Map<string, BundleOpportunity>();
       const productNames = new Map<string, string>();
 
-      orders.forEach((order: ShopifyOrderEdge) => {
-        const lineItems = order.node.lineItems?.edges || [];
+      orders.forEach((order: DashboardOrder) => {
+        const lineItems = order.lineItems || [];
         const products = lineItems.map((item) => ({
-          id: item.node.product?.id,
-          title: item.node.product?.title
+          id: item.productId,
+          title: item.name
         })).filter((p): p is ProductPair => Boolean(p.id && p.title));
 
         products.forEach((product: ProductPair) => {
@@ -721,8 +612,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         }
       });
 
-      const totalOrdersWithMultipleItems = orders.filter((order: ShopifyOrderEdge) => {
-        const lineItemCount = order.node.lineItems?.edges?.length || 0;
+      const totalOrdersWithMultipleItems = orders.filter((order: DashboardOrder) => {
+        const lineItemCount = order.lineItems?.length || 0;
         return lineItemCount > 1;
       }).length;
 
@@ -746,7 +637,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     let topRecommended: TopRecommendedProduct[] = [];
     try {
       const events = await db.trackingEvent.findMany({
-        where: { shop: session.shop, createdAt: { gte: startDate, lte: endDate } }
+        where: { storeHash, createdAt: { gte: startDate, lte: endDate } }
       });
       trackingEvents = events;
 
@@ -813,7 +704,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     try {
       const attributions = await db.recommendationAttribution.findMany({
         where: {
-          shop: session.shop,
+          shop: storeHash,
           createdAt: { gte: startDate, lte: endDate }
         }
       });
@@ -826,25 +717,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       attributedOrders = uniqueOrderIds.size;
       
       productTitlesMap.clear();
-      orders.forEach((order: ShopifyOrderEdge) => {
-        order.node.lineItems?.edges?.forEach((lineItem) => {
-          const productGid = lineItem.node.product?.id;
-          const variantGid = lineItem.node.variant?.id;
-          const productTitle = lineItem.node.product?.title;
-          const variantTitle = lineItem.node.variant?.title;
-          
-          const fullTitle = variantTitle && variantTitle !== 'Default Title' 
-            ? `${productTitle} - ${variantTitle}` 
-            : productTitle;
-          
-          if (fullTitle) {
-            if (productGid) {
-              const productId = productGid.split('/').pop();
-              productTitlesMap.set(productId!, fullTitle);
-            }
-            if (variantGid) {
-              const variantId = variantGid.split('/').pop();
-              productTitlesMap.set(variantId!, fullTitle);
+      orders.forEach((order: DashboardOrder) => {
+        order.lineItems?.forEach((lineItem) => {
+          const productTitle = lineItem.name;
+          if (productTitle) {
+            productTitlesMap.set(lineItem.productId, productTitle);
+            if (lineItem.variantId) {
+              productTitlesMap.set(lineItem.variantId, productTitle);
             }
           }
         });
@@ -983,7 +862,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       // Get all bundles with their purchase data
       const bundles = await db.bundle.findMany({
         where: {
-          shop: session.shop,
+          shop: storeHash,
           status: 'active'
         },
         select: {
@@ -1000,7 +879,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       // Get bundle purchases in current period
       const bundlePurchases = await db.bundlePurchase.findMany({
         where: {
-          shop: session.shop,
+          shop: storeHash,
           createdAt: { gte: startDate, lte: endDate }
         },
         select: {
@@ -1024,7 +903,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       } else {
         bundleEvents = await db.trackingEvent.findMany({
           where: {
-            shop: session.shop,
+            shop: storeHash,
             event: { in: ['view', 'impression', 'click'] },
             source: 'bundle',
             createdAt: { gte: startDate, lte: endDate }
@@ -1046,7 +925,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
       const allBundlePurchases = await db.customerBundle.findMany({
         where: {
-          shop: session.shop,
+          shop: storeHash,
           action: 'purchase',
           createdAt: { gte: startDate, lte: endDate }
         },
@@ -1084,10 +963,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       // Get ML insights to show all actual product combinations purchased
       const mlInsights = await import('../models/bundleInsights.server');
       const insights = await mlInsights.getBundleInsights({
-        shop: session.shop,
-        admin,
-        orderLimit: 100, // Get more orders to capture all combinations
-        minPairOrders: 1  // Show even combinations with just 1 order
+        storeHash,
+        orderLimit: 100,
+        minPairOrders: 1
       });
 
       const truncateTitle = (title: string, maxLength: number = 30) => {
@@ -1174,7 +1052,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       // Get all attributed orders with their revenue
       const attributedOrderIds = await db.recommendationAttribution.findMany({
         where: {
-          shop: session.shop,
+          shop: storeHash,
           createdAt: { gte: startDate, lte: endDate }
         },
         select: { orderId: true, attributedRevenue: true }
@@ -1182,7 +1060,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
       const bundleOrderIds = await db.bundlePurchase.findMany({
         where: {
-          shop: session.shop,
+          shop: storeHash,
           createdAt: { gte: startDate, lte: endDate }
         },
         select: { orderId: true, totalValue: true }
@@ -1230,7 +1108,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     try {
       const previousAttributions = await db.recommendationAttribution.findMany({
         where: {
-          shop: session.shop,
+          shop: storeHash,
           createdAt: { gte: previousPeriodStart, lte: previousPeriodEnd }
         }
       });
@@ -1242,7 +1120,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       // Add previous period bundle revenue
       const previousBundlePurchases = await db.bundlePurchase.findMany({
         where: {
-          shop: session.shop,
+          shop: storeHash,
           createdAt: { gte: previousPeriodStart, lte: previousPeriodEnd }
         },
         select: { totalValue: true }
@@ -1270,7 +1148,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
     try {
       const mlPerformance = await db.mLProductPerformance.findMany({
-        where: { shop: session.shop }
+        where: { storeHash }
       });
 
       if (mlPerformance.length > 0) {
@@ -1283,7 +1161,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       }
 
       const latestJob = await db.mLSystemHealth.findFirst({
-        where: { shop: session.shop },
+        where: { storeHash },
         orderBy: { completedAt: 'desc' }
       });
 
@@ -1291,7 +1169,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         mlStatus.lastUpdated = latestJob.completedAt;
       } else if (topRecommended.length > 0 || recSummary.totalImpressions > 0) {
         const latestTracking = await db.trackingEvent.findFirst({
-          where: { shop: session.shop },
+          where: { storeHash },
           orderBy: { createdAt: 'desc' }
         });
         if (latestTracking?.createdAt) {
@@ -1343,7 +1221,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     try {
       activeBundleCount = await db.bundle.count({
         where: {
-          shop: session.shop,
+          shop: storeHash,
           status: 'active'
         }
       });
@@ -1353,7 +1231,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
     // Generate actionable insights
     // Get lifetime metrics (never resets)
-    const lifetimeMetrics = await getLifetimeMetricsFormatted(session.shop);
+    const lifetimeMetrics = await getLifetimeMetricsFormatted(storeHash);
 
     const insights = generateInsights({
       cartEnabled: settings?.enableApp ?? false,
@@ -1381,12 +1259,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       lifetimeMetrics,
       debug: {
         hasOrderAccess,
-        ordersDataExists: !!ordersData,
+        ordersDataExists: allDashboardOrders.length > 0,
         ordersLength: orders.length,
         timeframe,
         startDate: startDate.toISOString(),
         endDate: endDate.toISOString(),
-        shop: session.shop
+        shop: storeHash
       },
       analytics: {
         totalOrders,
@@ -1460,17 +1338,17 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         startDate: startDate.toISOString(),
         endDate: endDate.toISOString(),
         isCustomDateRange: !!(customStartDate && customEndDate),
-        shopName: shop?.name || session.shop,
+        shopName: storeInfo?.name || storeHash,
         currency: storeCurrency
       },
       insights,
-      shop: session.shop,
+      shop: storeHash,
       search
     });
   } catch (error: unknown) {
     console.error('Dashboard loader error:', error);
     return json({
-      debug: { hasOrderAccess: false, ordersDataExists: false, ordersLength: 0, timeframe: "30d", startDate: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(), endDate: new Date().toISOString(), shop: session?.shop || 'unknown' },
+      debug: { hasOrderAccess: false, ordersDataExists: false, ordersLength: 0, timeframe: "30d", startDate: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(), endDate: new Date().toISOString(), shop: storeHash || 'unknown' },
       analytics: { totalOrders: 0, totalRevenue: 0, averageOrderValue: 0, checkoutsCompleted: 0, previousMetrics: { totalOrders: 0, totalRevenue: 0, averageOrderValue: 0, attributedRevenue: 0, attributedOrders: 0 }, attributedRevenue: 0, attributedOrders: 0, appCost: 49, roi: 0, topAttributedProducts: [], mlStatus: { productsAnalyzed: 0, highPerformers: 0, blacklistedProducts: 0, performanceChange: 0, lastUpdated: null }, cartImpressions: 0, cartOpensToday: 0, cartToCheckoutRate: 0, topProducts: [], topUpsells: [], recImpressions: 0, recClicks: 0, recCTR: 0, recCTRSeries: [], topRecommended: [], bundleOpportunities: [], cartAbandonmentRate: 0, freeShippingEnabled: false, freeShippingThreshold: 100, ordersWithFreeShipping: 0, ordersWithoutFreeShipping: 0, avgAOVWithFreeShipping: 0, avgAOVWithoutFreeShipping: 0, freeShippingConversionRate: 0, freeShippingAOVLift: 0, freeShippingRevenue: 0, avgAmountAddedForFreeShipping: 0, giftGatingEnabled: false, giftThresholds: [], ordersReachingGifts: 0, ordersNotReachingGifts: 0, avgAOVWithGift: 0, avgAOVWithoutGift: 0, giftConversionRate: 0, giftAOVLift: 0, giftRevenue: 0, avgAmountAddedForGift: 0, giftThresholdBreakdown: [], setupProgress: 0, setupComplete: false, timeframe: "30d", shopName: "demo-shop", currency: 'USD' },
       shop: 'demo-shop',
       search
@@ -1697,337 +1575,355 @@ export default function Dashboard() {
   // Setup progress check
   if (analytics.setupProgress < 100) {
     return (
-      <Page title="Getting Started">
-        <TitleBar title="Getting Started" />
-        <Layout>
-          <Layout.Section>
-            <Card>
-              <BlockStack gap="500">
-                <Text variant="headingLg" as="h2">Your AI is Getting Ready</Text>
-                <Text variant="bodyMd" as="p" tone="subdued">Setting up recommendations for your store</Text>
-                
-                <Box padding="400" background="bg-surface-secondary" borderRadius="200">
-                  <BlockStack gap="400">
-                    <ProgressBar progress={analytics.setupProgress} tone="success" />
-                    
-                    <BlockStack gap="300">
-                      <InlineStack gap="200" blockAlign="center">
-                        <Text as="span">{analytics.recImpressions > 0 ? '✅' : '⏳'}</Text>
-                        <Text variant="bodyMd" as="span">Recommendations showing on your store</Text>
-                      </InlineStack>
-                      
-                      <InlineStack gap="200" blockAlign="center">
-                        <Text as="span">{analytics.recClicks > 0 ? '✅' : '⏳'}</Text>
-                        <Text variant="bodyMd" as="span">Customers clicking recommendations</Text>
-                      </InlineStack>
-                      
-                      <InlineStack gap="200" blockAlign="center">
-                        <Text as="span">{analytics.attributedOrders > 0 ? '✅' : '⏳'}</Text>
-                        <Text variant="bodyMd" as="span">Revenue tracking active</Text>
-                      </InlineStack>
-                    </BlockStack>
-                  </BlockStack>
-                </Box>
-                
-                <Banner tone="info">
-                  Your dashboard will activate once customers interact with recommendations. The AI learns from each sale to improve over time.
-                </Banner>
-                
-                <InlineStack gap="300">
-                  <a href={settingsHref}>
-                    <Button variant="primary">Configure Settings</Button>
-                  </a>
-                </InlineStack>
-              </BlockStack>
-            </Card>
-          </Layout.Section>
-        </Layout>
-      </Page>
+      <Box padding="medium">
+        <H1>Getting Started</H1>
+
+        <Panel>
+          <Box padding="xSmall">
+            <Flex flexDirection="column" flexGap="1.25rem">
+              <H2>Your AI is Getting Ready</H2>
+              <Text color="secondary60">Setting up recommendations for your store</Text>
+
+              <Box padding="small" backgroundColor="secondary10">
+                <Flex flexDirection="column" flexGap="1rem">
+                  <ProgressBar percent={analytics.setupProgress} />
+
+                  <Flex flexDirection="column" flexGap="0.75rem">
+                    <Flex flexGap="0.5rem" alignItems="center">
+                      <Text>{analytics.recImpressions > 0 ? '✅' : '⏳'}</Text>
+                      <Text>Recommendations showing on your store</Text>
+                    </Flex>
+
+                    <Flex flexGap="0.5rem" alignItems="center">
+                      <Text>{analytics.recClicks > 0 ? '✅' : '⏳'}</Text>
+                      <Text>Customers clicking recommendations</Text>
+                    </Flex>
+
+                    <Flex flexGap="0.5rem" alignItems="center">
+                      <Text>{analytics.attributedOrders > 0 ? '✅' : '⏳'}</Text>
+                      <Text>Revenue tracking active</Text>
+                    </Flex>
+                  </Flex>
+                </Flex>
+              </Box>
+
+              <Message
+                type="info"
+                messages={[{ text: 'Your dashboard will activate once customers interact with recommendations. The AI learns from each sale to improve over time.' }]}
+              />
+
+              <Flex flexGap="0.75rem">
+                <a href={settingsHref}>
+                  <Button variant="primary">Configure Settings</Button>
+                </a>
+              </Flex>
+            </Flex>
+          </Box>
+        </Panel>
+      </Box>
     );
   }
 
   // Main dashboard
   return (
-    <Page
-      title="Analytics"
-      fullWidth
-      primaryAction={{
-        content: 'Export',
-        onAction: exportFullDashboard
-      }}
-    >
-      <TitleBar title="Analytics" />
+    <Box padding="medium">
+      <Flex justifyContent="space-between" alignItems="center" style={{ marginBottom: '1.25rem' }}>
+        <H1>Analytics</H1>
+        <Button variant="primary" onClick={exportFullDashboard}>Export</Button>
+      </Flex>
 
-      <BlockStack gap="500">
+      <Flex flexDirection="column" flexGap="1.25rem">
         {/* Date Filter */}
-        <Card>
-          <InlineStack align="space-between" wrap={false}>
-            <BlockStack gap="100">
-              <Text variant="headingSm" as="p" tone="subdued">Time period</Text>
-              <Text variant="bodyLg" as="p">{getTimeframeLabel(analytics.timeframe)}</Text>
-            </BlockStack>
-            
-            <Select
-              label=""
-              labelHidden
-              options={[
-                { label: 'Today', value: 'today' },
-                { label: 'Last 7 days', value: '7d' },
-                { label: 'Last 30 days', value: '30d' },
-                { label: 'Last 90 days', value: '90d' },
-                { label: 'Year to date', value: 'ytd' },
-                { label: 'All time', value: 'all' },
-              ]}
-              value={analytics.timeframe}
-              onChange={(value) => {
-                const params = new URLSearchParams(window.location.search);
-                params.set('timeframe', value);
-                window.location.href = `${window.location.pathname}?${params.toString()}`;
-              }}
-            />
-          </InlineStack>
-        </Card>
+        <Panel>
+          <Box padding="xSmall">
+            <Flex justifyContent="space-between" flexWrap="nowrap">
+              <Flex flexDirection="column" flexGap="0.25rem">
+                <H3 color="secondary60">Time period</H3>
+                <Text>{getTimeframeLabel(analytics.timeframe)}</Text>
+              </Flex>
+
+              <Select
+                options={[
+                  { content: 'Today', value: 'today' },
+                  { content: 'Last 7 days', value: '7d' },
+                  { content: 'Last 30 days', value: '30d' },
+                  { content: 'Last 90 days', value: '90d' },
+                  { content: 'Year to date', value: 'ytd' },
+                  { content: 'All time', value: 'all' },
+                ]}
+                value={analytics.timeframe}
+                onOptionChange={(value) => {
+                  const params = new URLSearchParams(window.location.search);
+                  params.set('timeframe', value);
+                  window.location.href = `${window.location.pathname}?${params.toString()}`;
+                }}
+              />
+            </Flex>
+          </Box>
+        </Panel>
 
         {/* Lifetime Metrics - Never Resets */}
-        <Card>
-          <BlockStack gap="400">
-            <BlockStack gap="100">
-              <InlineStack align="space-between" blockAlign="center">
-                <Text variant="headingMd" as="h2">Lifetime Stats</Text>
-                <Badge tone="info">{lifetimeMetrics.daysSinceInstall} days with Cart Uplift</Badge>
-              </InlineStack>
-              <Text variant="bodySm" as="p" tone="subdued">
-                Your all-time performance since installing Cart Uplift
-              </Text>
-            </BlockStack>
+        <Panel>
+          <Box padding="xSmall">
+            <Flex flexDirection="column" flexGap="1rem">
+              <Flex flexDirection="column" flexGap="0.25rem">
+                <Flex justifyContent="space-between" alignItems="center">
+                  <H2>Lifetime Stats</H2>
+                  <Badge variant="secondary">{lifetimeMetrics.daysSinceInstall} days with Cart Uplift</Badge>
+                </Flex>
+                <Small color="secondary60">
+                  Your all-time performance since installing Cart Uplift
+                </Small>
+              </Flex>
 
-            <Grid columns={{xs: 1, sm: 2, md: 4, lg: 4, xl: 4}}>
-              <BlockStack gap="100">
-                <Text variant="bodySm" as="p" tone="subdued">Total Orders</Text>
-                <Text variant="headingLg" as="p">{lifetimeMetrics.totalOrders.toLocaleString()}</Text>
-              </BlockStack>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem' }}>
+                <Flex flexDirection="column" flexGap="0.25rem">
+                  <Small color="secondary60">Total Orders</Small>
+                  <H2>{lifetimeMetrics.totalOrders.toLocaleString()}</H2>
+                </Flex>
 
-              <BlockStack gap="100">
-                <Text variant="bodySm" as="p" tone="subdued">Total Revenue</Text>
-                <Text variant="headingLg" as="p">{lifetimeMetrics.totalRevenueFormatted}</Text>
-              </BlockStack>
+                <Flex flexDirection="column" flexGap="0.25rem">
+                  <Small color="secondary60">Total Revenue</Small>
+                  <H2>{lifetimeMetrics.totalRevenueFormatted}</H2>
+                </Flex>
 
-              <BlockStack gap="100">
-                <Text variant="bodySm" as="p" tone="subdued">AI Attributed Orders</Text>
-                <Text variant="headingLg" as="p">{lifetimeMetrics.totalAttributedOrders.toLocaleString()}</Text>
-              </BlockStack>
+                <Flex flexDirection="column" flexGap="0.25rem">
+                  <Small color="secondary60">AI Attributed Orders</Small>
+                  <H2>{lifetimeMetrics.totalAttributedOrders.toLocaleString()}</H2>
+                </Flex>
 
-              <BlockStack gap="100">
-                <Text variant="bodySm" as="p" tone="subdued">AI Attributed Revenue</Text>
-                <Text variant="headingLg" as="p">{lifetimeMetrics.totalAttributedRevenueFormatted}</Text>
-              </BlockStack>
-            </Grid>
-          </BlockStack>
-        </Card>
+                <Flex flexDirection="column" flexGap="0.25rem">
+                  <Small color="secondary60">AI Attributed Revenue</Small>
+                  <H2>{lifetimeMetrics.totalAttributedRevenueFormatted}</H2>
+                </Flex>
+              </div>
+            </Flex>
+          </Box>
+        </Panel>
 
         {/* Key Metrics Overview */}
-        <Layout>
-          <Layout.Section>
-            <Grid columns={{xs: 1, sm: 2, md: 2, lg: 4, xl: 4}}>
-              {/* Total Revenue */}
-              <Card>
-                <BlockStack gap="200">
-                  <Text variant="bodySm" as="p" tone="subdued">Total sales</Text>
-                  <Text variant="heading2xl" as="h3">{formatCurrency(analytics.totalRevenue)}</Text>
-                  {analytics.previousMetrics.totalRevenue > 0 && (
-                    <Badge tone={analytics.totalRevenue >= analytics.previousMetrics.totalRevenue ? "success" : "info"}>
-                      {`${analytics.totalRevenue >= analytics.previousMetrics.totalRevenue ? "↗" : "↘"} ${Math.abs(calculateChange(analytics.totalRevenue, analytics.previousMetrics.totalRevenue)).toFixed(1)}%`}
-                    </Badge>
-                  )}
-                </BlockStack>
-              </Card>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem' }}>
+          {/* Total Revenue */}
+          <Panel>
+            <Box padding="xSmall">
+              <Flex flexDirection="column" flexGap="0.5rem">
+                <Small color="secondary60">Total sales</Small>
+                <H1>{formatCurrency(analytics.totalRevenue)}</H1>
+                {analytics.previousMetrics.totalRevenue > 0 && (
+                  <Badge variant={analytics.totalRevenue >= analytics.previousMetrics.totalRevenue ? "success" : "secondary"}>
+                    {`${analytics.totalRevenue >= analytics.previousMetrics.totalRevenue ? "↗" : "↘"} ${Math.abs(calculateChange(analytics.totalRevenue, analytics.previousMetrics.totalRevenue)).toFixed(1)}%`}
+                  </Badge>
+                )}
+              </Flex>
+            </Box>
+          </Panel>
 
-              {/* AI Revenue */}
-              <Card>
-                <BlockStack gap="200">
-                  <Text variant="bodySm" as="p" tone="subdued">Cart Uplift AI sales</Text>
-                  <Text variant="heading2xl" as="h3">{formatCurrency(analytics.attributedRevenue)}</Text>
-                  <Badge tone="success">{analytics.roi > 0 ? `${analytics.roi.toFixed(1)}x ROI` : 'Getting started'}</Badge>
-                  <Text variant="bodyXs" as="p" tone="subdued">From AI recommendations & bundles</Text>
-                </BlockStack>
-              </Card>
+          {/* AI Revenue */}
+          <Panel>
+            <Box padding="xSmall">
+              <Flex flexDirection="column" flexGap="0.5rem">
+                <Small color="secondary60">Cart Uplift AI sales</Small>
+                <H1>{formatCurrency(analytics.attributedRevenue)}</H1>
+                <Badge variant="success">{analytics.roi > 0 ? `${analytics.roi.toFixed(1)}x ROI` : 'Getting started'}</Badge>
+                <Small color="secondary60">From AI recommendations & bundles</Small>
+              </Flex>
+            </Box>
+          </Panel>
 
-              {/* Orders */}
-              <Card>
-                <BlockStack gap="200">
-                  <Text variant="bodySm" as="p" tone="subdued">Orders</Text>
-                  <Text variant="heading2xl" as="h3">{analytics.totalOrders}</Text>
-                  {analytics.previousMetrics.totalOrders > 0 && (
-                    <Badge tone={analytics.totalOrders >= analytics.previousMetrics.totalOrders ? "success" : "info"}>
-                      {`${analytics.totalOrders >= analytics.previousMetrics.totalOrders ? "↗" : "↘"} ${Math.abs(calculateChange(analytics.totalOrders, analytics.previousMetrics.totalOrders)).toFixed(1)}%`}
-                    </Badge>
-                  )}
-                </BlockStack>
-              </Card>
+          {/* Orders */}
+          <Panel>
+            <Box padding="xSmall">
+              <Flex flexDirection="column" flexGap="0.5rem">
+                <Small color="secondary60">Orders</Small>
+                <H1>{analytics.totalOrders}</H1>
+                {analytics.previousMetrics.totalOrders > 0 && (
+                  <Badge variant={analytics.totalOrders >= analytics.previousMetrics.totalOrders ? "success" : "secondary"}>
+                    {`${analytics.totalOrders >= analytics.previousMetrics.totalOrders ? "↗" : "↘"} ${Math.abs(calculateChange(analytics.totalOrders, analytics.previousMetrics.totalOrders)).toFixed(1)}%`}
+                  </Badge>
+                )}
+              </Flex>
+            </Box>
+          </Panel>
 
-              {/* AOV */}
-              <Card>
-                <BlockStack gap="200">
-                  <Text variant="bodySm" as="p" tone="subdued">Average order value</Text>
-                  <Text variant="heading2xl" as="h3">{formatCurrency(analytics.averageOrderValue)}</Text>
-                  {analytics.previousMetrics.averageOrderValue > 0 && (
-                    <Badge tone={analytics.averageOrderValue >= analytics.previousMetrics.averageOrderValue ? "success" : "info"}>
-                      {`${analytics.averageOrderValue >= analytics.previousMetrics.averageOrderValue ? "↗" : "↘"} ${Math.abs(calculateChange(analytics.averageOrderValue, analytics.previousMetrics.averageOrderValue)).toFixed(1)}%`}
-                    </Badge>
-                  )}
-                </BlockStack>
-              </Card>
-            </Grid>
-          </Layout.Section>
+          {/* AOV */}
+          <Panel>
+            <Box padding="xSmall">
+              <Flex flexDirection="column" flexGap="0.5rem">
+                <Small color="secondary60">Average order value</Small>
+                <H1>{formatCurrency(analytics.averageOrderValue)}</H1>
+                {analytics.previousMetrics.averageOrderValue > 0 && (
+                  <Badge variant={analytics.averageOrderValue >= analytics.previousMetrics.averageOrderValue ? "success" : "secondary"}>
+                    {`${analytics.averageOrderValue >= analytics.previousMetrics.averageOrderValue ? "↗" : "↘"} ${Math.abs(calculateChange(analytics.averageOrderValue, analytics.previousMetrics.averageOrderValue)).toFixed(1)}%`}
+                  </Badge>
+                )}
+              </Flex>
+            </Box>
+          </Panel>
+        </div>
 
-          {/* Insights & Recommendations */}
-          {insights && insights.length > 0 && (
-            <Layout.Section>
-              <Card>
-                <BlockStack gap="400">
-                  <button
-                    onClick={toggleInsights}
-                    style={{
-                      background: 'none',
-                      border: 'none',
-                      padding: 0,
-                      cursor: 'pointer',
-                      width: '100%',
-                      textAlign: 'left'
-                    }}
-                  >
-                    <InlineStack align="space-between" blockAlign="center">
-                      <Text variant="headingMd" as="h2">Insights & recommendations</Text>
-                      <Text variant="bodyMd" as="span" tone="subdued">
-                        {insightsExpanded ? '▼ Collapse' : '▶ Expand'}
-                      </Text>
-                    </InlineStack>
-                  </button>
-                  {insightsExpanded && (
-                    <div className={dashboardStyles.insightGrid}>
-                      {insights.map((insight: DashboardInsight, index: number) => (
-                        <InsightCard key={index} {...insight} />
-                      ))}
-                    </div>
-                  )}
-                </BlockStack>
-              </Card>
-            </Layout.Section>
-          )}
-
-          {/* Recommendation Performance */}
-          <Layout.Section>
-            <Card>
-              <BlockStack gap="400">
-                <Text variant="headingMd" as="h2">Recommendation performance</Text>
-                
-                <Grid columns={{xs: 1, sm: 2, md: 4, lg: 4, xl: 4}}>
-                  <BlockStack gap="200">
-                    <Text variant="bodySm" as="p" tone="subdued">Recommendation revenue</Text>
-                    <Text variant="headingLg" as="h3">{formatCurrency(analytics.recommendationRevenue || 0)}</Text>
-                    <Text variant="bodyXs" as="p" tone="subdued">From AI recommendations</Text>
-                  </BlockStack>
-
-                  <BlockStack gap="200">
-                    <Text variant="bodySm" as="p" tone="subdued">Click rate</Text>
-                    <Text variant="headingLg" as="h3">{analytics.recCTR.toFixed(1)}%</Text>
-                    <Text variant="bodyXs" as="p" tone="subdued">{analytics.recClicks} clicks from {analytics.recImpressions} views</Text>
-                  </BlockStack>
-
-                  <BlockStack gap="200">
-                    <Text variant="bodySm" as="p" tone="subdued">Orders with CartUpliftAI</Text>
-                    <Text variant="headingLg" as="h3">{analytics.attributedOrders}</Text>
-                    <Text variant="bodyXs" as="p" tone="subdued">{analytics.totalOrders > 0 ? ((analytics.attributedOrders / analytics.totalOrders) * 100).toFixed(1) : 0}% of all orders</Text>
-                  </BlockStack>
-
-                  <BlockStack gap="200">
-                    <Text variant="bodySm" as="p" tone="subdued">Conversion rate</Text>
-                    <Text variant="headingLg" as="h3">
-                      {analytics.recClicks > 0 && analytics.attributedOrders > 0 ? `${((analytics.attributedOrders / analytics.recClicks) * 100).toFixed(1)}%` : '0%'}
+        {/* Insights & Recommendations */}
+        {insights && insights.length > 0 && (
+          <Panel>
+            <Box padding="xSmall">
+              <Flex flexDirection="column" flexGap="1rem">
+                <button
+                  onClick={toggleInsights}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    padding: 0,
+                    cursor: 'pointer',
+                    width: '100%',
+                    textAlign: 'left'
+                  }}
+                >
+                  <Flex justifyContent="space-between" alignItems="center">
+                    <H2>Insights & recommendations</H2>
+                    <Text color="secondary60">
+                      {insightsExpanded ? '▼ Collapse' : '▶ Expand'}
                     </Text>
-                    <Text variant="bodyXs" as="p" tone="subdued">Clicks to purchase</Text>
-                  </BlockStack>
-                </Grid>
-              </BlockStack>
-            </Card>
-          </Layout.Section>
+                  </Flex>
+                </button>
+                {insightsExpanded && (
+                  <div className={dashboardStyles.insightGrid}>
+                    {insights.map((insight: DashboardInsight, index: number) => (
+                      <InsightCard key={index} {...insight} />
+                    ))}
+                  </div>
+                )}
+              </Flex>
+            </Box>
+          </Panel>
+        )}
 
-          {/* Bundle Performance */}
-          {(analytics.bundleOrders > 0 || analytics.bundleRevenue > 0) && (
-            <Layout.Section>
-              <Card>
-                <BlockStack gap="400">
-                  <Text variant="headingMd" as="h2">Bundle performance</Text>
+        {/* Recommendation Performance */}
+        <Panel>
+          <Box padding="xSmall">
+            <Flex flexDirection="column" flexGap="1rem">
+              <H2>Recommendation performance</H2>
 
-                  <Grid columns={{xs: 1, sm: 2, md: 2, lg: 4, xl: 4}}>
-                    <BlockStack gap="200">
-                      <Text variant="bodySm" as="p" tone="subdued">Bundle revenue</Text>
-                      <Text variant="headingLg" as="h3">{formatCurrency(analytics.bundleRevenue)}</Text>
-                      <Text variant="bodyXs" as="p" tone="subdued">Total from bundle purchases</Text>
-                    </BlockStack>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem' }}>
+                <Flex flexDirection="column" flexGap="0.5rem">
+                  <Small color="secondary60">Recommendation revenue</Small>
+                  <H2>{formatCurrency(analytics.recommendationRevenue || 0)}</H2>
+                  <Small color="secondary60">From AI recommendations</Small>
+                </Flex>
 
-                    <BlockStack gap="200">
-                      <Text variant="bodySm" as="p" tone="subdued">Click rate</Text>
-                      <Text variant="headingLg" as="h3">{analytics.bundleClickRate.toFixed(1)}%</Text>
-                      <Text variant="bodyXs" as="p" tone="subdued">{analytics.bundleClicks} clicks from {analytics.bundleImpressions} views</Text>
-                    </BlockStack>
+                <Flex flexDirection="column" flexGap="0.5rem">
+                  <Small color="secondary60">Click rate</Small>
+                  <H2>{analytics.recCTR.toFixed(1)}%</H2>
+                  <Small color="secondary60">{analytics.recClicks} clicks from {analytics.recImpressions} views</Small>
+                </Flex>
 
-                    <BlockStack gap="200">
-                      <Text variant="bodySm" as="p" tone="subdued">Orders with bundles</Text>
-                      <Text variant="headingLg" as="h3">{analytics.bundleOrders}</Text>
-                      <Text variant="bodyXs" as="p" tone="subdued">{analytics.totalOrders > 0 ? ((analytics.bundleOrders / analytics.totalOrders) * 100).toFixed(1) : 0}% of all orders</Text>
-                    </BlockStack>
+                <Flex flexDirection="column" flexGap="0.5rem">
+                  <Small color="secondary60">Orders with CartUpliftAI</Small>
+                  <H2>{analytics.attributedOrders}</H2>
+                  <Small color="secondary60">{analytics.totalOrders > 0 ? ((analytics.attributedOrders / analytics.totalOrders) * 100).toFixed(1) : 0}% of all orders</Small>
+                </Flex>
 
-                    <BlockStack gap="200">
-                      <Text variant="bodySm" as="p" tone="subdued">Conversion rate</Text>
-                      <Text variant="headingLg" as="h3">
-                        {analytics.bundleClicks > 0 && analytics.bundleOrders > 0 ? `${analytics.bundleConversionRate.toFixed(1)}%` : '0%'}
-                      </Text>
-                      <Text variant="bodyXs" as="p" tone="subdued">Clicks to purchase</Text>
-                    </BlockStack>
-                  </Grid>
-                </BlockStack>
-              </Card>
-            </Layout.Section>
-          )}
+                <Flex flexDirection="column" flexGap="0.5rem">
+                  <Small color="secondary60">Conversion rate</Small>
+                  <H2>
+                    {analytics.recClicks > 0 && analytics.attributedOrders > 0 ? `${((analytics.attributedOrders / analytics.recClicks) * 100).toFixed(1)}%` : '0%'}
+                  </H2>
+                  <Small color="secondary60">Clicks to purchase</Small>
+                </Flex>
+              </div>
+            </Flex>
+          </Box>
+        </Panel>
 
-          {/* Top Performing Bundles */}
-          {analytics.topBundles && analytics.topBundles.length > 0 && (
-            <Layout.Section>
-              <Card>
-                <BlockStack gap="400">
-                  <Text variant="headingMd" as="h2">Top performing bundles</Text>
-                  <DataTable
-                    columnContentTypes={['text', 'text', 'text', 'numeric', 'numeric']}
-                    headings={['Type', 'Item 1', 'Item 2', 'Purchases', 'Revenue']}
-                    rows={analytics.topBundles.slice(0, 5).map((bundle: TopBundle) => [
-                      bundle.bundleType,
-                      bundle.products[0]?.title || '-',
-                      bundle.products[1]?.title || '-',
-                      bundle.purchases.toString(),
-                      formatCurrency(bundle.revenue)
-                    ])}
-                  />
-                </BlockStack>
-              </Card>
-            </Layout.Section>
-          )}
+        {/* Bundle Performance */}
+        {(analytics.bundleOrders > 0 || analytics.bundleRevenue > 0) && (
+          <Panel>
+            <Box padding="xSmall">
+              <Flex flexDirection="column" flexGap="1rem">
+                <H2>Bundle performance</H2>
 
-          {/* Revenue Breakdown by Feature */}
-          {(analytics.revenueBreakdown &&
-            (analytics.revenueBreakdown.recommendationsOnly.orders > 0 ||
-             analytics.revenueBreakdown.bundlesOnly.orders > 0 ||
-             analytics.revenueBreakdown.mixed.orders > 0)) && (
-            <Layout.Section>
-              <Card>
-                <BlockStack gap="400">
-                  <Text variant="headingMd" as="h2">Revenue by feature</Text>
-                  <Text variant="bodyMd" as="p" tone="subdued">See which features drive the most value</Text>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem' }}>
+                  <Flex flexDirection="column" flexGap="0.5rem">
+                    <Small color="secondary60">Bundle revenue</Small>
+                    <H2>{formatCurrency(analytics.bundleRevenue)}</H2>
+                    <Small color="secondary60">Total from bundle purchases</Small>
+                  </Flex>
 
-                  <DataTable
-                    columnContentTypes={['text', 'numeric', 'numeric', 'numeric']}
-                    headings={['Feature', 'Revenue', '% of AI Sales', 'Orders']}
-                    rows={[
+                  <Flex flexDirection="column" flexGap="0.5rem">
+                    <Small color="secondary60">Click rate</Small>
+                    <H2>{analytics.bundleClickRate.toFixed(1)}%</H2>
+                    <Small color="secondary60">{analytics.bundleClicks} clicks from {analytics.bundleImpressions} views</Small>
+                  </Flex>
+
+                  <Flex flexDirection="column" flexGap="0.5rem">
+                    <Small color="secondary60">Orders with bundles</Small>
+                    <H2>{analytics.bundleOrders}</H2>
+                    <Small color="secondary60">{analytics.totalOrders > 0 ? ((analytics.bundleOrders / analytics.totalOrders) * 100).toFixed(1) : 0}% of all orders</Small>
+                  </Flex>
+
+                  <Flex flexDirection="column" flexGap="0.5rem">
+                    <Small color="secondary60">Conversion rate</Small>
+                    <H2>
+                      {analytics.bundleClicks > 0 && analytics.bundleOrders > 0 ? `${analytics.bundleConversionRate.toFixed(1)}%` : '0%'}
+                    </H2>
+                    <Small color="secondary60">Clicks to purchase</Small>
+                  </Flex>
+                </div>
+              </Flex>
+            </Box>
+          </Panel>
+        )}
+
+        {/* Top Performing Bundles */}
+        {analytics.topBundles && analytics.topBundles.length > 0 && (
+          <Panel>
+            <Box padding="xSmall">
+              <Flex flexDirection="column" flexGap="1rem">
+                <H2>Top performing bundles</H2>
+                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                  <thead>
+                    <tr>
+                      {['Type', 'Item 1', 'Item 2', 'Purchases', 'Revenue'].map((h, i) => (
+                        <th key={i} style={{ textAlign: 'left', padding: '0.5rem 0.75rem', borderBottom: '2px solid #D9DCE9', fontSize: '0.875rem', fontWeight: 600 }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {analytics.topBundles.slice(0, 5).map((bundle: TopBundle, i: number) => (
+                      <tr key={i}>
+                        <td style={{ padding: '0.5rem 0.75rem', borderBottom: '1px solid #D9DCE9' }}>{bundle.bundleType}</td>
+                        <td style={{ padding: '0.5rem 0.75rem', borderBottom: '1px solid #D9DCE9' }}>{bundle.products[0]?.title || '-'}</td>
+                        <td style={{ padding: '0.5rem 0.75rem', borderBottom: '1px solid #D9DCE9' }}>{bundle.products[1]?.title || '-'}</td>
+                        <td style={{ padding: '0.5rem 0.75rem', borderBottom: '1px solid #D9DCE9' }}>{bundle.purchases.toString()}</td>
+                        <td style={{ padding: '0.5rem 0.75rem', borderBottom: '1px solid #D9DCE9' }}>{formatCurrency(bundle.revenue)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </Flex>
+            </Box>
+          </Panel>
+        )}
+
+        {/* Revenue Breakdown by Feature */}
+        {(analytics.revenueBreakdown &&
+          (analytics.revenueBreakdown.recommendationsOnly.orders > 0 ||
+           analytics.revenueBreakdown.bundlesOnly.orders > 0 ||
+           analytics.revenueBreakdown.mixed.orders > 0)) && (
+          <Panel>
+            <Box padding="xSmall">
+              <Flex flexDirection="column" flexGap="1rem">
+                <H2>Revenue by feature</H2>
+                <Text color="secondary60">See which features drive the most value</Text>
+
+                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                  <thead>
+                    <tr>
+                      {['Feature', 'Revenue', '% of AI Sales', 'Orders'].map((h, i) => (
+                        <th key={i} style={{ textAlign: 'left', padding: '0.5rem 0.75rem', borderBottom: '2px solid #D9DCE9', fontSize: '0.875rem', fontWeight: 600 }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {[
                       [
                         'Recommendations only',
                         formatCurrency(analytics.revenueBreakdown.recommendationsOnly.revenue),
@@ -2046,168 +1942,211 @@ export default function Dashboard() {
                         `${analytics.attributedRevenue > 0 ? ((analytics.revenueBreakdown.mixed.revenue / analytics.attributedRevenue) * 100).toFixed(1) : 0}%`,
                         analytics.revenueBreakdown.mixed.orders.toString()
                       ]
-                    ]}
-                    totals={[
-                      'Total AI Revenue',
-                      formatCurrency(analytics.attributedRevenue),
-                      '100%',
-                      analytics.attributedOrders.toString()
-                    ]}
-                  />
-                </BlockStack>
-              </Card>
-            </Layout.Section>
-          )}
+                    ].map((row, i) => (
+                      <tr key={i}>
+                        {row.map((cell, j) => (
+                          <td key={j} style={{ padding: '0.5rem 0.75rem', borderBottom: '1px solid #D9DCE9' }}>{cell}</td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr>
+                      {[
+                        'Total AI Revenue',
+                        formatCurrency(analytics.attributedRevenue),
+                        '100%',
+                        analytics.attributedOrders.toString()
+                      ].map((cell, j) => (
+                        <td key={j} style={{ padding: '0.5rem 0.75rem', fontWeight: 600, borderTop: '2px solid #D9DCE9' }}>{cell}</td>
+                      ))}
+                    </tr>
+                  </tfoot>
+                </table>
+              </Flex>
+            </Box>
+          </Panel>
+        )}
 
-          {/* Top Sales Generators */}
-          {analytics.topAttributedProducts && analytics.topAttributedProducts.length > 0 && (
-            <Layout.Section>
-              <Card>
-                <BlockStack gap="400">
-                  <Text variant="headingMd" as="h2">Top sales generators</Text>
-                  <DataTable
-                    columnContentTypes={['text', 'numeric', 'numeric']}
-                    headings={['Product', 'Orders', 'Sales']}
-                    rows={analytics.topAttributedProducts.slice(0, 5).map((product: TopAttributedProduct) => [
-                      product.productTitle,
-                      product.orders.toString(),
-                      formatCurrency(product.revenue)
-                    ])}
-                  />
-                </BlockStack>
-              </Card>
-            </Layout.Section>
-          )}
+        {/* Top Sales Generators */}
+        {analytics.topAttributedProducts && analytics.topAttributedProducts.length > 0 && (
+          <Panel>
+            <Box padding="xSmall">
+              <Flex flexDirection="column" flexGap="1rem">
+                <H2>Top sales generators</H2>
+                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                  <thead>
+                    <tr>
+                      {['Product', 'Orders', 'Sales'].map((h, i) => (
+                        <th key={i} style={{ textAlign: 'left', padding: '0.5rem 0.75rem', borderBottom: '2px solid #D9DCE9', fontSize: '0.875rem', fontWeight: 600 }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {analytics.topAttributedProducts.slice(0, 5).map((product: TopAttributedProduct, i: number) => (
+                      <tr key={i}>
+                        <td style={{ padding: '0.5rem 0.75rem', borderBottom: '1px solid #D9DCE9' }}>{product.productTitle}</td>
+                        <td style={{ padding: '0.5rem 0.75rem', borderBottom: '1px solid #D9DCE9' }}>{product.orders.toString()}</td>
+                        <td style={{ padding: '0.5rem 0.75rem', borderBottom: '1px solid #D9DCE9' }}>{formatCurrency(product.revenue)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </Flex>
+            </Box>
+          </Panel>
+        )}
 
-          {/* Order Uplift Breakdown */}
-          {analytics.orderUpliftBreakdown && analytics.orderUpliftBreakdown.length > 0 && (
-            <Layout.Section>
-              <Card>
-                <BlockStack gap="400">
-                  <Text variant="headingMd" as="h2">Recent wins</Text>
-                  <DataTable
-                    columnContentTypes={['text', 'numeric', 'numeric', 'numeric']}
-                    headings={['Order', 'Total', 'From AI', 'Impact']}
-                    rows={analytics.orderUpliftBreakdown.slice(0, 5).map((order: OrderUpliftBreakdown) => [
-                      `#${order.orderNumber}`,
-                      formatCurrency(order.totalValue),
-                      formatCurrency(order.attributedValue),
-                      `${order.upliftPercentage.toFixed(0)}%`
-                    ])}
-                  />
-                </BlockStack>
-              </Card>
-            </Layout.Section>
-          )}
+        {/* Order Uplift Breakdown */}
+        {analytics.orderUpliftBreakdown && analytics.orderUpliftBreakdown.length > 0 && (
+          <Panel>
+            <Box padding="xSmall">
+              <Flex flexDirection="column" flexGap="1rem">
+                <H2>Recent wins</H2>
+                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                  <thead>
+                    <tr>
+                      {['Order', 'Total', 'From AI', 'Impact'].map((h, i) => (
+                        <th key={i} style={{ textAlign: 'left', padding: '0.5rem 0.75rem', borderBottom: '2px solid #D9DCE9', fontSize: '0.875rem', fontWeight: 600 }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {analytics.orderUpliftBreakdown.slice(0, 5).map((order: OrderUpliftBreakdown, i: number) => (
+                      <tr key={i}>
+                        <td style={{ padding: '0.5rem 0.75rem', borderBottom: '1px solid #D9DCE9' }}>{`#${order.orderNumber}`}</td>
+                        <td style={{ padding: '0.5rem 0.75rem', borderBottom: '1px solid #D9DCE9' }}>{formatCurrency(order.totalValue)}</td>
+                        <td style={{ padding: '0.5rem 0.75rem', borderBottom: '1px solid #D9DCE9' }}>{formatCurrency(order.attributedValue)}</td>
+                        <td style={{ padding: '0.5rem 0.75rem', borderBottom: '1px solid #D9DCE9' }}>{`${order.upliftPercentage.toFixed(0)}%`}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </Flex>
+            </Box>
+          </Panel>
+        )}
 
-          {/* ML Learning Status */}
-          <Layout.Section>
-            <Card>
-              <BlockStack gap="400">
-                <Text variant="headingMd" as="h2">AI learning status</Text>
-                
-                <Grid columns={{xs: 2, sm: 4, md: 4, lg: 4, xl: 4}}>
-                  <BlockStack gap="200">
-                    <Text variant="bodySm" as="p" tone="subdued">Products analyzed</Text>
-                    <Text variant="headingLg" as="h3">{analytics.mlStatus.productsAnalyzed}</Text>
-                  </BlockStack>
+        {/* ML Learning Status */}
+        <Panel>
+          <Box padding="xSmall">
+            <Flex flexDirection="column" flexGap="1rem">
+              <H2>AI learning status</H2>
 
-                  <BlockStack gap="200">
-                    <Text variant="bodySm" as="p" tone="subdued">High performers</Text>
-                    <Text variant="headingLg" as="h3">{analytics.mlStatus.highPerformers}</Text>
-                  </BlockStack>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem' }}>
+                <Flex flexDirection="column" flexGap="0.5rem">
+                  <Small color="secondary60">Products analyzed</Small>
+                  <H2>{analytics.mlStatus.productsAnalyzed}</H2>
+                </Flex>
 
-                  <BlockStack gap="200">
-                    <Text variant="bodySm" as="p" tone="subdued">Performance trend</Text>
-                    <Text variant="headingLg" as="h3">
-                      {analytics.mlStatus.performanceChange > 5 ? '📈' : analytics.mlStatus.performanceChange < -5 ? '📉' : '✅'}
-                    </Text>
-                  </BlockStack>
+                <Flex flexDirection="column" flexGap="0.5rem">
+                  <Small color="secondary60">High performers</Small>
+                  <H2>{analytics.mlStatus.highPerformers}</H2>
+                </Flex>
 
-                  <BlockStack gap="200">
-                    <Text variant="bodySm" as="p" tone="subdued">Last updated</Text>
-                    <Text variant="bodyMd" as="p">
-                      {analytics.mlStatus.lastUpdated 
-                        ? new Date(analytics.mlStatus.lastUpdated).toLocaleString('en-US', { 
-                            year: 'numeric', 
-                            month: 'short', 
-                            day: 'numeric', 
-                            hour: '2-digit', 
-                            minute: '2-digit' 
-                          })
-                        : 'Never'}
-                    </Text>
-                  </BlockStack>
-                </Grid>
-              </BlockStack>
-            </Card>
-          </Layout.Section>
+                <Flex flexDirection="column" flexGap="0.5rem">
+                  <Small color="secondary60">Performance trend</Small>
+                  <H2>
+                    {analytics.mlStatus.performanceChange > 5 ? '📈' : analytics.mlStatus.performanceChange < -5 ? '📉' : '✅'}
+                  </H2>
+                </Flex>
 
-          {/* Top Products */}
-          <Layout.Section>
-            <Card>
-              <BlockStack gap="400">
-                <Text variant="headingMd" as="h2">Top products</Text>
-                <DataTable
-                  columnContentTypes={['text', 'numeric', 'numeric', 'numeric']}
-                  headings={['Product', 'Orders', 'Quantity', 'Revenue']}
-                  rows={analytics.topProducts.slice(0, 5).map((item: TopProduct) => [
-                    item.product,
-                    item.orders.toString(),
-                    item.quantity.toString(),
-                    formatCurrency(item.revenue)
-                  ])}
-                />
-              </BlockStack>
-            </Card>
-          </Layout.Section>
+                <Flex flexDirection="column" flexGap="0.5rem">
+                  <Small color="secondary60">Last updated</Small>
+                  <Text>
+                    {analytics.mlStatus.lastUpdated
+                      ? new Date(analytics.mlStatus.lastUpdated).toLocaleString('en-US', {
+                          year: 'numeric',
+                          month: 'short',
+                          day: 'numeric',
+                          hour: '2-digit',
+                          minute: '2-digit'
+                        })
+                      : 'Never'}
+                  </Text>
+                </Flex>
+              </div>
+            </Flex>
+          </Box>
+        </Panel>
 
-          {/* Recommendations Table */}
-          {analytics.topRecommended && analytics.topRecommended.length > 0 && (
-            <Layout.Section>
-              <Card>
-                <BlockStack gap="400">
-                  <Text variant="headingMd" as="h2">Most recommended</Text>
-                  <DataTable
-                    columnContentTypes={['text', 'numeric', 'numeric', 'numeric']}
-                    headings={['Product', 'Shown', 'Clicked', 'Click rate']}
-                    rows={analytics.topRecommended.slice(0, 5).map((r: TopRecommendedProduct) => [
-                      r.productTitle,
-                      r.impressions.toString(),
-                      r.clicks.toString(),
-                      `${r.ctr.toFixed(1)}%`
-                    ])}
-                  />
-                </BlockStack>
-              </Card>
-            </Layout.Section>
-          )}
-        </Layout>
-      </BlockStack>
+        {/* Top Products */}
+        <Panel>
+          <Box padding="xSmall">
+            <Flex flexDirection="column" flexGap="1rem">
+              <H2>Top products</H2>
+              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead>
+                  <tr>
+                    {['Product', 'Orders', 'Quantity', 'Revenue'].map((h, i) => (
+                      <th key={i} style={{ textAlign: 'left', padding: '0.5rem 0.75rem', borderBottom: '2px solid #D9DCE9', fontSize: '0.875rem', fontWeight: 600 }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {analytics.topProducts.slice(0, 5).map((item: TopProduct, i: number) => (
+                    <tr key={i}>
+                      <td style={{ padding: '0.5rem 0.75rem', borderBottom: '1px solid #D9DCE9' }}>{item.product}</td>
+                      <td style={{ padding: '0.5rem 0.75rem', borderBottom: '1px solid #D9DCE9' }}>{item.orders.toString()}</td>
+                      <td style={{ padding: '0.5rem 0.75rem', borderBottom: '1px solid #D9DCE9' }}>{item.quantity.toString()}</td>
+                      <td style={{ padding: '0.5rem 0.75rem', borderBottom: '1px solid #D9DCE9' }}>{formatCurrency(item.revenue)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </Flex>
+          </Box>
+        </Panel>
+
+        {/* Recommendations Table */}
+        {analytics.topRecommended && analytics.topRecommended.length > 0 && (
+          <Panel>
+            <Box padding="xSmall">
+              <Flex flexDirection="column" flexGap="1rem">
+                <H2>Most recommended</H2>
+                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                  <thead>
+                    <tr>
+                      {['Product', 'Shown', 'Clicked', 'Click rate'].map((h, i) => (
+                        <th key={i} style={{ textAlign: 'left', padding: '0.5rem 0.75rem', borderBottom: '2px solid #D9DCE9', fontSize: '0.875rem', fontWeight: 600 }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {analytics.topRecommended.slice(0, 5).map((r: TopRecommendedProduct, i: number) => (
+                      <tr key={i}>
+                        <td style={{ padding: '0.5rem 0.75rem', borderBottom: '1px solid #D9DCE9' }}>{r.productTitle}</td>
+                        <td style={{ padding: '0.5rem 0.75rem', borderBottom: '1px solid #D9DCE9' }}>{r.impressions.toString()}</td>
+                        <td style={{ padding: '0.5rem 0.75rem', borderBottom: '1px solid #D9DCE9' }}>{r.clicks.toString()}</td>
+                        <td style={{ padding: '0.5rem 0.75rem', borderBottom: '1px solid #D9DCE9' }}>{`${r.ctr.toFixed(1)}%`}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </Flex>
+            </Box>
+          </Panel>
+        )}
+      </Flex>
 
       {/* Product Details Modal */}
       {selectedOrderProducts && (
         <Modal
-          open={true}
+          isOpen={true}
           onClose={() => setSelectedOrderProducts(null)}
-          title={`Order #${selectedOrderProducts.orderNumber}`}
-          primaryAction={{
-            content: 'Close',
-            onAction: () => setSelectedOrderProducts(null),
-          }}
+          header={`Order #${selectedOrderProducts.orderNumber}`}
+          actions={[{ text: 'Close', onClick: () => setSelectedOrderProducts(null), variant: 'primary' as const }]}
         >
-          <Modal.Section>
-            <BlockStack gap="300">
-              {selectedOrderProducts.products.map((product: string, idx: number) => (
-                <InlineStack key={idx} gap="200" blockAlign="center">
-                  <Text as="span" variant="bodyMd">{idx + 1}.</Text>
-                  <Text as="span" variant="bodyMd">{product}</Text>
-                </InlineStack>
-              ))}
-            </BlockStack>
-          </Modal.Section>
+          <Flex flexDirection="column" flexGap="0.75rem">
+            {selectedOrderProducts.products.map((product: string, idx: number) => (
+              <Flex key={idx} flexGap="0.5rem" alignItems="center">
+                <Text>{idx + 1}.</Text>
+                <Text>{product}</Text>
+              </Flex>
+            ))}
+          </Flex>
         </Modal>
       )}
-    </Page>
+    </Box>
   );
 }

@@ -4,73 +4,25 @@ import { getSettings, saveSettings } from "../models/settings.server";
 import { getShopCurrency } from "../services/currency.server";
 import { getOrCreateSubscription } from "../services/billing.server";
 import db from "../db.server";
-import { authenticate, unauthenticated } from "../shopify.server";
 import type { ExperimentModel, ExperimentWithVariants, VariantModel, EventModel } from "~/types/prisma";
 import type { JsonValue, JsonObject } from "~/types/common";
 import { validateCorsOrigin, getCorsHeaders, validateSessionId } from "../services/security.server";
-// import { generateBundlesFromOrders } from "../services/ml.server";
+import {
+  getProducts,
+  getProduct,
+  getProductVariants,
+  getProductImages,
+  getOrders,
+  getOrderProducts,
+  getStoreInfo,
+  type BCProduct,
+  type BCVariant,
+  type BCProductImage,
+  type BCOrder,
+  type BCOrderProduct,
+} from "~/services/bigcommerce-api.server";
 
-// Type definitions for GraphQL responses
-interface GraphQLProductNode {
-  id: string;
-  title: string;
-  handle: string;
-  vendor?: string;
-  status?: string;
-  media?: { edges: Array<{ node: { image?: { url: string } } }> };
-  variants?: { edges: Array<{ node: GraphQLVariantNode }> };
-}
-
-interface GraphQLVariantNode {
-  id: string;
-  price: string;
-  availableForSale: boolean;
-  selectedOptions?: Array<{ name: string; value: string }>;
-  product?: GraphQLProductNode;
-}
-
-interface GraphQLProductEdge {
-  node: GraphQLProductNode;
-}
-
-interface GraphQLResponse {
-  data?: {
-    nodes?: Array<GraphQLProductNode | GraphQLVariantNode | null>;
-    products?: {
-      edges: GraphQLProductEdge[];
-    };
-    orders?: {
-      edges: Array<{
-        node: {
-          id: string;
-          lineItems?: {
-            edges: Array<{
-              node: {
-                product?: { id: string };
-                quantity?: number;
-              };
-            }>;
-          };
-        };
-      }>;
-    };
-    shop?: {
-      name: string;
-      myshopifyDomain: string;
-    };
-  };
-  errors?: Array<{ message: string }>;
-}
-
-interface ShopQueryResponse {
-  data?: {
-    shop: {
-      name: string;
-      myshopifyDomain: string;
-    };
-  };
-  errors?: Array<{ message: string }>;
-}
+// ─── Type Definitions ────────────────────────────────────────────────────────
 
 interface ProductWithMeta {
   id: string;
@@ -92,9 +44,9 @@ interface MLRecommendationResponse {
 }
 
 interface DiagnosticDetails {
-  shopQuery?: { ok: boolean; data?: boolean; error?: string };
-  ordersProbe?: { status?: number; hasData?: boolean; errors?: Array<{ message: string }>; error?: string };
-  productsProbe?: { status?: number; hasData?: boolean; errors?: Array<{ message: string }>; error?: string };
+  storeInfo?: { ok: boolean; data?: boolean; error?: string };
+  ordersProbe?: { ok?: boolean; count?: number; error?: string };
+  productsProbe?: { ok?: boolean; count?: number; error?: string };
 }
 
 interface RecommendationCachePayload {
@@ -118,19 +70,151 @@ interface RecommendationWithScore {
 }
 
 /**
- * 🚨 PRE-PURCHASE ATTRIBUTION SNAPSHOT
- * 
+ * PRE-PURCHASE ATTRIBUTION SNAPSHOT
+ *
  * This version has ML recommendations working but NO feedback loop:
- * - Recommendations are served ✅
- * - Impressions/clicks tracked ✅
- * - BUT: No purchase attribution ❌
- * - BUT: No learning from conversions ❌
- * - BUT: No auto-correction ❌
- * 
+ * - Recommendations are served
+ * - Impressions/clicks tracked
+ * - BUT: No purchase attribution
+ * - BUT: No learning from conversions
+ * - BUT: No auto-correction
+ *
  * Next: Implement purchase attribution webhook + daily learning job
  */
 
-// Lightweight in-memory cache for recommendations (per worker)
+// ─── BigCommerce Authentication Helper ───────────────────────────────────────
+
+async function authenticateStorefront(request: Request): Promise<string> {
+  const url = new URL(request.url);
+  const storeHash = url.searchParams.get('store_hash') || url.searchParams.get('shop') || '';
+  if (!storeHash) throw new Response("Missing store_hash", { status: 401 });
+  // Verify store exists
+  const settings = await db.settings.findUnique({ where: { storeHash } });
+  if (!settings) throw new Response("Unknown store", { status: 401 });
+  return storeHash;
+}
+
+// ─── Product Normalization Helper ────────────────────────────────────────────
+
+function normalizeProduct(product: BCProduct): ProductWithMeta {
+  const image = product.images?.[0]?.url_standard;
+  const firstVariant = product.variants?.[0];
+  const price = firstVariant?.calculated_price ?? product.price ?? product.calculated_price ?? 0;
+  const inStock = product.availability !== 'disabled' && product.is_visible &&
+    (firstVariant ? !firstVariant.purchasing_disabled : true);
+  const handle = (product.custom_url?.url || '').replace(/^\/|\/$/g, '');
+  return {
+    id: String(product.id),
+    title: product.name,
+    handle,
+    image,
+    price,
+    inStock,
+  };
+}
+
+// ─── Order Fetching Helper ───────────────────────────────────────────────────
+
+async function fetchOrdersWithProducts(storeHash: string, limit: number = 200): Promise<Array<{
+  id: number;
+  date_created: string;
+  items: Array<{ product_id: number; name: string; price: number }>;
+}>> {
+  const orders = await getOrders(storeHash, { limit: Math.min(limit, 250) });
+  const results = [];
+  for (const order of orders.slice(0, limit)) {
+    try {
+      const products = await getOrderProducts(storeHash, order.id);
+      results.push({
+        id: order.id,
+        date_created: order.date_created,
+        items: products.map(p => ({
+          product_id: p.product_id,
+          name: p.name,
+          price: parseFloat(p.price_inc_tax) || 0,
+        })),
+      });
+    } catch { /* skip failed order */ }
+  }
+  return results;
+}
+
+// ─── Normalize IDs to Products (BC version) ─────────────────────────────────
+
+async function normalizeIdsToProducts(storeHash: string, ids: string[]): Promise<ProductWithMeta[]> {
+  if (!ids.length) return [];
+  const out: ProductWithMeta[] = [];
+  for (const rawId of ids) {
+    const numericId = parseInt(String(rawId), 10);
+    if (isNaN(numericId)) continue;
+    try {
+      const product = await getProduct(storeHash, numericId, "images,variants");
+      out.push(normalizeProduct(product));
+    } catch {
+      // skip failed product lookups
+    }
+  }
+  return out;
+}
+
+// ─── BC Product Details for Bundles ──────────────────────────────────────────
+
+interface BundleProductDetail {
+  id: string;
+  variant_id: string;
+  variant_title?: string;
+  options: Array<{ name: string; value: string }>;
+  title: string;
+  handle: string;
+  price: number; // in cents
+  comparePrice?: number;
+  image?: string;
+  variants: Array<{
+    id: string;
+    title: string;
+    price: number;
+    compareAtPrice?: number;
+    availableForSale: boolean;
+    selectedOptions: Array<{ name: string; value: string }>;
+  }>;
+}
+
+function getBCProductDetails(product: BCProduct): BundleProductDetail | null {
+  const variants = product.variants || [];
+  const firstAvailable = variants.find(v => !v.purchasing_disabled) || variants[0];
+  if (!firstAvailable) return null;
+
+  const opts = firstAvailable.option_values
+    ? firstAvailable.option_values.map(o => ({ name: o.option_display_name, value: o.label }))
+    : [];
+  const priceInCents = Math.round((firstAvailable.calculated_price ?? product.price ?? 0) * 100);
+  const handle = (product.custom_url?.url || '').replace(/^\/|\/$/g, '');
+
+  const allVariants = variants.map(v => ({
+    id: String(v.id),
+    title: v.option_values?.map(o => o.label).join(' / ') || '',
+    price: Math.round((v.calculated_price ?? v.price ?? product.price ?? 0) * 100),
+    compareAtPrice: v.retail_price ? Math.round(v.retail_price * 100) : undefined,
+    availableForSale: !v.purchasing_disabled,
+    selectedOptions: v.option_values
+      ? v.option_values.map(o => ({ name: o.option_display_name, value: o.label }))
+      : [],
+  }));
+
+  return {
+    id: String(product.id),
+    variant_id: String(firstAvailable.id),
+    variant_title: firstAvailable.option_values?.map(o => o.label).join(' / '),
+    options: opts,
+    title: product.name,
+    handle,
+    price: priceInCents,
+    image: product.images?.[0]?.url_standard,
+    variants: allVariants,
+  };
+}
+
+// ─── Lightweight in-memory cache for recommendations (per worker) ────────────
 // Keyed by shop + product/cart context + limit; TTL ~60s
 const RECS_TTL_MS = 60 * 1000;
 const recsCache = new Map<string, { ts: number; payload: RecommendationCachePayload }>();
@@ -144,6 +228,10 @@ function setRecsCache(key: string, payload: RecommendationCachePayload) {
   recsCache.set(key, { ts: Date.now(), payload });
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// LOADER
+// ═══════════════════════════════════════════════════════════════════════════════
+
 export async function loader({ request }: LoaderFunctionArgs) {
   const url = new URL(request.url);
   const path = url.pathname;
@@ -151,15 +239,10 @@ export async function loader({ request }: LoaderFunctionArgs) {
   // GET /apps/proxy/api/billing-check - Public endpoint for storefront billing check
   if (path.includes('/api/billing-check')) {
     try {
-      const { session, admin } = await authenticate.public.appProxy(request);
-      const shop = session?.shop as string;
-
-      if (!shop) {
-        return new Response("Unauthorized", { status: 401 });
-      }
+      const storeHash = await authenticateStorefront(request);
 
       // Check billing limit
-      const subscription = await getOrCreateSubscription(shop, admin);
+      const subscription = await getOrCreateSubscription(storeHash);
 
       if (subscription.isLimitReached) {
         return new Response("Payment Required", {
@@ -184,17 +267,15 @@ export async function loader({ request }: LoaderFunctionArgs) {
   if (path.includes('/api/ab-testing')) {
     let allowedOrigin: string | null = null;
     try {
-      const { session } = await authenticate.public.appProxy(request);
-      const shop = session?.shop;
+      const storeHash = await authenticateStorefront(request);
 
       // SECURITY: Validate CORS origin
       const origin = request.headers.get("origin") || "";
-      allowedOrigin = shop ? await validateCorsOrigin(origin, shop as string) : null;
+      allowedOrigin = await validateCorsOrigin(origin, storeHash);
       const corsHeaders = getCorsHeaders(allowedOrigin);
       const hdrs = { ...corsHeaders, 'Cache-Control': 'no-store' };
 
-      if (!shop) return json({ ok: false, error: 'unauthorized' }, { status: 401, headers: hdrs });
-      const shopStr = shop as string;
+      const shopStr = storeHash;
 
       const action = url.searchParams.get('action') || 'get_active_experiments';
 
@@ -252,11 +333,11 @@ export async function loader({ request }: LoaderFunctionArgs) {
       };
 
       if (action === 'get_active_experiments') {
-  // Active = status === 'running' and within date window (or no dates)
+        // Active = status === 'running' and within date window (or no dates)
         const now = new Date();
         const experiments = (await db.experiment.findMany({
           where: {
-            shopId: shopStr,
+            storeHashId: shopStr,
             status: 'running',
             OR: [
               { AND: [{ startDate: null }, { endDate: null }] },
@@ -298,12 +379,12 @@ export async function loader({ request }: LoaderFunctionArgs) {
           return json({ ok: false, error: 'invalid_experiment_id' }, { status: 400, headers: hdrs });
         }
 
-        const experiment = await db.experiment.findFirst({ where: { id: experimentId, shopId: shopStr } });
+        const experiment = await db.experiment.findFirst({ where: { id: experimentId, storeHashId: shopStr } });
         if (!experiment) return json({ ok: false, error: 'not_found' }, { status: 404, headers: hdrs });
         const vars = (await db.variant.findMany({ where: { experimentId }, orderBy: { id: 'asc' } })) as VariantModel[];
         if (!vars.length) return json({ ok: false, error: 'no_variants' }, { status: 404, headers: hdrs });
 
-  // If experiment is completed and has an activeVariantId, force that selection
+        // If experiment is completed and has an activeVariantId, force that selection
         if (experiment.status === 'completed' && experiment.activeVariantId) {
           const selected = vars.find(v => v.id === experiment.activeVariantId) || vars[0];
           const config = { discount_pct: Number(selected?.value ?? 0) };
@@ -324,7 +405,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
 
         // Pick variant by cumulative probability
         let cum = 0; let idx = 0;
-        for (let i=0;i<normalized.length;i++) { cum += normalized[i]; if (r <= cum) { idx = i; break; } }
+        for (let i = 0; i < normalized.length; i++) { cum += normalized[i]; if (r <= cum) { idx = i; break; } }
         const selected = vars[idx];
         const config = { discount_pct: Number(selected?.value ?? 0) };
 
@@ -355,7 +436,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
             }
           }
         } catch (error) {
-
+          // best-effort
         }
 
         return json({
@@ -373,60 +454,49 @@ export async function loader({ request }: LoaderFunctionArgs) {
   }
 
   // GET /apps/proxy/api/diag
-  // Diagnostics: verify App Proxy signature, Admin API reachability, and required scopes
+  // Diagnostics: verify store authentication, API reachability, and required scopes
   if (path.includes('/api/diag')) {
     try {
-      const { session } = await authenticate.public.appProxy(request);
-      const shop = session?.shop;
+      const storeHash = await authenticateStorefront(request);
 
       // SECURITY: Validate CORS origin
       const origin = request.headers.get("origin") || "";
-      const allowedOrigin = shop ? await validateCorsOrigin(origin, shop as string) : null;
+      const allowedOrigin = await validateCorsOrigin(origin, storeHash);
       const corsHeaders = getCorsHeaders(allowedOrigin);
       const hdrs = { ...corsHeaders, 'Cache-Control': 'no-store' };
 
-      if (!shop) return json({ ok: false, proxyAuth: false, reason: 'no_shop' }, { status: 401, headers: hdrs });
-
       let adminOk = false; let hasReadOrders = false; let hasReadProducts = false; let details: DiagnosticDetails = {};
+
+      // Check store info
       try {
-        const { admin } = await unauthenticated.admin(shop as string);
-        // Lightweight shop query
-        const shopResp = await admin.graphql(`#graphql
-          query { shop { name myshopifyDomain } }
-        `);
-        adminOk = shopResp.ok === true;
-        const shopJson: ShopQueryResponse = adminOk ? await shopResp.json() : null;
-        details.shopQuery = { ok: adminOk, data: !!shopJson?.data };
+        const storeInfo = await getStoreInfo(storeHash);
+        adminOk = !!storeInfo;
+        details.storeInfo = { ok: adminOk, data: !!storeInfo };
       } catch (_e) {
-        details.shopQuery = { ok: false, error: String(_e) };
-      }
-      try {
-        const { admin } = await unauthenticated.admin(shop as string);
-        // Minimal orders query to infer read_orders
-        const ordersResp = await admin.graphql(`#graphql
-          query { orders(first: 1) { edges { node { id } } } }
-        `);
-        const j: GraphQLResponse = await ordersResp.json();
-        hasReadOrders = !!j?.data || ordersResp.status !== 403; // 403 often indicates missing scope; presence of data implies scope
-        details.ordersProbe = { status: ordersResp.status, hasData: !!j?.data, errors: j?.errors };
-      } catch (_e) {
-        details.ordersProbe = { error: String(_e) };
-      }
-      try {
-        const { admin } = await unauthenticated.admin(shop as string);
-        const productsResp = await admin.graphql(`#graphql
-          query { products(first: 1) { edges { node { id } } } }
-        `);
-        const j: GraphQLResponse = await productsResp.json();
-        hasReadProducts = !!j?.data || productsResp.status !== 403;
-        details.productsProbe = { status: productsResp.status, hasData: !!j?.data, errors: j?.errors };
-      } catch (_e) {
-        details.productsProbe = { error: String(_e) };
+        details.storeInfo = { ok: false, error: String(_e) };
       }
 
-      return json({ ok: true, proxyAuth: true, shop, adminOk, scopes: { read_orders: hasReadOrders, read_products: hasReadProducts }, details }, { headers: hdrs });
+      // Check orders access
+      try {
+        const orders = await getOrders(storeHash, { limit: 1 });
+        hasReadOrders = true;
+        details.ordersProbe = { ok: true, count: orders.length };
+      } catch (_e) {
+        details.ordersProbe = { ok: false, error: String(_e) };
+      }
+
+      // Check products access
+      try {
+        const { products: prods } = await getProducts(storeHash, { limit: 1 });
+        hasReadProducts = true;
+        details.productsProbe = { ok: true, count: prods.length };
+      } catch (_e) {
+        details.productsProbe = { ok: false, error: String(_e) };
+      }
+
+      return json({ ok: true, proxyAuth: true, shop: storeHash, adminOk, scopes: { read_orders: hasReadOrders, read_products: hasReadProducts }, details }, { headers: hdrs });
     } catch (_e) {
-      return json({ ok: false, proxyAuth: false, reason: 'invalid_signature' }, { status: 401, headers: hdrs });
+      return json({ ok: false, proxyAuth: false, reason: 'invalid_store' }, { status: 401 });
     }
   }
 
@@ -435,10 +505,8 @@ export async function loader({ request }: LoaderFunctionArgs) {
   if (path.includes('/api/recommendations')) {
     let allowedOrigin: string | null = null;
     try {
-      const { session } = await authenticate.public.appProxy(request);
-      const shop = session?.shop;
-      if (!shop) return json({ error: 'Unauthorized' }, { status: 401 });
-      const shopStr = shop as string;
+      const storeHash = await authenticateStorefront(request);
+      const shopStr = storeHash;
 
       // SECURITY: Validate CORS origin
       const origin = request.headers.get("origin") || "";
@@ -447,11 +515,11 @@ export async function loader({ request }: LoaderFunctionArgs) {
       // Check subscription limits - ENFORCE ORDER LIMITS
       const subscription = await getOrCreateSubscription(shopStr);
       if (subscription.isLimitReached) {
-        return json({ 
+        return json({
           recommendations: [],
           message: 'Order limit reached. Please upgrade your plan to continue.',
-          limitReached: true 
-        }, { 
+          limitReached: true
+        }, {
           status: 403,
           headers: { 'Access-Control-Allow-Origin': allowedOrigin || '*', 'Vary': 'Origin' }
         });
@@ -487,9 +555,9 @@ export async function loader({ request }: LoaderFunctionArgs) {
         enableThresholdBasedSuggestions = Boolean(settingsExtended.enableThresholdBasedSuggestions);
         thresholdSuggestionMode = String(settingsExtended.thresholdSuggestionMode || 'smart');
         manualEnabled = Boolean(settingsExtended.enableManualRecommendations) || s.complementDetectionMode === 'manual' || s.complementDetectionMode === 'hybrid';
-        manualList = (s.manualRecommendationProducts || '').split(',').map((v)=>v.trim()).filter(Boolean);
+        manualList = (s.manualRecommendationProducts || '').split(',').map((v) => v.trim()).filter(Boolean);
 
-        // 🧠 ML Settings (will be accessed in ML logic below)
+        // ML Settings (will be accessed in ML logic below)
         var mlSettings = {
           enabled: Boolean(settingsExtended.enableMLRecommendations),
           personalizationMode: String(settingsExtended.mlPersonalizationMode || 'basic'),
@@ -516,7 +584,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
         }
 
         // Cache key includes subtotal + threshold flag (affects filtering)
-        const cacheKey = `shop:${shopStr}|pid:${productId||''}|cart:${cartParam}|limit:${limit}|subtotal:${subtotal ?? ''}|thr:${enableThresholdBasedSuggestions?'1':'0'}`;
+        const cacheKey = `shop:${shopStr}|pid:${productId || ''}|cart:${cartParam}|limit:${limit}|subtotal:${subtotal ?? ''}|thr:${enableThresholdBasedSuggestions ? '1' : '0'}`;
         const cached = getRecsCache(cacheKey);
         if (cached) {
           return json(cached, {
@@ -538,43 +606,12 @@ export async function loader({ request }: LoaderFunctionArgs) {
 
         // Manual selection pre-fill (deduped, price-threshold aware)
         const needAmount = (typeof subtotal === 'number' && freeShippingThreshold > 0) ? Math.max(0, freeShippingThreshold - subtotal) : 0;
-    const { admin } = await unauthenticated.admin(shopStr);
 
-  const normalizeIdsToProducts = async (ids: string[]): Promise<ProductWithMeta[]> => {
-          if (!ids.length) return [];
-          // Fetch nodes for all ids, support both Product and Variant IDs
-          const nodeResp = await admin.graphql(`#graphql
-            query N($ids: [ID!]!) { nodes(ids: $ids) {
-              ... on Product { id title handle vendor status media(first:1){edges{node{... on MediaImage{image{url}}}}} variants(first:1){edges{node{id price availableForSale}}} }
-              ... on ProductVariant { id price availableForSale product { id title handle vendor media(first:1){edges{node{... on MediaImage{image{url}}}}} } }
-            } }
-          `, { variables: { ids } });
-          if (!nodeResp.ok) return [];
-          const j: GraphQLResponse = await nodeResp.json();
-          const arr: Array<GraphQLProductNode | GraphQLVariantNode | null> = j?.data?.nodes || [];
-          const out: ProductWithMeta[] = [];
-          for (const n of arr) {
-            if (!n) continue;
-            if ('title' in n && (n.id && String(n.id).includes('/Product/'))) {
-              const v = n.variants?.edges?.[0]?.node;
-              const price = parseFloat(v?.price || '0') || 0;
-              const inStock = Boolean(v?.availableForSale) || (n.status === 'ACTIVE');
-              out.push({ id: (n.id as string).replace('gid://shopify/Product/',''), title: n.title||'', handle: n.handle||'', image: n.media?.edges?.[0]?.node?.image?.url, price, inStock });
-            } else if (n.__typename === 'ProductVariant' || (n.id && String(n.id).includes('/ProductVariant/'))) {
-              const price = parseFloat(n.price || '0') || 0;
-              const inStock = Boolean(n.availableForSale);
-              const p = n.product;
-              if (p?.id) out.push({ id: (p.id as string).replace('gid://shopify/Product/',''), title: p.title||'', handle: p.handle||'', image: p.media?.edges?.[0]?.node?.image?.url, price, inStock });
-            }
-          }
-          return out;
-        };
-
-        let manualResults: Array<{ id:string; title:string; handle:string; image?:string; price:number }> = [];
+        let manualResults: Array<{ id: string; title: string; handle: string; image?: string; price: number }> = [];
         if (manualEnabled && manualList.length) {
-          const normalized = await normalizeIdsToProducts(manualList);
+          const normalizedProducts = await normalizeIdsToProducts(shopStr, manualList);
           const seen = new Set<string>();
-          for (const m of normalized) {
+          for (const m of normalizedProducts) {
             if (!m.inStock) continue;
             if (enableThresholdBasedSuggestions && needAmount > 0 && m.price < needAmount) continue;
             if (seen.has(m.id)) continue;
@@ -590,8 +627,6 @@ export async function loader({ request }: LoaderFunctionArgs) {
             setRecsCache(cacheKey, payload);
             return json(payload, { headers: { 'Access-Control-Allow-Origin': allowedOrigin || '*', 'Vary': 'Origin', 'Cache-Control': 'public, max-age=60' } });
           }
-          // If mode is strictly manual, return immediately regardless of count
-          // We infer strict manual when complementDetectionMode === 'manual' (included via manualEnabled above)
         }
 
         // ---------- AI/Stats-based generation (existing algorithm) ----------
@@ -609,56 +644,36 @@ export async function loader({ request }: LoaderFunctionArgs) {
           return json({ recommendations: [], reason: 'no_context' }, { headers: { 'Access-Control-Allow-Origin': allowedOrigin || '*', 'Vary': 'Origin' } });
         }
 
-        // Fetch recent orders to compute decayed associations/popularity
-        const ordersResp = await admin.graphql(`
-          #graphql
-          query getOrders($first: Int!) {
-            orders(first: $first, sortKey: CREATED_AT, reverse: true) {
-              edges { node {
-                id
-                createdAt
-                lineItems(first: 30) { edges { node {
-                  product { id title handle media(first: 1) { edges { node { ... on MediaImage { image { url } } } } } vendor }
-                  variant { id price }
-                } } }
-              } }
-            }
-          }
-        `, { variables: { first: 200 } });
-        if (!ordersResp.ok) {
-          return json({ recommendations: [], reason: `admin_http_${ordersResp.status}` }, {
+        // Fetch recent orders with line items to compute decayed associations/popularity
+        let ordersWithItems: Array<{
+          id: number;
+          date_created: string;
+          items: Array<{ product_id: number; name: string; price: number }>;
+        }> = [];
+        try {
+          ordersWithItems = await fetchOrdersWithProducts(shopStr, 200);
+        } catch {
+          return json({ recommendations: manualResults.slice(0, limit), reason: 'orders_fetch_error' }, {
             headers: { 'Access-Control-Allow-Origin': allowedOrigin || '*', 'Vary': 'Origin', 'Cache-Control': 'public, max-age=30' }
           });
         }
-        const ordersData: GraphQLResponse = await ordersResp.json();
-        if (ordersData?.errors || !ordersData?.data) {
-          return json({ recommendations: [], reason: 'admin_orders_error' }, {
-            headers: { 'Access-Control-Allow-Origin': allowedOrigin || '*', 'Vary': 'Origin', 'Cache-Control': 'public, max-age=30' }
-          });
-        }
-        const orderEdges = ordersData?.data?.orders?.edges || [];
 
         // Build decayed stats
         const LN2_OVER_HL = Math.log(2) / HALF_LIFE_DAYS;
-        type Assoc = { co:number; wco:number; rev:number; wrev:number; aov:number };
+        type Assoc = { co: number; wco: number; rev: number; wrev: number; aov: number };
         type ProductInfo = { id: string; title: string };
-        const assoc: Record<string, { product: ProductInfo; copurchases: Record<string, Assoc>; wAppear:number; price:number; handle:string; vendor?:string; image?:string } > = {};
+        const assoc: Record<string, { product: ProductInfo; copurchases: Record<string, Assoc>; wAppear: number; price: number; handle: string; vendor?: string; image?: string }> = {};
         const wAppear: Record<string, number> = {};
 
-        const getPid = (gid?: string) => (gid||'').replace('gid://shopify/Product/','');
-
-        for (const e of orderEdges) {
-          const n = e.node;
-          const createdAt = new Date(n.createdAt);
+        for (const order of ordersWithItems) {
+          const createdAt = new Date(order.date_created);
           const ageDays = Math.max(0, (Date.now() - createdAt.getTime()) / 86400000);
           const w = Math.exp(-LN2_OVER_HL * ageDays);
-          const items: Array<{pid:string; title:string; handle:string; img?:string; price:number; vendor?:string}> = [];
-          for (const ie of (n.lineItems?.edges||[])) {
-            const p = ie.node.product; if (!p?.id) continue;
-            const pid = getPid(p.id);
-            const vprice = parseFloat(ie.node.variant?.price || '0') || 0;
-            const img = p.media?.edges?.[0]?.node?.image?.url;
-            items.push({ pid, title: p.title, handle: p.handle, img, price: vprice, vendor: p.vendor });
+          const items: Array<{ pid: string; title: string; price: number }> = [];
+          for (const lineItem of order.items) {
+            if (!lineItem.product_id) continue;
+            const pid = String(lineItem.product_id);
+            items.push({ pid, title: lineItem.name, price: lineItem.price });
           }
           if (items.length < 2) continue;
 
@@ -666,43 +681,43 @@ export async function loader({ request }: LoaderFunctionArgs) {
           const seen = new Set<string>();
           for (const it of items) {
             if (!seen.has(it.pid)) {
-              wAppear[it.pid] = (wAppear[it.pid]||0)+w;
+              wAppear[it.pid] = (wAppear[it.pid] || 0) + w;
               seen.add(it.pid);
-              if (!assoc[it.pid]) assoc[it.pid] = { product: { id: it.pid, title: it.title }, copurchases: {}, wAppear: 0, price: it.price, handle: it.handle, vendor: it.vendor, image: it.img };
+              if (!assoc[it.pid]) assoc[it.pid] = { product: { id: it.pid, title: it.title }, copurchases: {}, wAppear: 0, price: it.price, handle: '', vendor: '', image: undefined };
               assoc[it.pid].wAppear += w;
-              assoc[it.pid].price = it.price; assoc[it.pid].handle = it.handle; assoc[it.pid].image = it.img; assoc[it.pid].product.title = it.title; assoc[it.pid].vendor = it.vendor;
+              assoc[it.pid].price = it.price; assoc[it.pid].product.title = it.title;
             }
           }
 
           // pairs
-          for (let i=0;i<items.length;i++) for (let j=i+1;j<items.length;j++) {
+          for (let i = 0; i < items.length; i++) for (let j = i + 1; j < items.length; j++) {
             const a = items[i], b = items[j];
-            if (!assoc[a.pid]) assoc[a.pid] = { product:{id:a.pid,title:a.title}, copurchases:{}, wAppear:0, price:a.price, handle:a.handle, vendor:a.vendor, image:a.img };
-            if (!assoc[b.pid]) assoc[b.pid] = { product:{id:b.pid,title:b.title}, copurchases:{}, wAppear:0, price:b.price, handle:b.handle, vendor:b.vendor, image:b.img };
-            if (!assoc[a.pid].copurchases[b.pid]) assoc[a.pid].copurchases[b.pid] = { co:0,wco:0,rev:0,wrev:0,aov:0 };
-            if (!assoc[b.pid].copurchases[a.pid]) assoc[b.pid].copurchases[a.pid] = { co:0,wco:0,rev:0,wrev:0,aov:0 };
-            assoc[a.pid].copurchases[b.pid].co++; assoc[a.pid].copurchases[b.pid].wco+=w;
-            assoc[b.pid].copurchases[a.pid].co++; assoc[b.pid].copurchases[a.pid].wco+=w;
+            if (!assoc[a.pid]) assoc[a.pid] = { product: { id: a.pid, title: a.title }, copurchases: {}, wAppear: 0, price: a.price, handle: '', vendor: '', image: undefined };
+            if (!assoc[b.pid]) assoc[b.pid] = { product: { id: b.pid, title: b.title }, copurchases: {}, wAppear: 0, price: b.price, handle: '', vendor: '', image: undefined };
+            if (!assoc[a.pid].copurchases[b.pid]) assoc[a.pid].copurchases[b.pid] = { co: 0, wco: 0, rev: 0, wrev: 0, aov: 0 };
+            if (!assoc[b.pid].copurchases[a.pid]) assoc[b.pid].copurchases[a.pid] = { co: 0, wco: 0, rev: 0, wrev: 0, aov: 0 };
+            assoc[a.pid].copurchases[b.pid].co++; assoc[a.pid].copurchases[b.pid].wco += w;
+            assoc[b.pid].copurchases[a.pid].co++; assoc[b.pid].copurchases[a.pid].wco += w;
           }
         }
 
         // Build candidate scores across anchors
         const anchorIds = Array.from(anchors);
-        const candidate: Record<string, { score:number; lift:number; pop:number; handle?:string; vendor?:string } > = {};
-        const totalW = Object.values(wAppear).reduce((a,b)=>a+b,0) || 1;
+        const candidate: Record<string, { score: number; lift: number; pop: number; handle?: string; vendor?: string }> = {};
+        const totalW = Object.values(wAppear).reduce((a, b) => a + b, 0) || 1;
         const liftCap = 2.0; // cap to avoid niche explosions
 
         // compute median anchor price (from assoc if available)
         const anchorPrices = anchorIds.map(id => assoc[id]?.price).filter(v => typeof v === 'number' && !isNaN(v)) as number[];
-        anchorPrices.sort((a,b)=>a-b);
-        const anchorMedian = anchorPrices.length ? anchorPrices[Math.floor(anchorPrices.length/2)] : undefined;
+        anchorPrices.sort((a, b) => a - b);
+        const anchorMedian = anchorPrices.length ? anchorPrices[Math.floor(anchorPrices.length / 2)] : undefined;
 
         for (const a of anchorIds) {
           const aStats = assoc[a];
           const wA = aStats?.wAppear || 0;
           if (!aStats || wA <= 0) continue;
           for (const [b, ab] of Object.entries(aStats.copurchases)) {
-            if (anchors.has(b)) continue; // don’t recommend items already in context
+            if (anchors.has(b)) continue; // don't recommend items already in context
             const wB = assoc[b]?.wAppear || 0;
             if (wB <= 0) continue;
             const confidence = ab.wco / Math.max(1e-6, wA);
@@ -712,59 +727,44 @@ export async function loader({ request }: LoaderFunctionArgs) {
             const popNorm = Math.min(1, wB / (totalW * 0.05)); // normalize: top 5% mass ~1
             const sc = 0.6 * liftNorm + 0.4 * popNorm;
             if (!candidate[b] || sc > candidate[b].score) {
-              candidate[b] = { score: sc, lift, pop: wB/totalW, handle: assoc[b]?.handle, vendor: assoc[b]?.vendor };
+              candidate[b] = { score: sc, lift, pop: wB / totalW, handle: assoc[b]?.handle, vendor: assoc[b]?.vendor };
             }
           }
         }
 
-        // OOS filter via Admin API for small top set
+        // OOS filter via BC API for small top set
         const topIds = Object.entries(candidate)
-          .sort((a,b)=>b[1].score - a[1].score)
+          .sort((a, b) => b[1].score - a[1].score)
           .slice(0, 24)
-          .map(([id])=>id);
+          .map(([id]) => id);
 
         if (topIds.length === 0) {
           return json({ recommendations: manualResults.slice(0, limit) }, { headers: { 'Access-Control-Allow-Origin': allowedOrigin || '*', 'Vary': 'Origin' } });
         }
 
         // Fetch inventory/availability and price data for candidates
-        const prodGids = topIds.map(id => `gid://shopify/Product/${id}`);
-        const invResp = await admin.graphql(`
-          #graphql
-          query inv($ids: [ID!]!) {
-            nodes(ids: $ids) {
-              ... on Product { id title handle vendor status totalInventory availableForSale variants(first: 10) { edges { node { id availableForSale price } } } media(first:1){edges{node{... on MediaImage { image { url } }}}} }
-            }
+        const availability: Record<string, { inStock: boolean; price: number; title: string; handle: string; img?: string; vendor?: string }> = {};
+        for (const id of topIds) {
+          try {
+            const numId = parseInt(id, 10);
+            if (isNaN(numId)) continue;
+            const prod = await getProduct(shopStr, numId, "images,variants");
+            const normalized = normalizeProduct(prod);
+            availability[id] = {
+              inStock: normalized.inStock,
+              price: normalized.price,
+              title: normalized.title,
+              handle: normalized.handle,
+              img: normalized.image,
+              vendor: prod.brand_id ? String(prod.brand_id) : undefined,
+            };
+          } catch {
+            // skip products we can't fetch
           }
-        `, { variables: { ids: prodGids } });
-        if (!invResp.ok) {
-          return json({ recommendations: manualResults.slice(0, limit), reason: `admin_http_${invResp.status}` }, {
-            headers: { 'Access-Control-Allow-Origin': allowedOrigin || '*', 'Vary': 'Origin', 'Cache-Control': 'public, max-age=30' }
-          });
-        }
-        const invData: GraphQLResponse = await invResp.json();
-        if (invData?.errors || !invData?.data) {
-          return json({ recommendations: manualResults.slice(0, limit), reason: 'admin_inventory_error' }, {
-            headers: { 'Access-Control-Allow-Origin': allowedOrigin || '*', 'Vary': 'Origin', 'Cache-Control': 'public, max-age=30' }
-          });
-        }
-        const nodes: Array<GraphQLProductNode | GraphQLVariantNode | null> = invData?.data?.nodes || [];
-        const availability: Record<string, { inStock:boolean; price:number; title:string; handle:string; img?:string; vendor?:string } > = {};
-        for (const n of nodes) {
-          if (!n?.id) continue;
-          const id = (n.id as string).replace('gid://shopify/Product/','');
-          const variants = ('variants' in n && n.variants) ? n.variants.edges || [] : [];
-          const inStock = ('availableForSale' in n && Boolean(n.availableForSale)) || variants.some((v)=>v?.node?.availableForSale);
-          const price = variants.length ? parseFloat(variants[0].node?.price||'0')||0 : (assoc[id]?.price||0);
-          const title = ('title' in n) ? n.title : '';
-          const handle = ('handle' in n) ? n.handle : '';
-          const media = ('media' in n) ? n.media : undefined;
-          const vendor = ('vendor' in n) ? n.vendor : undefined;
-          availability[id] = { inStock, price, title, handle, img: media?.edges?.[0]?.node?.image?.url, vendor };
         }
 
         // Final ranking with guardrails (price-gap + diversity)
-        const results: Array<{ id:string; title:string; handle:string; image?:string; price:number } > = [];
+        const results: Array<{ id: string; title: string; handle: string; image?: string; price: number }> = [];
         const usedHandles = new Set<string>();
         const targetPrice = anchorMedian;
         // CTR-based re-ranking (best-effort)
@@ -776,7 +776,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
             const candIds = topIds;
             if (candIds.length) {
               const rows = await tracking.findMany({
-                where: { shop: shopStr, createdAt: { gte: since }, productId: { in: candIds } },
+                where: { storeHash: shopStr, createdAt: { gte: since }, productId: { in: candIds } },
                 select: { productId: true, event: true },
               });
               const counts: Record<string, { imp: number; clk: number }> = {};
@@ -796,7 +796,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
             }
           }
         } catch (_e) {
-
+          // best-effort
         }
 
         const BASELINE_CTR = 0.05; // 5%
@@ -804,8 +804,8 @@ export async function loader({ request }: LoaderFunctionArgs) {
         const scored = Object.entries(candidate).map(([bid, meta]) => {
           const ctr = ctrById[bid] ?? BASELINE_CTR;
           const mult = Math.max(0.85, Math.min(1.25, 1 + CTR_WEIGHT * (ctr - BASELINE_CTR)));
-          return [bid, { ...meta, score: meta.score * mult } ] as [string, typeof meta];
-        }).sort((a,b)=>b[1].score - a[1].score);
+          return [bid, { ...meta, score: meta.score * mult }] as [string, typeof meta];
+        }).sort((a, b) => b[1].score - a[1].score);
 
         for (const [bid, meta] of scored) {
           if (results.length >= Math.max(0, limit - manualResults.length)) break;
@@ -823,7 +823,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
         }
 
         // Combine manual and algorithmic with de-duplication
-        const combined: Array<{ id:string; title:string; handle:string; image?:string; price:number }> = [];
+        const combined: Array<{ id: string; title: string; handle: string; image?: string; price: number }> = [];
         const seenIds = new Set<string>();
         const pushUnique = (arr: typeof combined) => {
           for (const r of arr) {
@@ -837,7 +837,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
         if (combined.length < limit) pushUnique(results);
 
         if (enableThresholdBasedSuggestions && needAmount > 0 && thresholdSuggestionMode === 'price') {
-          combined.sort((a,b)=> (a.price - needAmount) - (b.price - needAmount));
+          combined.sort((a, b) => (a.price - needAmount) - (b.price - needAmount));
         }
 
         // ---------- A/B Testing Integration ----------
@@ -847,8 +847,8 @@ export async function loader({ request }: LoaderFunctionArgs) {
         // Check for active A/B experiments
         try {
           const userId = url.searchParams.get('session_id') || url.searchParams.get('customer_id') || 'anonymous';
-          const abResponse = await fetch(`${url.origin}/apps/proxy/api/ab-testing?action=get_active_experiments`, {
-            headers: { 'X-Shopify-Shop-Domain': shopStr }
+          const abResponse = await fetch(`${url.origin}/apps/proxy/api/ab-testing?action=get_active_experiments&store_hash=${shopStr}`, {
+            headers: {}
           });
 
           if (abResponse.ok) {
@@ -859,13 +859,13 @@ export async function loader({ request }: LoaderFunctionArgs) {
             const recommendationExperiment = activeExperiments.find((exp) =>
               exp.test_type === 'ml_algorithm' || exp.test_type === 'recommendation_copy'
             );
-            
+
             if (recommendationExperiment) {
               // Get variant assignment
-              const variantResponse = await fetch(`${url.origin}/apps/proxy/api/ab-testing?action=get_variant&experiment_id=${recommendationExperiment.id}&user_id=${userId}`, {
-                headers: { 'X-Shopify-Shop-Domain': shopStr }
+              const variantResponse = await fetch(`${url.origin}/apps/proxy/api/ab-testing?action=get_variant&experiment_id=${recommendationExperiment.id}&user_id=${userId}&store_hash=${shopStr}`, {
+                headers: {}
               });
-              
+
               if (variantResponse.ok) {
                 const variantData = await variantResponse.json() as { variant?: string; config?: Record<string, unknown> };
                 abTestVariant = variantData.variant || null;
@@ -874,154 +874,88 @@ export async function loader({ request }: LoaderFunctionArgs) {
             }
           }
         } catch (abError) {
-
+          // best-effort
         }
 
         // ---------- ML Enhancement & Real Data Tracking ----------
         let finalRecommendations = combined;
         let dataMetrics = {
-          orderCount: orderEdges.length,
+          orderCount: ordersWithItems.length,
           associationCount: Object.keys(assoc).length,
           mlEnhanced: false,
           dataQuality: 'basic',
           abTestVariant: abTestVariant,
           abTestConfig: abTestConfig
         };
-        
+
         // Apply A/B test overrides to ML configuration
         let effectiveMlEnabled = mlEnabled;
         let effectivePersonalizationMode = mlPersonalizationMode;
-        
+
         if (abTestVariant && abTestConfig) {
           if ('mlEnabled' in abTestConfig) {
-            effectiveMlEnabled = abTestConfig.mlEnabled;
+            effectiveMlEnabled = abTestConfig.mlEnabled as boolean;
           }
           if (abTestConfig.personalizationMode) {
-            effectivePersonalizationMode = abTestConfig.personalizationMode;
+            effectivePersonalizationMode = abTestConfig.personalizationMode as string;
           }
         }
 
         // ---------- ENHANCED ML INTEGRATION ----------
-        if (effectiveMlEnabled && orderEdges.length > 0) {
+        if (effectiveMlEnabled && ordersWithItems.length > 0) {
           try {
             const sessionId = url.searchParams.get('session_id') || url.searchParams.get('sid') || 'anonymous';
             const customerId = url.searchParams.get('customer_id') || url.searchParams.get('cid') || undefined;
-            
+
             // Determine if we have enough data for advanced ML
-            const hasRichData = orderEdges.length >= 100;
-            const hasGoodData = orderEdges.length >= 50;
-            
+            const hasRichData = ordersWithItems.length >= 100;
+            const hasGoodData = ordersWithItems.length >= 50;
+
             // Update data quality metric
-            if (orderEdges.length >= 500) {
+            if (ordersWithItems.length >= 500) {
               dataMetrics.dataQuality = 'rich';
-            } else if (orderEdges.length >= 200) {
+            } else if (ordersWithItems.length >= 200) {
               dataMetrics.dataQuality = 'good';
-            } else if (orderEdges.length >= 50) {
+            } else if (ordersWithItems.length >= 50) {
               dataMetrics.dataQuality = 'growing';
             } else {
               dataMetrics.dataQuality = 'new_store';
             }
-            
-            // 🆕 COLD START HANDLING - Enhanced recommendations for new stores
-            if (orderEdges.length < 50) {
-              try {
-                // Strategy 1: Use Shopify's recommendation API
-                const shopifyRecsPromise = admin.graphql(`
-                  query getRecommendations($productIds: [ID!]!) {
-                    productRecommendations(productId: $productIds) {
-                      id
-                      title
-                      handle
-                      priceRangeV2 {
-                        minVariantPrice {
-                          amount
-                          currencyCode
-                        }
-                      }
-                      images(first: 1) {
-                        edges {
-                          node {
-                            url
-                          }
-                        }
-                      }
-                    }
-                  }
-                `, {
-                  variables: {
-                    productIds: Array.from(anchors).slice(0, 1) // Use first anchor
-                  }
-                }).then(r => r.json()).catch(() => null);
-                
-                // Strategy 2: Get trending products (highest selling in catalog)
-                const trendingPromise = admin.graphql(`
-                  query getTrending {
-                    products(first: 10, sortKey: BEST_SELLING) {
-                      edges {
-                        node {
-                          id
-                          title
-                          handle
-                          priceRangeV2 {
-                            minVariantPrice {
-                              amount
-                              currencyCode
-                            }
-                          }
-                          images(first: 1) {
-                            edges {
-                              node {
-                                url
-                              }
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
-                `).then(r => r.json()).catch(() => null);
-                
-                const [shopifyRecsData, trendingData] = await Promise.all([shopifyRecsPromise, trendingPromise]);
-                
-                const coldStartRecs: Array<{ id: string, title: string, price: number, handle: string, image?: string }> = [];
-                
-                // Add Shopify recommendations
-                if (shopifyRecsData?.data?.productRecommendations) {
-                  for (const prod of shopifyRecsData.data.productRecommendations) {
-                    coldStartRecs.push({
-                      id: prod.id.split('/').pop()!,
-                      title: prod.title,
-                      price: parseFloat(prod.priceRangeV2?.minVariantPrice?.amount || '0'),
-                      handle: prod.handle,
-                      image: prod.images?.edges?.[0]?.node?.url
-                    });
-                  }
-                }
 
-                // Add trending products
-                if (trendingData?.data?.products?.edges) {
-                  for (const edge of trendingData.data.products.edges) {
-                    const prod = edge.node;
-                    const prodId = prod.id.split('/').pop()!;
-                    
-                    // Don't add if already in list or in cart
-                    if (!coldStartRecs.find(r => r.id === prodId) && !anchors.has(prodId)) {
-                      coldStartRecs.push({
-                        id: prodId,
-                        title: prod.title,
-                        price: parseFloat(prod.priceRangeV2?.minVariantPrice?.amount || '0'),
-                        handle: prod.handle,
-                        image: prod.images?.edges?.[0]?.node?.url
-                      });
+            // COLD START HANDLING - Enhanced recommendations for new stores
+            if (ordersWithItems.length < 50) {
+              try {
+                // BigCommerce does not have a productRecommendations API equivalent.
+                // Strategy: Get trending/best-selling products from catalog
+                const coldStartRecs: Array<{ id: string; title: string; price: number; handle: string; image?: string }> = [];
+
+                try {
+                  const { products: trendingProducts } = await getProducts(shopStr, { limit: 10, include: "images,variants", is_visible: true });
+                  for (const prod of trendingProducts) {
+                    const prodId = String(prod.id);
+                    // Don't add if already in cart
+                    if (!anchors.has(prodId)) {
+                      const normalized = normalizeProduct(prod);
+                      if (normalized.inStock) {
+                        coldStartRecs.push({
+                          id: prodId,
+                          title: normalized.title,
+                          price: normalized.price,
+                          handle: normalized.handle,
+                          image: normalized.image,
+                        });
+                      }
                     }
                   }
+                } catch {
+                  // skip trending fetch failures
                 }
 
                 // Mix cold start recs with existing (70% cold start, 30% traditional)
                 if (coldStartRecs.length > 0) {
                   const coldStartCount = Math.ceil(limit * 0.7);
                   const traditionalCount = Math.floor(limit * 0.3);
-                  
+
                   finalRecommendations = [
                     ...coldStartRecs.slice(0, coldStartCount),
                     ...combined.slice(0, traditionalCount)
@@ -1030,11 +964,10 @@ export async function loader({ request }: LoaderFunctionArgs) {
                   dataMetrics.mlEnhanced = true;
                 }
               } catch (coldStartError) {
-
                 // Fall through to normal ML processing
               }
             }
-            
+
             // ML PERSONALIZATION MODE ROUTING
             let mlRecommendations: MLRecommendation[] = [];
 
@@ -1045,10 +978,10 @@ export async function loader({ request }: LoaderFunctionArgs) {
                 customerId: mlPrivacyLevel === 'advanced' ? customerId : undefined,
                 privacyLevel: mlPrivacyLevel
               } : null;
-              
+
               // Combine multiple ML strategies
               const mlPromises = [];
-              
+
               // 1. Content-based recommendations
               if (anchors.size > 0) {
                 mlPromises.push(
@@ -1064,7 +997,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
                   }).then(r => r.ok ? r.json() : null).catch(() => null)
                 );
               }
-              
+
               // 2. Collaborative filtering (if advanced personalization)
               if (mlPrivacyLevel === 'advanced' && customerId) {
                 mlPromises.push(
@@ -1078,25 +1011,25 @@ export async function loader({ request }: LoaderFunctionArgs) {
                   }).then(r => r.ok ? r.json() : null).catch(() => null)
                 );
               }
-              
+
               const mlResults = await Promise.all(mlPromises);
-              
+
               // Extract recommendations from ML responses
               mlResults.forEach(result => {
                 if (result?.recommendations) {
                   mlRecommendations.push(...result.recommendations);
                 }
               });
-              
+
               if (mlRecommendations.length > 0) {
                 // Merge ML recommendations with existing ones
                 const mlProductIds = mlRecommendations.map((r) => r.product_id);
-                const mlProducts = await normalizeIdsToProducts(mlProductIds);
-                
+                const mlProducts = await normalizeIdsToProducts(shopStr, mlProductIds);
+
                 // Prioritize ML recommendations
                 const mlEnhanced = mlProducts.slice(0, Math.floor(limit * 0.7)); // 70% ML
                 const traditional = combined.filter(c => !mlProductIds.includes(c.id)).slice(0, Math.ceil(limit * 0.3)); // 30% traditional
-                
+
                 finalRecommendations = [...mlEnhanced, ...traditional].slice(0, limit);
                 dataMetrics.mlEnhanced = true;
               }
@@ -1115,8 +1048,8 @@ export async function loader({ request }: LoaderFunctionArgs) {
 
               if (popularResponse?.recommendations) {
                 const popularIds = popularResponse.recommendations.map((r) => r.product_id);
-                const popularProducts = await normalizeIdsToProducts(popularIds);
-                
+                const popularProducts = await normalizeIdsToProducts(shopStr, popularIds);
+
                 finalRecommendations = popularProducts.slice(0, limit);
                 dataMetrics.mlEnhanced = true;
               }
@@ -1136,11 +1069,11 @@ export async function loader({ request }: LoaderFunctionArgs) {
 
                 if (contentResponse?.recommendations) {
                   const mlIds = contentResponse.recommendations.slice(0, Math.floor(limit * 0.4)).map((r) => r.product_id);
-                  const mlProducts = await normalizeIdsToProducts(mlIds);
-                  
+                  const mlProducts = await normalizeIdsToProducts(shopStr, mlIds);
+
                   // Mix with traditional recommendations
                   const coPurchase = combined.slice(0, Math.ceil(limit * 0.6));
-                  
+
                   // Interleave for diversity
                   const balanced: ProductWithMeta[] = [];
                   const maxLen = Math.max(mlProducts.length, coPurchase.length);
@@ -1159,22 +1092,20 @@ export async function loader({ request }: LoaderFunctionArgs) {
             if (!dataMetrics.mlEnhanced && hasGoodData) {
               // Enhanced scoring with real customer behavior
               const enhancedScoring = combined.map(rec => {
-                const productAppearances = orderEdges.filter(order =>
-                  order.node?.lineItems?.edges?.some((li) =>
-                    li.node?.product?.id?.includes(rec.id)
-                  )
+                const productAppearances = ordersWithItems.filter(order =>
+                  order.items.some((li) => String(li.product_id) === rec.id)
                 ).length;
-                
-                const popularityScore = productAppearances / Math.max(1, orderEdges.length);
+
+                const popularityScore = productAppearances / Math.max(1, ordersWithItems.length);
                 const enhancedScore = popularityScore * (effectivePersonalizationMode === 'advanced' ? 2.0 : 1.5);
-                
+
                 return { ...rec, mlScore: enhancedScore };
               });
-              
+
               finalRecommendations = enhancedScoring
                 .sort((a, b) => (b.mlScore || 0) - (a.mlScore || 0))
                 .slice(0, limit);
-              
+
               dataMetrics.mlEnhanced = true;
             }
 
@@ -1184,7 +1115,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
                 if (db?.trackingEvent?.create) {
                   await db.trackingEvent.create({
                     data: {
-                      shop: shopStr,
+                      storeHash: shopStr,
                       event: 'ml_recommendation_served',
                       productId: Array.from(anchors)[0] || '',
                       sessionId: sessionId,
@@ -1193,35 +1124,34 @@ export async function loader({ request }: LoaderFunctionArgs) {
                       metadata: JSON.stringify({
                         anchors: Array.from(anchors),
                         recommendationCount: finalRecommendations.length,
-                        recommendationIds: finalRecommendations.map(r => r.id), // 🎯 KEY: For purchase attribution
+                        recommendationIds: finalRecommendations.map(r => r.id),
                         dataQuality: dataMetrics.dataQuality,
                         mlMode: effectivePersonalizationMode,
-                        orderDataPoints: orderEdges.length,
+                        orderDataPoints: ordersWithItems.length,
                         privacyLevel: mlPrivacyLevel
                       }),
                       createdAt: new Date()
                     }
-                  }).catch(() => {});
+                  }).catch(() => { });
                 }
               } catch (trackingError) {
-
+                // best-effort
               }
             }
 
           } catch (mlError) {
-
             // Graceful degradation - keep original recommendations
           }
         }
 
-        // 🎯 APPLY DAILY LEARNING - Filter bad products, boost good ones
+        // APPLY DAILY LEARNING - Filter bad products, boost good ones
         try {
           const candidateIds = finalRecommendations.map(r => r.id);
-          
+
           if (candidateIds.length > 0) {
             const performance = await db.mLProductPerformance?.findMany({
               where: {
-                shop: shopStr,
+                storeHash: shopStr,
                 productId: { in: candidateIds }
               }
             }) || [] as ProductPerformance[];
@@ -1252,16 +1182,16 @@ export async function loader({ request }: LoaderFunctionArgs) {
 
               // Re-sort by adjusted scores
               scoredRecs.sort((a, b) => (b.score || 0) - (a.score || 0));
-              
+
               // Track that learning was applied
               dataMetrics.mlEnhanced = true;
             }
           }
         } catch (perfError) {
-
+          // best-effort
         }
 
-        const payload = { 
+        const payload = {
           recommendations: finalRecommendations,
           ml_data: mlEnabled ? {
             enhanced: dataMetrics.mlEnhanced,
@@ -1284,88 +1214,58 @@ export async function loader({ request }: LoaderFunctionArgs) {
         });
       }
     } catch (error) {
-      // 🛡️ ULTIMATE FALLBACK - Never return empty, always show something
+      // ULTIMATE FALLBACK - Never return empty, always show something
       try {
-        // Get admin for emergency query
-        const { session } = await authenticate.public.appProxy(request);
-        const shop = session?.shop;
-        if (!shop) {
-          return json({ recommendations: [], fallback: 'none', reason: 'no_shop_session' }, {
-            status: 200,
-            headers: { 'Access-Control-Allow-Origin': allowedOrigin || '*', 'Vary': 'Origin', 'Cache-Control': 'no-cache' }
-          });
-        }
-        
-        const { admin: emergencyAdmin } = await unauthenticated.admin(shop as string);
+        const storeHash = await authenticateStorefront(request);
         const emergencyLimit = parseInt(url.searchParams.get('limit') || '6', 10);
-        
-        // Last resort: Get random products from catalog
-        const emergencyQuery = `
-          query getEmergencyProducts {
-            products(first: 10, query: "published_status:published") {
-              edges {
-                node {
-                  id
-                  title
-                  handle
-                  priceRangeV2 {
-                    minVariantPrice {
-                      amount
-                    }
-                  }
-                  images(first: 1) {
-                    edges {
-                      node {
-                        url
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        `;
-        
-        const emergencyResponse = await emergencyAdmin.graphql(emergencyQuery);
-        const emergencyData = await emergencyResponse.json();
-        
-        if (emergencyData?.data?.products?.edges) {
-          const emergencyRecs = (emergencyData.data.products.edges as GraphQLProductEdge[])
-            .slice(0, emergencyLimit)
-            .map((edge) => ({
-              id: edge.node.id.split('/').pop() || '',
-              title: edge.node.title,
-              handle: edge.node.handle,
-              price: parseFloat((edge.node as unknown as { priceRangeV2?: { minVariantPrice?: { amount: string } } }).priceRangeV2?.minVariantPrice?.amount || '0'),
-              image: (edge.node as unknown as { images?: { edges?: Array<{ node?: { url?: string } }> } }).images?.edges?.[0]?.node?.url
-            }));
 
-          return json({ 
-            recommendations: emergencyRecs,
-            fallback: 'emergency',
-            reason: 'primary_system_failure'
-          }, {
-            status: 200,
-            headers: { 
-              'Access-Control-Allow-Origin': allowedOrigin || '*', 'Vary': 'Origin', 
-              'Cache-Control': 'public, max-age=10',
-              'X-Fallback-Level': 'emergency'
-            }
-          });
+        // Last resort: Get products from catalog
+        try {
+          const { products: emergencyProducts } = await getProducts(storeHash, { limit: 10, include: "images,variants", is_visible: true });
+
+          if (emergencyProducts.length > 0) {
+            const emergencyRecs = emergencyProducts
+              .slice(0, emergencyLimit)
+              .map(prod => {
+                const normalized = normalizeProduct(prod);
+                return {
+                  id: normalized.id,
+                  title: normalized.title,
+                  handle: normalized.handle,
+                  price: normalized.price,
+                  image: normalized.image,
+                };
+              });
+
+            return json({
+              recommendations: emergencyRecs,
+              fallback: 'emergency',
+              reason: 'primary_system_failure'
+            }, {
+              status: 200,
+              headers: {
+                'Access-Control-Allow-Origin': allowedOrigin || '*', 'Vary': 'Origin',
+                'Cache-Control': 'public, max-age=10',
+                'X-Fallback-Level': 'emergency'
+              }
+            });
+          }
+        } catch {
+          // fall through
         }
       } catch (fallbackError) {
-
+        // fall through
       }
 
       // Absolute last resort: Empty list (but logged)
-      return json({ 
-        recommendations: [], 
+      return json({
+        recommendations: [],
         fallback: 'none',
-        reason: 'all_systems_down' 
+        reason: 'all_systems_down'
       }, {
         status: 200,
-        headers: { 
-          'Access-Control-Allow-Origin': allowedOrigin || '*', 'Vary': 'Origin', 
+        headers: {
+          'Access-Control-Allow-Origin': allowedOrigin || '*', 'Vary': 'Origin',
           'Cache-Control': 'no-cache',
           'X-Fallback-Level': 'complete_failure'
         }
@@ -1378,80 +1278,50 @@ export async function loader({ request }: LoaderFunctionArgs) {
   if (path.includes('/api/products')) {
     let allowedOrigin: string | null = null;
     try {
-      const { session } = await authenticate.public.appProxy(request);
-      const shop = session?.shop;
+      const storeHash = await authenticateStorefront(request);
 
       // SECURITY: Validate CORS origin
       const origin = request.headers.get("origin") || "";
-      allowedOrigin = shop ? await validateCorsOrigin(origin, shop as string) : null;
+      allowedOrigin = await validateCorsOrigin(origin, storeHash);
 
-      if (!shop) return json({ products: [], error: 'Unauthorized' }, { status: 401, headers: { 'Access-Control-Allow-Origin': allowedOrigin || '*', 'Vary': 'Origin' } });
-
-      const shopStr = shop as string;
+      const shopStr = storeHash;
       const shopCurrency = await getShopCurrency(shopStr);
 
       const q = url.searchParams.get('query') || '';
       const limit = Math.min(100, Math.max(1, parseInt(url.searchParams.get('limit') || '50', 10)));
 
-      const { admin } = await unauthenticated.admin(shopStr);
-      const resp = await admin.graphql(`#graphql
-        query getProducts($first: Int!, $query: String) {
-          products(first: $first, query: $query) {
-            edges {
-              node {
-                id
-                title
-                handle
-                status
-                featuredMedia { preview { image { url altText } } }
-                priceRangeV2 { minVariantPrice { amount currencyCode } }
-                variants(first: 10) {
-                  edges { node { id title price availableForSale } }
-                }
-              }
-            }
-            pageInfo { hasNextPage }
-          }
-        }
-      `, { variables: { first: limit, query: q ? `title:*${q}* OR vendor:*${q}* OR tag:*${q}*` : '' } });
+      const { products: bcProducts, hasNextPage } = await getProducts(shopStr, {
+        limit,
+        keyword: q || undefined,
+        include: "images,variants",
+      });
 
-      if (!resp.ok) {
-        const text = await resp.text();
-        return json({ products: [], error: `HTTP ${resp.status}` }, { status: 502, headers: { 'Access-Control-Allow-Origin': allowedOrigin || '*', 'Vary': 'Origin' } });
-      }
-      const data: GraphQLResponse = await resp.json();
-      if (!data?.data) {
-        return json({ products: [], error: 'GraphQL error' }, { status: 502, headers: { 'Access-Control-Allow-Origin': allowedOrigin || '*', 'Vary': 'Origin' } });
-      }
-
-      const products = (data.data.products?.edges || []).map((edge) => {
-        const n = edge.node;
-        const variants = (n.variants?.edges || []).map((ve) => ({
-          id: ve.node.id,
-          title: ve.node.title,
-          price: typeof ve.node.price === 'number' ? ve.node.price : parseFloat(ve.node.price ?? '0') || 0,
-          availableForSale: ve.node.availableForSale,
+      const products = bcProducts.map((prod) => {
+        const variants = (prod.variants || []).map((v) => ({
+          id: String(v.id),
+          title: v.option_values?.map(o => o.label).join(' / ') || '',
+          price: v.calculated_price ?? v.price ?? prod.price ?? 0,
+          availableForSale: !v.purchasing_disabled,
         }));
-        const minPriceAmount = n.priceRangeV2?.minVariantPrice?.amount;
-        const currency = n.priceRangeV2?.minVariantPrice?.currencyCode || shopCurrency.code;
-        const minPrice = typeof minPriceAmount === 'number' ? minPriceAmount : parseFloat(minPriceAmount ?? '0') || (variants[0]?.price ?? 0);
+        const minPrice = prod.price ?? variants[0]?.price ?? 0;
+        const handle = (prod.custom_url?.url || '').replace(/^\/|\/$/g, '');
         return {
-          id: n.id,
-          title: n.title,
-          handle: n.handle,
-          status: n.status,
-          image: n.featuredMedia?.preview?.image?.url || null,
-          imageAlt: n.featuredMedia?.preview?.image?.altText || n.title,
+          id: String(prod.id),
+          title: prod.name,
+          handle,
+          status: prod.is_visible ? 'ACTIVE' : 'DRAFT',
+          image: prod.images?.[0]?.url_standard || null,
+          imageAlt: prod.name,
           minPrice,
-          currency,
+          currency: shopCurrency.code,
           price: minPrice,
           variants,
         };
       });
 
-      return json({ 
-        products, 
-        hasNextPage: Boolean(data.data.products.pageInfo?.hasNextPage),
+      return json({
+        products,
+        hasNextPage,
         currency: shopCurrency.code,
         currencyFormat: shopCurrency.format
       }, {
@@ -1467,26 +1337,22 @@ export async function loader({ request }: LoaderFunctionArgs) {
   if (path.includes('/api/bundles')) {
     let allowedOrigin: string | null = null;
     try {
-      const { session } = await authenticate.public.appProxy(request);
-      const shop = session?.shop;
+      const storeHash = await authenticateStorefront(request);
 
       // SECURITY: Validate CORS origin
       const origin = request.headers.get("origin") || "";
-      allowedOrigin = shop ? await validateCorsOrigin(origin, shop as string) : null;
+      allowedOrigin = await validateCorsOrigin(origin, storeHash);
 
-      if (!shop) {
-        return json({ error: 'Unauthorized' }, { status: 401, headers: { 'Access-Control-Allow-Origin': allowedOrigin || '*', 'Vary': 'Origin', 'X-Bundles-Reason': 'unauthorized' } });
-      }
-      const shopStr = shop as string;
+      const shopStr = storeHash;
 
       // Check subscription limits - ENFORCE ORDER LIMITS
       const subscription = await getOrCreateSubscription(shopStr);
       if (subscription.isLimitReached) {
-        return json({ 
+        return json({
           bundles: [],
           message: 'Order limit reached. Please upgrade your plan to continue.',
-          limitReached: true 
-        }, { 
+          limitReached: true
+        }, {
           status: 403,
           headers: { 'Access-Control-Allow-Origin': allowedOrigin || '*', 'Vary': 'Origin', 'X-Bundles-Reason': 'limit_reached' }
         });
@@ -1499,25 +1365,19 @@ export async function loader({ request }: LoaderFunctionArgs) {
       let settings: Awaited<ReturnType<typeof getSettings>> | undefined = undefined;
       try {
         settings = await getSettings(shopStr);
-  } catch(_e) {
-
+      } catch (_e) {
+        // proceed with defaults
       }
-      
-      // 🧠 ML Settings for Bundles
+
+      // ML Settings for Bundles
       const bundleMLSettings = settings ? {
         enabled: Boolean(settings.enableMLRecommendations),
-        smartBundlesEnabled: Boolean(settings.enableSmartBundles), 
+        smartBundlesEnabled: Boolean(settings.enableSmartBundles),
         personalizationMode: String(settings.mlPersonalizationMode || 'basic'),
         privacyLevel: String(settings.mlPrivacyLevel || 'basic'),
         behaviorTracking: Boolean(settings.enableBehaviorTracking)
       } : { enabled: false, smartBundlesEnabled: false, personalizationMode: 'basic', privacyLevel: 'basic', behaviorTracking: false };
 
-      // Temporarily bypass the setting check for testing
-      /*
-      if (!settings?.enableSmartBundles) {
-        return json({ bundles: [], reason: 'disabled' }, { headers: { 'Access-Control-Allow-Origin': allowedOrigin || '*', 'Vary': 'Origin' } });
-      }
-      */
       if (
         context === 'product' &&
         settings &&
@@ -1528,7 +1388,6 @@ export async function loader({ request }: LoaderFunctionArgs) {
       }
 
       // Relaxed gating: only gate if settings are loaded AND bundlesOnProductPages is explicitly false.
-      // If settings fail to load, proceed with defaults.
       if (context === 'product' && settings?.bundlesOnProductPages === false) {
         return json({ bundles: [], reason: 'disabled_page' }, { headers: { 'Access-Control-Allow-Origin': allowedOrigin || '*', 'Vary': 'Origin, X-Bundles-Gated', 'X-Bundles-Gated': '1', 'X-Bundles-Reason': 'disabled_page', 'X-Bundles-Context': context } });
       }
@@ -1537,144 +1396,38 @@ export async function loader({ request }: LoaderFunctionArgs) {
         return json({ bundles: [], reason: 'invalid_params' }, { headers: { 'Access-Control-Allow-Origin': allowedOrigin || '*', 'Vary': 'Origin', 'X-Bundles-Reason': 'invalid_params', 'X-Bundles-Context': String(context) } });
       }
 
-      // Resolve product id: accept numeric id; if not numeric, try as handle via Admin API
-  let productId = String(productIdParam);
-      if (!/^[0-9]+$/.test(productId)) {
-        try {
-          const { admin } = await unauthenticated.admin(shopStr);
-          const byHandleResp = await admin.graphql(`#graphql
-            query($handle: String!) { productByIdentifier(identifier: { handle: $handle }) { id } }
-          `, { variables: { handle: productId } });
-          if (byHandleResp.ok) {
-            const data: { data?: { productByIdentifier?: { id: string } } } = await byHandleResp.json();
-            const gid: string | undefined = data?.data?.productByIdentifier?.id;
-            if (gid) productId = gid.replace('gid://shopify/Product/','');
-          }
-        } catch(_) { /* ignore */ }
-      } else {
-        // If numeric, it could be a Variant ID; try resolving to Product ID
-        try {
-          const { admin } = await unauthenticated.admin(shopStr);
-          const nodeResp = await admin.graphql(`#graphql
-            query($id: ID!) { node(id: $id) { __typename ... on ProductVariant { product { id } } ... on Product { id } } }
-          `, { variables: { id: `gid://shopify/ProductVariant/${productId}` } });
-          if (nodeResp.ok) {
-            const data: { data?: { node?: { __typename?: string; product?: { id: string }; id?: string } } } = await nodeResp.json();
-            const n = data?.data?.node;
-            if (n?.__typename === 'ProductVariant' && n?.product?.id) {
-              productId = String(n.product.id).replace('gid://shopify/Product/','');
-            } else if (n?.__typename === 'Product' && n?.id) {
-              productId = String(n.id).replace('gid://shopify/Product/','');
-            }
-          }
-        } catch(_) { /* ignore; fall back to provided id */ }
-      }
+      // Resolve product id: accept numeric id
+      let productId = String(productIdParam);
 
       // Guard: unresolved or invalid product id
       if (!productId || !/^[0-9]+$/.test(productId)) {
         return json({ bundles: [], reason: 'invalid_product' }, { headers: { 'Access-Control-Allow-Origin': allowedOrigin || '*', 'Vary': 'Origin', 'X-Bundles-Reason': 'invalid_product', 'X-Bundles-Context': context } });
       }
 
+      const numericProductId = parseInt(productId, 10);
+
       // Fetch real products from the store to use in bundles
-  const { admin } = await unauthenticated.admin(shopStr);
-      
       // Get the current product details
-  let currentProduct: GraphQLProductNode | null = null;
+      let currentProduct: BCProduct | null = null;
       try {
-    const currentProductResp = await admin.graphql(`#graphql
-          query($id: ID!) { 
-            product(id: $id) { 
-              id 
-              title 
-              handle
-      variants(first: 250) { 
-                edges { 
-                  node { 
-                    id 
-                    title
-                    price 
-                    compareAtPrice
-        availableForSale
-                    selectedOptions { name value }
-                  } 
-                } 
-              }
-              media(first: 1) {
-                edges {
-                  node {
-                    ... on MediaImage {
-                      image {
-                        url
-                      }
-                    }
-                  }
-                }
-              }
-            } 
-          }
-        `, { variables: { id: `gid://shopify/Product/${productId}` } });
-        
-        if (currentProductResp.ok) {
-          const data = await currentProductResp.json();
-          currentProduct = data?.data?.product;
-        }
-  } catch (_e) {
-
+        currentProduct = await getProduct(shopStr, numericProductId, "images,variants");
+      } catch (_e) {
+        // product not found
       }
-      
-      // Get other products from the store
-      let otherProducts = [];
-      try {
-    const productsResp = await admin.graphql(`#graphql
-          query {
-            products(first: 50, query: "status:active") {
-              edges {
-                node {
-                  id
-                  title
-                  handle
-      variants(first: 250) {
-                    edges {
-                      node {
-                        id
-                        title
-                        price
-                        compareAtPrice
-        availableForSale
-                        selectedOptions { name value }
-                      }
-                    }
-                  }
-                  media(first: 1) {
-                    edges {
-                      node {
-                        ... on MediaImage {
-                          image {
-                            url
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        `);
-        
-        if (productsResp.ok) {
-          const data: GraphQLResponse = await productsResp.json();
-          otherProducts = data?.data?.products?.edges?.map((edge) => edge.node) || [];
-        }
-  } catch (_e) {
 
+      // Get other products from the store
+      let otherProducts: BCProduct[] = [];
+      try {
+        const { products: prods } = await getProducts(shopStr, { limit: 50, include: "images,variants", is_visible: true });
+        otherProducts = prods;
+      } catch (_e) {
+        // proceed without other products
       }
 
       // Create bundles using context-aware recommendations
       const bundles: unknown[] = [];
 
       // Load AI bundle configuration for discount settings
-      // Apply config discount to ALL AI-generated bundles (simplified approach)
       type AiBundleSelect = {
         id: string;
         name: string;
@@ -1683,10 +1436,9 @@ export async function loader({ request }: LoaderFunctionArgs) {
       };
       let aiBundleConfig: AiBundleSelect | null = null;
       try {
-        // Get AI bundle configuration - applies to all AI-generated bundles
         aiBundleConfig = await db.bundle.findFirst({
           where: {
-            shop: shopStr,
+            storeHash: shopStr,
             type: 'ml',
             status: 'active'
           },
@@ -1706,86 +1458,31 @@ export async function loader({ request }: LoaderFunctionArgs) {
       }
 
       if (currentProduct) {
-        // Helper function to normalize product with first available variant
-        const getProductDetails = (product: GraphQLProductNode) => {
-          const variantEdges = Array.isArray(product?.variants?.edges) ? product.variants.edges : [];
-          const firstAvailable = variantEdges.find((e)=>e?.node?.availableForSale)?.node || variantEdges[0]?.node;
-          const firstVariant = firstAvailable;
+        const currentProd = getBCProductDetails(currentProduct);
 
-          // Ensure we have a valid variant
-          if (!firstVariant?.id) {
-            return null;
-          }
-
-          const opts = Array.isArray(firstVariant?.selectedOptions)
-            ? firstVariant.selectedOptions.map((o) => ({ name: o?.name, value: o?.value }))
-            : [];
-          // Convert price to cents for consistency with manual bundles
-          const priceInCents = Math.round(parseFloat(firstVariant?.price || '0') *    100);
-
-          // Map all variants for frontend variant selector
-          const allVariants = variantEdges.map((edge) => {
-            const v = edge?.node;
-            if (!v?.id) return null;
-            return {
-              id: String(v.id).replace('gid://shopify/ProductVariant/', ''),
-              title: v.title,
-              price: Math.round(parseFloat(v.price || '0') * 100),
-              compareAtPrice: v.compareAtPrice ? Math.round(parseFloat(v.compareAtPrice) * 100) : undefined,
-              availableForSale: v.availableForSale,
-              selectedOptions: Array.isArray(v.selectedOptions)
-                ? v.selectedOptions.map((o) => ({ name: o?.name, value: o?.value }))
-                : []
-            };
-          }).filter((v) => v !== null);
-          
-          return {
-            id: String(product.id).replace('gid://shopify/Product/', ''),
-            variant_id: String(firstVariant.id).replace('gid://shopify/ProductVariant/', ''),
-            variant_title: firstVariant?.title,
-            options: opts,
-            title: product.title,
-            handle: product.handle || String(product.id).replace('gid://shopify/Product/', ''),
-            price: priceInCents,
-            image: product.media?.edges?.[0]?.node?.image?.url || undefined,
-            variants: allVariants
-          };
-        };
-
-  const currentProd = getProductDetails(currentProduct);
-        
         // Skip bundle creation if current product doesn't have valid variants
         if (!currentProd) {
           return json({ bundles: [], reason: 'no_variants' }, {
             headers: { 'Access-Control-Allow-Origin': allowedOrigin || '*', 'Vary': 'Origin', 'Cache-Control': 'public, max-age=30' }
           });
-  }
+        }
 
         // Compute related products from recent orders (focused on this anchor)
-  const { admin } = await unauthenticated.admin(shopStr);
-        const ordersResp = await admin.graphql(`
-          #graphql
-          query getOrders($first: Int!) {
-            orders(first: $first, sortKey: CREATED_AT, reverse: true) {
-              edges { node {
-                id
-                createdAt
-                lineItems(first: 30) { edges { node {
-                  product { id title handle media(first: 1) { edges { node { ... on MediaImage { image { url } } } } } vendor }
-                  variant { id price }
-                } } }
-              } }
-            }
-          }
-        `, { variables: { first: 200 } });
+        let ordersWithItems: Array<{
+          id: number;
+          date_created: string;
+          items: Array<{ product_id: number; name: string; price: number }>;
+        }> = [];
+        try {
+          ordersWithItems = await fetchOrdersWithProducts(shopStr, 200);
+        } catch {
+          ordersWithItems = [];
+        }
+
         let relatedIds: string[] = [];
         let debugInfo: { method: string; anchor: string; orderCount: number; assocCount: number } = { method: 'none', anchor: String(productId), orderCount: 0, assocCount: 0 };
         try {
-          const ok = ordersResp.ok;
-          const ordersData: GraphQLResponse | null = ok ? await ordersResp.json() : null;
-          const orderEdges = ordersData?.data?.orders?.edges || [];
-          debugInfo.orderCount = orderEdges.length;
-          const getPid = (gid?: string) => (gid||'').replace('gid://shopify/Product/','');
+          debugInfo.orderCount = ordersWithItems.length;
           // Decay setup similar to recommendations endpoint
           const HALF_LIFE_DAYS = 60;
           const LN2_OVER_HL = Math.log(2) / HALF_LIFE_DAYS;
@@ -1796,21 +1493,20 @@ export async function loader({ request }: LoaderFunctionArgs) {
             wAppear: number;
           }
           const assoc: Record<string, AssociationData> = {};
-          for (const e of orderEdges) {
-            const n = e.node;
-            const createdAt = new Date(n.createdAt);
+          for (const order of ordersWithItems) {
+            const createdAt = new Date(order.date_created);
             const ageDays = Math.max(0, (Date.now() - createdAt.getTime()) / 86400000);
             const w = Math.exp(-LN2_OVER_HL * ageDays);
-            const items: Array<{pid:string}> = [];
-            for (const ie of (n.lineItems?.edges||[])) {
-              const p = ie.node.product; if (!p?.id) continue;
-              const pid = getPid(p.id);
+            const items: Array<{ pid: string }> = [];
+            for (const lineItem of order.items) {
+              if (!lineItem.product_id) continue;
+              const pid = String(lineItem.product_id);
               items.push({ pid });
             }
             if (items.length < 2) continue;
             const seen = new Set<string>();
-            for (const it of items) { if (!seen.has(it.pid)) { wAppear[it.pid] = (wAppear[it.pid]||0)+w; seen.add(it.pid); } }
-            for (let i=0;i<items.length;i++) for (let j=i+1;j<items.length;j++) {
+            for (const it of items) { if (!seen.has(it.pid)) { wAppear[it.pid] = (wAppear[it.pid] || 0) + w; seen.add(it.pid); } }
+            for (let i = 0; i < items.length; i++) for (let j = i + 1; j < items.length; j++) {
               const a = items[i].pid, b = items[j].pid;
               assoc[a] = assoc[a] || { copurchases: {}, wAppear: 0 };
               assoc[b] = assoc[b] || { copurchases: {}, wAppear: 0 };
@@ -1826,7 +1522,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
           const anchor = String(productId);
           const cand: Record<string, number> = {};
           const aStats = assoc[anchor];
-          const totalW = Object.values(wAppear).reduce((a,b)=>a+b,0) || 1;
+          const totalW = Object.values(wAppear).reduce((a, b) => a + b, 0) || 1;
           if (aStats) {
             for (const [b, ab] of Object.entries(aStats.copurchases)) {
               if (b === anchor) continue;
@@ -1834,76 +1530,82 @@ export async function loader({ request }: LoaderFunctionArgs) {
               const confidence = ab.wco / Math.max(1e-6, aStats.wAppear || 1);
               const probB = wB / totalW;
               const lift = probB > 0 ? confidence / probB : 0;
-              // score blend
               const liftCap = 2.0; const liftNorm = Math.min(liftCap, lift) / liftCap;
               const popNorm = Math.min(1, wB / (totalW * 0.05));
-              cand[b] = Math.max(cand[b]||0, 0.6*liftNorm + 0.4*popNorm);
+              cand[b] = Math.max(cand[b] || 0, 0.6 * liftNorm + 0.4 * popNorm);
             }
             debugInfo.method = 'orders';
           }
-          relatedIds = Object.entries(cand).sort((a,b)=>b[1]-a[1]).slice(0, 4).map(([id])=>id);
+          relatedIds = Object.entries(cand).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([id]) => id);
         } catch {
           relatedIds = [];
         }
 
-        // Fallback: vendor-based or catalog-based when orders are insufficient
+        // Fallback: category-based or catalog-based when orders are insufficient
         if (relatedIds.length === 0 && otherProducts.length > 0) {
-          const curVendor = currentProduct?.vendor;
-          const byVendor = curVendor ? otherProducts.filter((p)=>'vendor' in p && p.vendor === curVendor) : [];
-          const candidates = (byVendor.length ? byVendor : otherProducts)
-            .filter((p)=>String(p.id).replace('gid://shopify/Product/','') !== String(productId));
+          const curCategories = currentProduct.categories || [];
+          const byCategory = curCategories.length > 0
+            ? otherProducts.filter((p) => p.categories?.some(c => curCategories.includes(c)))
+            : [];
+          const candidates = (byCategory.length ? byCategory : otherProducts)
+            .filter((p) => String(p.id) !== String(productId));
           // Shuffle and take up to 4
           const shuffled = candidates.slice().sort(() => Math.random() - 0.5);
-          relatedIds = shuffled.map((p)=>String(p.id).replace('gid://shopify/Product/','')).slice(0, 4);
-          debugInfo.method = byVendor.length ? 'vendor' : 'catalog';
+          relatedIds = shuffled.map((p) => String(p.id)).slice(0, 4);
+          debugInfo.method = byCategory.length ? 'category' : 'catalog';
         }
 
         // Fetch details for related products
-        let relatedProducts: GraphQLProductNode[] = [];
+        let relatedProducts: BCProduct[] = [];
         if (relatedIds.length) {
-          const prodGids = relatedIds.map(id => `gid://shopify/Product/${id}`);
-          const nodesResp = await admin.graphql(`
-            #graphql
-            query rel($ids: [ID!]!) { nodes(ids: $ids) { ... on Product { id title handle variants(first: 250) { edges { node { id title price compareAtPrice availableForSale selectedOptions { name value } } } } media(first:1){edges{node{... on MediaImage { image { url } }}}} } } }
-          `, { variables: { ids: prodGids } });
-          if (nodesResp.ok) {
-            const nodesData: GraphQLResponse = await nodesResp.json();
-            relatedProducts = (nodesData?.data?.nodes?.filter((n): n is GraphQLProductNode => !!n && 'title' in n) || []) as GraphQLProductNode[];
+          for (const rid of relatedIds) {
+            try {
+              const numId = parseInt(rid, 10);
+              if (isNaN(numId)) continue;
+              const prod = await getProduct(shopStr, numId, "images,variants");
+              relatedProducts.push(prod);
+            } catch {
+              // skip
+            }
           }
         }
 
         // Choose top 2 complements, exclude subscription/selling-plan only products heuristically
-        let filteredRelated = relatedProducts.filter((p)=>{
-          const t = (p?.title||'').toLowerCase();
-          const h = (p?.handle||'').toLowerCase();
+        let filteredRelated = relatedProducts.filter((p) => {
+          const t = (p?.name || '').toLowerCase();
+          const h = (p?.custom_url?.url || '').toLowerCase();
           if (t.includes('selling plan') || h.includes('selling-plan') || t.includes('subscription')) return false;
-          const vEdges = Array.isArray(p?.variants?.edges) ? p.variants.edges : [];
-          // keep if any variant is available for sale
-          return vEdges.some((e)=>e?.node?.availableForSale);
+          const variants = p?.variants || [];
+          // keep if any variant is purchasable
+          return variants.length === 0 || variants.some((v) => !v.purchasing_disabled);
         });
         // If filtering removed everything, relax to any product with at least one variant
         if (filteredRelated.length === 0) {
-          filteredRelated = relatedProducts.filter((p)=>Array.isArray(p?.variants?.edges) && p.variants.edges.length > 0);
+          filteredRelated = relatedProducts.filter((p) => (p?.variants || []).length > 0);
         }
         // ensure unique products by id
-        const uniq: GraphQLProductNode[] = [];
-  const used = new Set<string>([String(currentProduct.id)]);
+        const uniq: BCProduct[] = [];
+        const used = new Set<string>([String(currentProduct.id)]);
         for (const rp of filteredRelated) {
-          const id = String(rp.id).replace('gid://shopify/Product/','');
+          const id = String(rp.id);
           if (used.has(id)) continue; used.add(id); uniq.push(rp);
           if (uniq.length >= 2) break;
         }
-        let complementProducts: (GraphQLProductNode | ReturnType<typeof getProductDetails>)[] = uniq;
+        let complementProducts: BCProduct[] = uniq;
         // Second-tier fallback: build complements from other active products
         if (complementProducts.length === 0 && otherProducts.length) {
-          const candidates = otherProducts.filter((p)=>String(p.id).replace('gid://shopify/Product/','') !== String(currentProduct.id));
-          const mapped = candidates.map(getProductDetails).filter((p): p is NonNullable<typeof p> => p !== null && typeof p.price === 'number' && p.price >= 0);
-          complementProducts = mapped.slice(0, 2);
+          const candidates = otherProducts.filter((p) => String(p.id) !== String(currentProduct!.id));
+          const mapped = candidates.map(getBCProductDetails).filter((p): p is NonNullable<typeof p> => p !== null && typeof p.price === 'number' && p.price >= 0);
+          // For this fallback, we need the raw products, but already filtered
+          complementProducts = candidates.filter(p => {
+            const detail = getBCProductDetails(p);
+            return detail !== null && typeof detail.price === 'number' && detail.price >= 0;
+          }).slice(0, 2);
         }
-        const bundleProducts = [ currentProd, ...complementProducts.map(getProductDetails) ].filter(p => p !== null);
+        const bundleProducts = [currentProd, ...complementProducts.map(getBCProductDetails)].filter((p): p is NonNullable<typeof p> => p !== null);
         if (bundleProducts.length >= 2) {
           const regularTotal = bundleProducts.reduce((sum, p) => sum + ((p && typeof p.price === 'number') ? p.price : 0), 0);
-          
+
           // Get discount from AI bundle config ONLY - default to 0%
           let discountPercent = 0;
           let discountType = 'percentage';
@@ -1913,13 +1615,13 @@ export async function loader({ request }: LoaderFunctionArgs) {
             discountPercent = parseFloat(aiBundleConfig.discountValue.toString());
             discountType = aiBundleConfig.discountType || 'percentage';
           }
-          
-          // Since prices are now in cents, keep calculation in cents (no toFixed needed)
+
+          // Since prices are now in cents, keep calculation in cents
           const bundlePrice = Math.round(regularTotal * (1 - discountPercent / 100));
-          
+
           // Generate a descriptive name for the dynamic bundle
           const bundleName = `Frequently Bought Together${bundleProducts.length > 0 ? ': ' + bundleProducts.slice(0, 2).map(p => p.title).join(' + ') + (bundleProducts.length > 2 ? '...' : '') : ''}`;
-          
+
           bundles.push({
             id: `bundle_dynamic_${productId}`,
             name: bundleName,
@@ -1930,7 +1632,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
             discount_percent: discountPercent,
             discountType: discountType,
             discountValue: discountPercent,
-            savings_amount: regularTotal - bundlePrice, // Keep in cents for consistency
+            savings_amount: regularTotal - bundlePrice,
             discount_code: discountPercent >= 15 ? 'BUNDLE_MATCH_15' : 'BUNDLE_MATCH_10',
             status: 'active',
             source: 'orders_based',
@@ -1944,37 +1646,37 @@ export async function loader({ request }: LoaderFunctionArgs) {
         // Check for both manual AND ML bundle configurations
         const manualBundles = await db.bundle.findMany({
           where: {
-            shop: shopStr,
+            storeHash: shopStr,
             status: 'active',
-            type: 'manual', // Only manual bundles
+            type: 'manual',
             OR: [
-              { assignmentType: 'all' }, // Show on all product pages
+              { assignmentType: 'all' },
               { assignedProducts: { contains: productId } },
               { productIds: { contains: productId } }
             ]
           }
         });
-        
+
         const aiBundles = await db.bundle.findMany({
           where: {
-            shop: shopStr,
+            storeHash: shopStr,
             status: 'active',
-            type: 'ml', // ML bundles (was 'ai', now 'ml' to match creation)
+            type: 'ml',
             OR: [
-              { assignmentType: 'all' }, // Show on all product pages
+              { assignmentType: 'all' },
               { assignedProducts: { contains: productId } },
               { productIds: { contains: productId } }
             ]
           }
         });
-        
+
         const collectionBundles = await db.bundle.findMany({
           where: {
-            shop: shopStr,
+            storeHash: shopStr,
             status: 'active',
-            type: 'collection', // Collection-based bundles
+            type: 'collection',
             OR: [
-              { assignmentType: 'all' }, // Show on all product pages
+              { assignmentType: 'all' },
               { assignedProducts: { contains: productId } },
               { productIds: { contains: productId } }
             ]
@@ -1985,136 +1687,48 @@ export async function loader({ request }: LoaderFunctionArgs) {
         if (manualBundles.length > 0) {
           const formattedManualBundles = await Promise.all(manualBundles.map(async (bundle) => {
             // Parse productIds from JSON string
-            let productIds: string[] = [];
+            let bundleProductIds: string[] = [];
             try {
-              productIds = JSON.parse(bundle.productIds || '[]');
+              bundleProductIds = JSON.parse(bundle.productIds || '[]');
             } catch (e) {
-
+              // skip
             }
-            
-            // Fetch product details for bundle
-            const bundleProductDetails = await Promise.all(productIds.map(async (pid) => {
+
+            // Fetch product details for bundle from BC
+            const bundleProductDetails = await Promise.all(bundleProductIds.map(async (pid) => {
               try {
-                const prodResp = await admin.graphql(`#graphql
-                  query($id: ID!) { 
-                    product(id: $id) { 
-                      id title handle
-                      variants(first: 250) { 
-                        edges { 
-                          node { 
-                            id 
-                            title 
-                            price 
-                            compareAtPrice 
-                            availableForSale 
-                            selectedOptions { name value }
-                          } 
-                        } 
-                      }
-                      media(first: 1) { edges { node { ... on MediaImage { image { url } } } } }
-                    } 
-                  }
-                `, { variables: { id: `gid://shopify/Product/${pid}` } });
-                
-                if (prodResp.ok) {
-                  const data: { data?: { product?: GraphQLProductNode } } = await prodResp.json();
-                  const product = data?.data?.product;
-                  const variantEdges = product?.variants?.edges || [];
-                  const firstVariant = variantEdges[0]?.node;
-
-                  if (product && firstVariant) {
-                    const priceInCents = Math.round(parseFloat(firstVariant.price || '0') * 100);
-                    const comparePriceInCents = firstVariant.compareAtPrice ? Math.round(parseFloat(firstVariant.compareAtPrice) * 100) : undefined;
-
-                    const allVariants = variantEdges.map((edge) => {
-                      const v = edge?.node;
-                      if (!v?.id) return null;
-                      return {
-                        id: String(v.id).replace('gid://shopify/ProductVariant/', ''),
-                        title: v.title,
-                        price: Math.round(parseFloat(v.price || '0') * 100),
-                        compareAtPrice: v.compareAtPrice ? Math.round(parseFloat(v.compareAtPrice) * 100) : undefined,
-                        availableForSale: v.availableForSale,
-                        selectedOptions: Array.isArray(v.selectedOptions)
-                          ? v.selectedOptions.map((o) => ({ name: o?.name, value: o?.value }))
-                          : []
-                      };
-                    }).filter((v): v is NonNullable<typeof v> => v !== null);
-                    
-                    return {
-                      id: pid,
-                      variant_id: String(firstVariant.id).replace('gid://shopify/ProductVariant/', ''),
-                      title: product.title,
-                      handle: product.handle,
-                      price: priceInCents,
-                      comparePrice: comparePriceInCents,
-                      image: product.media?.edges?.[0]?.node?.image?.url,
-                      variants: allVariants
-                    };
-                  }
-                }
+                const numId = parseInt(pid, 10);
+                if (isNaN(numId)) return null;
+                const prod = await getProduct(shopStr, numId, "images,variants");
+                return getBCProductDetails(prod);
               } catch (e) {
-
+                return null;
               }
-              return null;
             }));
-            
-            const validProducts = bundleProductDetails.filter(p => p !== null);
-            
+
+            const validProducts = bundleProductDetails.filter((p): p is NonNullable<typeof p> => p !== null);
+
             if (validProducts.length === 0) {
               return null;
             }
-            
+
             // ADD CURRENT PRODUCT to the bundle (like ML bundles do)
-            // Convert currentProduct to the same format as validProducts
-            let currentProductFormatted = null;
+            let currentProductFormatted: BundleProductDetail | null = null;
             if (currentProduct) {
-              const variantEdges = currentProduct?.variants?.edges || [];
-              const firstVariant = variantEdges[0]?.node;
-              
-              if (firstVariant) {
-                const priceInCents = Math.round(parseFloat(firstVariant.price || '0') * 100);
-                const comparePriceInCents = firstVariant.compareAtPrice ? Math.round(parseFloat(firstVariant.compareAtPrice) * 100) : undefined;
-                
-                const allVariants = variantEdges.map((edge) => {
-                  const v = edge?.node;
-                  if (!v?.id) return null;
-                  return {
-                    id: String(v.id).replace('gid://shopify/ProductVariant/', ''),
-                    title: v.title,
-                    price: Math.round(parseFloat(v.price || '0') * 100),
-                    compareAtPrice: v.compareAtPrice ? Math.round(parseFloat(v.compareAtPrice) * 100) : undefined,
-                    availableForSale: v.availableForSale,
-                    selectedOptions: Array.isArray(v.selectedOptions)
-                      ? v.selectedOptions.map((o) => ({ name: o?.name, value: o?.value }))
-                      : []
-                  };
-                }).filter((v): v is NonNullable<typeof v> => v !== null);
-                
-                currentProductFormatted = {
-                  id: productId,
-                  variant_id: String(firstVariant.id).replace('gid://shopify/ProductVariant/', ''),
-                  title: currentProduct.title,
-                  handle: currentProduct.handle,
-                  price: priceInCents,
-                  comparePrice: comparePriceInCents,
-                  image: currentProduct.media?.edges?.[0]?.node?.image?.url,
-                  variants: allVariants
-                };
-              }
+              currentProductFormatted = getBCProductDetails(currentProduct);
             }
-            
+
             // Prepend current product to the bundle (it should appear first as "This item")
-            const allBundleProducts = currentProductFormatted 
+            const allBundleProducts = currentProductFormatted
               ? [currentProductFormatted, ...validProducts]
               : validProducts;
-            
+
             const regularTotal = allBundleProducts.reduce((sum, p) => sum + (p.price || 0), 0);
             const bundlePrice = bundle.discountType === 'percentage'
               ? regularTotal * (1 - bundle.discountValue / 100)
               : regularTotal - (bundle.discountValue * 100); // Convert discount value to cents for fixed amounts
             const discountPercent = regularTotal > 0 ? Math.round(((regularTotal - bundlePrice) / regularTotal) * 100) : 0;
-            
+
             return {
               id: bundle.id,
               name: bundle.name,
@@ -2123,28 +1737,27 @@ export async function loader({ request }: LoaderFunctionArgs) {
               bundleStyle: bundle.bundleStyle || 'fbt',
               discountType: bundle.discountType,
               discountValue: bundle.discountValue,
-              products: allBundleProducts, // Use allBundleProducts instead of validProducts
+              products: allBundleProducts,
               regular_total: regularTotal,
               bundle_price: bundlePrice,
               discount_percent: discountPercent,
               savings_amount: regularTotal - bundlePrice,
               selectMinQty: bundle.selectMinQty || 2,
-              selectMaxQty: bundle.selectMaxQty || allBundleProducts.length, // Use allBundleProducts length
+              selectMaxQty: bundle.selectMaxQty || allBundleProducts.length,
               status: 'active',
               source: 'manual'
             };
           }));
-          
-          const validManualBundles = formattedManualBundles.filter(b => b !== null);
-          
-          if (validManualBundles.length > 0) {
-            let currencyCode = 'GBP';
-            try {
-              const shopResponse = await admin.graphql(`#graphql query { shop { currencyCode } }`);
-              const shopData: { data?: { shop?: { currencyCode?: string } } } = await shopResponse.json();
-              currencyCode = shopData.data?.shop?.currencyCode || 'GBP';
-            } catch (_err) {
 
+          const validManualBundles = formattedManualBundles.filter(b => b !== null);
+
+          if (validManualBundles.length > 0) {
+            let currencyCode = 'USD';
+            try {
+              const storeInfo = await getStoreInfo(shopStr);
+              currencyCode = storeInfo.currency || 'USD';
+            } catch (_err) {
+              // fall through
             }
 
             return json({ success: true, bundles: validManualBundles, currency: currencyCode }, {
@@ -2158,68 +1771,36 @@ export async function loader({ request }: LoaderFunctionArgs) {
             });
           }
         }
-        
-        // Priority 2: Process collection-based bundles (ML constrained to collection)
+
+        // Priority 2: Process collection-based bundles
+        // BigCommerce does not have a GraphQL collection API; we use categories instead.
+        // Collection bundles in the DB may reference category IDs.
         if (collectionBundles.length > 0) {
           const formattedCollectionBundles = await Promise.all(collectionBundles.map(async (bundle) => {
-            // Parse collectionIds from JSON string
+            // Parse collectionIds (which map to BC category IDs) from JSON string
             let collectionIds: string[] = [];
             try {
               collectionIds = JSON.parse(bundle.collectionIds || '[]');
             } catch (e) {
-
+              // skip
             }
 
             if (collectionIds.length === 0) {
               return null;
             }
 
-            const collectionId = collectionIds[0]; // Use first (and only) collection
-            
-            // Fetch products from the collection
-            let collectionProducts: GraphQLProductEdge[] = [];
+            // Fetch products from the category
+            const categoryId = parseInt(collectionIds[0], 10);
+            let collectionProducts: BCProduct[] = [];
             try {
-              const collectionResp = await admin.graphql(`#graphql
-                query($id: ID!) {
-                  collection(id: $id) {
-                    products(first: 50) {
-                      edges {
-                        node {
-                          id
-                          title
-                          handle
-                          variants(first: 1) {
-                            edges {
-                              node {
-                                id
-                                price
-                                compareAtPrice
-                                availableForSale
-                              }
-                            }
-                          }
-                          media(first: 1) {
-                            edges {
-                              node {
-                                ... on MediaImage {
-                                  image {
-                                    url
-                                  }
-                                }
-                              }
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              `, { variables: { id: collectionId } });
-
-              const collectionData: { data?: { collection?: { products?: { edges: GraphQLProductEdge[] } } } } = await collectionResp.json();
-              collectionProducts = collectionData.data?.collection?.products?.edges || [];
+              const { products: catProducts } = await getProducts(shopStr, {
+                limit: 50,
+                include: "images,variants",
+                is_visible: true,
+              });
+              // Filter by category membership
+              collectionProducts = catProducts.filter(p => p.categories?.includes(categoryId));
             } catch (e) {
-
               return null;
             }
 
@@ -2227,178 +1808,52 @@ export async function loader({ request }: LoaderFunctionArgs) {
               return null;
             }
 
-            // Use ML to pick 2 best products from the collection
-            // For now, use simple logic: exclude current product, take up to 2 random ones
+            // Exclude current product
             const collectionProductIds = collectionProducts
-              .map((edge) => String(edge.node.id).replace('gid://shopify/Product/', ''))
-              .filter((id) => id !== productId); // Exclude current product
+              .map(p => String(p.id))
+              .filter(id => id !== productId);
 
             if (collectionProductIds.length === 0) {
               return null;
             }
-            
+
             // Simple selection: take up to 2 products
             const selectedProductIds = collectionProductIds.slice(0, 2);
-            
+
             // Fetch full details for selected products
-            const validProducts = [];
+            const validProducts: BundleProductDetail[] = [];
             for (const pid of selectedProductIds) {
               try {
-                const prodResp = await admin.graphql(`#graphql
-                  query($id: ID!) { 
-                    product(id: $id) { 
-                      id title handle
-                      variants(first: 250) { 
-                        edges { 
-                          node { 
-                            id 
-                            title 
-                            price 
-                            compareAtPrice 
-                            availableForSale
-                            selectedOptions { name value }
-                          } 
-                        } 
-                      }
-                      media(first: 1) { 
-                        edges { 
-                          node { 
-                            ... on MediaImage { 
-                              image { url } 
-                            } 
-                          } 
-                        } 
-                      }
-                    }
-                  }
-                `, { variables: { id: `gid://shopify/Product/${pid}` } });
-
-                const prodData: { data?: { product?: GraphQLProductNode } } = await prodResp.json();
-                const product = prodData.data?.product;
-                
-                if (product) {
-                  const variantEdges = product.variants?.edges || [];
-                  const firstVariant = variantEdges[0]?.node;
-                  
-                  if (firstVariant) {
-                    const allVariants = variantEdges.map((edge) => {
-                      const v = edge?.node;
-                      if (!v?.id) return null;
-                      return {
-                        id: String(v.id).replace('gid://shopify/ProductVariant/', ''),
-                        title: v.title,
-                        price: Math.round(parseFloat(v.price || '0') * 100),
-                        compareAtPrice: v.compareAtPrice ? Math.round(parseFloat(v.compareAtPrice) * 100) : undefined,
-                        availableForSale: v.availableForSale,
-                        selectedOptions: Array.isArray(v.selectedOptions)
-                          ? v.selectedOptions.map((o) => ({ name: o?.name, value: o?.value }))
-                          : []
-                      };
-                    }).filter((v): v is NonNullable<typeof v> => v !== null);
-                    
-                    validProducts.push({
-                      id: pid,
-                      variant_id: String(firstVariant.id).replace('gid://shopify/ProductVariant/', ''),
-                      title: product.title,
-                      handle: product.handle,
-                      price: Math.round(parseFloat(firstVariant.price || '0') * 100),
-                      comparePrice: firstVariant.compareAtPrice ? Math.round(parseFloat(firstVariant.compareAtPrice) * 100) : undefined,
-                      image: product.media?.edges?.[0]?.node?.image?.url,
-                      variants: allVariants
-                    });
-                  }
-                }
+                const numId = parseInt(pid, 10);
+                if (isNaN(numId)) continue;
+                const prod = await getProduct(shopStr, numId, "images,variants");
+                const detail = getBCProductDetails(prod);
+                if (detail) validProducts.push(detail);
               } catch (e) {
-
+                // skip
               }
             }
 
             if (validProducts.length === 0) {
               return null;
             }
-            
-            // Fetch current product details
-            let currentProductFormatted: ReturnType<typeof getProductDetails> | null = null;
-            try {
-              const currentProdResp = await admin.graphql(`#graphql
-                query($id: ID!) { 
-                  product(id: $id) { 
-                    id title handle
-                    variants(first: 250) { 
-                      edges { 
-                        node { 
-                          id 
-                          title 
-                          price 
-                          compareAtPrice 
-                          availableForSale
-                          selectedOptions { name value }
-                        } 
-                      } 
-                    }
-                    media(first: 1) { 
-                      edges { 
-                        node { 
-                          ... on MediaImage { 
-                            image { url } 
-                          } 
-                        } 
-                      } 
-                    }
-                  }
-                }
-              `, { variables: { id: `gid://shopify/Product/${productId}` } });
-              
-              const currentProdData: { data?: { product?: GraphQLProductNode } } = await currentProdResp.json();
-              const currentProduct = currentProdData.data?.product;
 
-              if (currentProduct) {
-                const variantEdges = currentProduct.variants?.edges || [];
-                const firstVariant = variantEdges[0]?.node;
-
-                if (firstVariant) {
-                  const allVariants = variantEdges.map((edge) => {
-                    const v = edge?.node;
-                    if (!v?.id) return null;
-                    return {
-                      id: String(v.id).replace('gid://shopify/ProductVariant/', ''),
-                      title: v.title,
-                      price: Math.round(parseFloat(v.price || '0') * 100),
-                      compareAtPrice: v.compareAtPrice ? Math.round(parseFloat(v.compareAtPrice) * 100) : undefined,
-                      availableForSale: v.availableForSale,
-                      selectedOptions: Array.isArray(v.selectedOptions)
-                        ? v.selectedOptions.map((o) => ({ name: o?.name, value: o?.value }))
-                        : []
-                    };
-                  }).filter((v): v is NonNullable<typeof v> => v !== null);
-                  
-                  currentProductFormatted = {
-                    id: productId,
-                    variant_id: String(firstVariant.id).replace('gid://shopify/ProductVariant/', ''),
-                    title: currentProduct.title,
-                    handle: currentProduct.handle,
-                    price: Math.round(parseFloat(firstVariant.price || '0') * 100),
-                    comparePrice: firstVariant.compareAtPrice ? Math.round(parseFloat(firstVariant.compareAtPrice) * 100) : undefined,
-                    image: currentProduct.media?.edges?.[0]?.node?.image?.url,
-                    variants: allVariants
-                  };
-                }
-              }
-            } catch (e) {
-
+            // Add current product to the bundle
+            let currentProductFormatted: BundleProductDetail | null = null;
+            if (currentProduct) {
+              currentProductFormatted = getBCProductDetails(currentProduct);
             }
 
-            // Prepend current product to the bundle
-            const allBundleProducts = currentProductFormatted 
+            const allBundleProducts = currentProductFormatted
               ? [currentProductFormatted, ...validProducts]
               : validProducts;
-            
+
             const regularTotal = allBundleProducts.reduce((sum, p) => sum + (p.price || 0), 0);
             const bundlePrice = bundle.discountType === 'percentage'
               ? regularTotal * (1 - bundle.discountValue / 100)
               : regularTotal - (bundle.discountValue * 100);
             const discountPercent = regularTotal > 0 ? Math.round(((regularTotal - bundlePrice) / regularTotal) * 100) : 0;
-            
+
             return {
               id: bundle.id,
               name: bundle.name,
@@ -2418,17 +1873,16 @@ export async function loader({ request }: LoaderFunctionArgs) {
               source: 'collection'
             };
           }));
-          
-          const validCollectionBundles = formattedCollectionBundles.filter(b => b !== null);
-          
-          if (validCollectionBundles.length > 0) {
-            let currencyCode = 'GBP';
-            try {
-              const shopResponse = await admin.graphql(`#graphql query { shop { currencyCode } }`);
-              const shopData: { data?: { shop?: { currencyCode?: string } } } = await shopResponse.json();
-              currencyCode = shopData.data?.shop?.currencyCode || 'GBP';
-            } catch (_err) {
 
+          const validCollectionBundles = formattedCollectionBundles.filter(b => b !== null);
+
+          if (validCollectionBundles.length > 0) {
+            let currencyCode = 'USD';
+            try {
+              const storeInfo = await getStoreInfo(shopStr);
+              currencyCode = storeInfo.currency || 'USD';
+            } catch (_err) {
+              // fall through
             }
 
             return json({ success: true, bundles: validCollectionBundles, currency: currencyCode }, {
@@ -2442,16 +1896,15 @@ export async function loader({ request }: LoaderFunctionArgs) {
             });
           }
         }
-        
+
         // Priority 3: Generate ML bundles ONLY if AI bundle config exists
         if (aiBundles.length > 0 && bundles.length > 0) {
           let currencyCode = 'USD';
           try {
-            const shopResponse = await admin.graphql(`#graphql query { shop { currencyCode } }`);
-            const shopData: { data?: { shop?: { currencyCode?: string } } } = await shopResponse.json();
-            currencyCode = shopData.data?.shop?.currencyCode || 'USD';
+            const storeInfo = await getStoreInfo(shopStr);
+            currencyCode = storeInfo.currency || 'USD';
           } catch (_err) {
-
+            // fall through
           }
 
           return json({ success: true, bundles, currency: currencyCode }, {
@@ -2489,20 +1942,15 @@ export async function loader({ request }: LoaderFunctionArgs) {
   // Handle /apps/proxy/api/settings
   if (path.includes('/api/settings')) {
     try {
-      // Require a valid App Proxy signature and derive the shop from the verified session
-      const { session } = await authenticate.public.appProxy(request);
-      const shop = session?.shop;
+      const storeHash = await authenticateStorefront(request);
 
       // SECURITY: Validate CORS origin
       const origin = request.headers.get("origin") || "";
-      const allowedOrigin = shop ? await validateCorsOrigin(origin, shop as string) : null;
-
-      if (!shop) {
-        return json({ error: 'Unauthorized' }, { status: 401 });
-      }
+      const allowedOrigin = await validateCorsOrigin(origin, storeHash);
+      const corsHeaders = getCorsHeaders(allowedOrigin);
 
       // CRITICAL: Enforce order limit - block ALL functionality if limit reached
-      const subscription = await getOrCreateSubscription(shop as string);
+      const subscription = await getOrCreateSubscription(storeHash);
       if (subscription.isLimitReached) {
         return json({
           error: 'Order limit reached. Please upgrade your plan to continue using Cart Uplift.',
@@ -2511,17 +1959,15 @@ export async function loader({ request }: LoaderFunctionArgs) {
           orderLimit: subscription.orderLimit,
           planTier: subscription.planTier,
           hardLimit: subscription.hardLimit,
-          upgradeUrl: 'https://apps.shopify.com/cart-uplift'
+          upgradeUrl: '/manage'
         }, {
           status: 402, // 402 Payment Required
           headers: corsHeaders,
         });
       }
 
-  const settings = await getSettings(shop as string);
+      const settings = await getSettings(storeHash);
       // Normalize layout to theme values
-      // Normalize legacy values while preserving new ones.
-      // Legacy -> internal classes: horizontal/row/carousel => row, vertical/column/list => column, grid stays grid
       const layoutMap: Record<string, string> = {
         horizontal: 'row',
         row: 'row',
@@ -2554,6 +2000,10 @@ export async function loader({ request }: LoaderFunctionArgs) {
   return json({ message: "Cart Uplift App Proxy" });
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// ACTION
+// ═══════════════════════════════════════════════════════════════════════════════
+
 export async function action({ request }: ActionFunctionArgs) {
   const url = new URL(request.url);
   const path = url.pathname;
@@ -2561,8 +2011,8 @@ export async function action({ request }: ActionFunctionArgs) {
   // CORS preflight
   if (request.method === 'OPTIONS') {
     const origin = request.headers.get("origin") || "";
-    const shop = url.searchParams.get("shop") || undefined;
-    const allowedOrigin = shop ? await validateCorsOrigin(origin, shop) : null;
+    const storeHash = url.searchParams.get("store_hash") || url.searchParams.get("shop") || undefined;
+    const allowedOrigin = storeHash ? await validateCorsOrigin(origin, storeHash) : null;
     const corsHeaders = getCorsHeaders(allowedOrigin);
 
     return new Response(null, {
@@ -2582,26 +2032,20 @@ export async function action({ request }: ActionFunctionArgs) {
   try {
     // Heartbeat from theme embed to mark installed/enabled
     if (path.includes('/api/embed-heartbeat')) {
-      // Verify App Proxy signature and derive shop
-      let shop: string | undefined;
+      let storeHash: string;
       try {
-        const { session } = await authenticate.public.appProxy(request);
-        shop = session?.shop;
-  } catch (_e) {
-        return json({ success: false, error: 'Unauthorized' }, { status: 401 });
-      }
-
-      if (!shop) {
+        storeHash = await authenticateStorefront(request);
+      } catch (_e) {
         return json({ success: false, error: 'Unauthorized' }, { status: 401 });
       }
 
       // SECURITY: Validate CORS origin
       const origin = request.headers.get("origin") || "";
-      const allowedOrigin = await validateCorsOrigin(origin, shop);
+      const allowedOrigin = await validateCorsOrigin(origin, storeHash);
       const corsHeaders = getCorsHeaders(allowedOrigin);
 
       const now = new Date().toISOString();
-      await saveSettings(shop, { themeEmbedEnabled: true, themeEmbedLastSeen: now });
+      await saveSettings(storeHash, { themeEmbedEnabled: true, themeEmbedLastSeen: now });
       return json({ success: true }, {
         headers: corsHeaders,
       });
@@ -2609,18 +2053,16 @@ export async function action({ request }: ActionFunctionArgs) {
 
     // Validate discount codes from the storefront (cart modal)
     if (path.includes('/api/discount')) {
-      // Verify the app proxy signature and get the shop
-      let shopDomain: string | undefined;
+      let storeHash: string | undefined;
       try {
-        const { session } = await authenticate.public.appProxy(request);
-        shopDomain = session?.shop;
-  } catch (_e) {
-
+        storeHash = await authenticateStorefront(request);
+      } catch (_e) {
+        // fall through
       }
 
       // SECURITY: Validate CORS origin
       const origin = request.headers.get("origin") || "";
-      const allowedOrigin = shopDomain ? await validateCorsOrigin(origin, shopDomain) : null;
+      const allowedOrigin = storeHash ? await validateCorsOrigin(origin, storeHash) : null;
       const corsHeaders = getCorsHeaders(allowedOrigin);
 
       const contentType = request.headers.get('content-type') || '';
@@ -2638,8 +2080,8 @@ export async function action({ request }: ActionFunctionArgs) {
         });
       }
 
-      // If we can't determine the shop, fail closed (do not accept unknown codes)
-      if (!shopDomain) {
+      // If we can't determine the store, fail closed (do not accept unknown codes)
+      if (!storeHash) {
         return json({ success: false, error: 'Unable to validate discount code' }, {
           status: 401,
           headers: corsHeaders,
@@ -2647,7 +2089,7 @@ export async function action({ request }: ActionFunctionArgs) {
       }
 
       // CRITICAL: Enforce order limit - block discount validation if limit reached
-      const subscription = await getOrCreateSubscription(shopDomain);
+      const subscription = await getOrCreateSubscription(storeHash);
       if (subscription.isLimitReached) {
         return json({
           success: false,
@@ -2659,98 +2101,35 @@ export async function action({ request }: ActionFunctionArgs) {
         });
       }
 
-      try {
-        const { admin } = await unauthenticated.admin(shopDomain);
-        // Use Admin GraphQL API to validate code existence and extract basic value (percent or fixed amount)
-        const query = `#graphql
-          query ValidateDiscountCode($code: String!) {
-            codeDiscountNodeByCode(code: $code) {
-              id
-              codeDiscount {
-                __typename
-                ... on DiscountCodeBasic {
-                  title
-                  customerGets {
-                    value {
-                      __typename
-                      ... on DiscountPercentage { percentage }
-                      ... on DiscountAmount { amount { amount currencyCode } }
-                    }
-                  }
-                }
-                ... on DiscountCodeBxgy {
-                  title
-                }
-                ... on DiscountCodeFreeShipping {
-                  title
-                }
-              }
-            }
-          }
-        `;
-        const resp = await admin.graphql(query, { variables: { code: discountCode } });
-        const data = await resp.json();
-        const node = data?.data?.codeDiscountNodeByCode;
-
-        if (!node) {
-          return json({ success: false, error: 'Invalid discount code' }, {
-            status: 404,
-            headers: corsHeaders,
-          });
+      // BigCommerce does not have a storefront discount code validation API equivalent.
+      // Return a stub response that tells the frontend the code will be applied at checkout.
+      return json({
+        success: true,
+        discount: {
+          code: discountCode,
+          summary: `Discount code ${discountCode} will be applied at checkout`,
+          status: 'PENDING',
+          kind: undefined,
+          percent: undefined,
+          amountCents: undefined,
         }
-
-        // Default values
-        let kind: 'percent' | 'amount' | undefined;
-        let percent: number | undefined;
-        let amountCents: number | undefined;
-
-        const cd = node.codeDiscount;
-    if (cd?.__typename === 'DiscountCodeBasic') {
-          const value = cd?.customerGets?.value;
-          if (value?.__typename === 'DiscountPercentage' && typeof value.percentage === 'number') {
-            kind = 'percent';
-            // Shopify typically returns the percent value directly (e.g., 10 for 10%, 0.5 for 0.5%).
-            // We'll pass it through unchanged; client divides by 100.
-            percent = value.percentage;
-          } else if (value?.__typename === 'DiscountAmount' && value.amount?.amount) {
-            kind = 'amount';
-            // Convert MoneyV2 amount to minor units (cents)
-            const amt = parseFloat(value.amount.amount);
-            if (!isNaN(amt)) amountCents = Math.round(amt * 100);
-          }
-        }
-
-        return json({
-          success: true,
-          discount: {
-            code: discountCode,
-            summary: `Discount code ${discountCode} will be applied at checkout`,
-            status: 'VALID',
-            kind,
-            percent,
-            amountCents,
-          }
-        }, {
-          headers: corsHeaders,
-        });
-  } catch (_e) {
-        return json({ success: false, error: 'Unable to validate discount code' }, {
-          status: 500,
-          headers: corsHeaders,
-        });
-      }
+      }, {
+        headers: corsHeaders,
+      });
     }
 
     // Handle /api/track-recommendations FIRST (before /api/track to avoid false match)
     if (path.includes('/api/track-recommendations')) {
-      let shop: string | undefined;
+      let storeHash: string;
       try {
-        const { session } = await authenticate.public.appProxy(request);
-        shop = session?.shop;
-        if (!shop) throw new Error('No shop');
+        storeHash = await authenticateStorefront(request);
       } catch (authErr) {
         return json({ success: false, error: 'Unauthorized' }, { status: 401 });
       }
+
+      const origin = request.headers.get("origin") || "";
+      const allowedOrigin = await validateCorsOrigin(origin, storeHash);
+      const corsHeaders = getCorsHeaders(allowedOrigin);
 
       try {
         const body = await request.json();
@@ -2764,7 +2143,7 @@ export async function action({ request }: ActionFunctionArgs) {
         try {
           const result = await db.trackingEvent.create({
             data: {
-              shop,
+              storeHash,
               event: 'ml_recommendation_served',
               productId: anchorProducts[0] || 'empty_cart',
               sessionId: sessionId,
@@ -2796,17 +2175,15 @@ export async function action({ request }: ActionFunctionArgs) {
 
     // Handle /api/bundle-analytics - bundle view/click tracking
     if (path.includes('/api/bundle-analytics')) {
-      let shop: string | undefined;
+      let storeHash: string;
       try {
-        const { session } = await authenticate.public.appProxy(request);
-        shop = session?.shop;
-        if (!shop) throw new Error('No shop');
+        storeHash = await authenticateStorefront(request);
       } catch (authErr) {
         return json({ success: false, error: 'Unauthorized' }, { status: 401 });
       }
 
       const origin = request.headers.get("origin") || "";
-      const allowedOrigin = await validateCorsOrigin(origin, shop);
+      const allowedOrigin = await validateCorsOrigin(origin, storeHash);
       const corsHeaders = getCorsHeaders(allowedOrigin);
 
       try {
@@ -2822,7 +2199,7 @@ export async function action({ request }: ActionFunctionArgs) {
         try {
           await db.trackingEvent.create({
             data: {
-              shop,
+              storeHash,
               event,
               productId: bundleId || 'unknown_bundle',
               productTitle: bundleName || null,
@@ -2854,17 +2231,15 @@ export async function action({ request }: ActionFunctionArgs) {
     // Handle /api/track (frontend calls this) and /api/cart-tracking (legacy)
     // NOTE: This must come AFTER /api/track-recommendations to avoid false matching
     if ((path.includes('/api/track') && !path.includes('/api/track-recommendations')) || path.includes('/api/cart-tracking')) {
-      let shop: string | undefined;
+      let storeHash: string;
       try {
-        const { session } = await authenticate.public.appProxy(request);
-        shop = session?.shop;
-        if (!shop) throw new Error('No shop');
+        storeHash = await authenticateStorefront(request);
       } catch (authErr) {
         return json({ success: false, error: 'Unauthorized' }, { status: 401 });
       }
 
       const origin = request.headers.get("origin") || "";
-      const allowedOrigin = await validateCorsOrigin(origin, shop);
+      const allowedOrigin = await validateCorsOrigin(origin, storeHash);
       const corsHeaders = getCorsHeaders(allowedOrigin);
 
       try {
@@ -2896,7 +2271,7 @@ export async function action({ request }: ActionFunctionArgs) {
         try {
           const result = await db.trackingEvent.create({
             data: {
-              shop,
+              storeHash,
               event,
               productId: finalProductId,
               productTitle: productTitle ?? null,
@@ -2917,7 +2292,7 @@ export async function action({ request }: ActionFunctionArgs) {
           });
         }
       } catch (e) {
-        return json({ success: false }, { status: 500, headers: corsHeaders });
+        return json({ success: false }, { status: 500, headers: getCorsHeaders(null) });
       }
     }
 

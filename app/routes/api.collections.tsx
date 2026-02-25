@@ -1,80 +1,25 @@
 import type { LoaderFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
-import { authenticate } from "../shopify.server";
-import { rateLimitRequest } from "../utils/rateLimiter.server";
-
-interface CollectionNode {
-  id: string;
-  title: string;
-  handle: string;
-  productsCount: number;
-}
-
-interface CollectionEdge {
-  node: CollectionNode;
-}
-
-interface ShopifyCollectionsResponse {
-  data?: {
-    collections?: {
-      edges: CollectionEdge[];
-    };
-  };
-  errors?: Array<{ message: string }>;
-}
+import { authenticateAdmin } from "../bigcommerce.server";
+import { getCategories, type BCCategory } from "../services/bigcommerce-api.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   try {
-    // Check for shop parameter to bypass auth hanging
-    const url = new URL(request.url);
-    const shopParam = url.searchParams.get('shop');
+    const { storeHash } = await authenticateAdmin(request);
 
-    const authResult = await authenticate.admin(request);
-    const { admin } = authResult;
+    console.log('[Collections API] Fetching categories from BigCommerce...');
 
-    if (shopParam) {
-      // Bypass auth and use shop parameter
-      console.log('[Collections API] Using shop parameter:', shopParam);
-    }
-    
-    console.log('[Collections API] Fetching collections...');
-    
-    const response = await admin.graphql(`
-      query getCollections {
-        collections(first: 100) {
-          edges {
-            node {
-              id
-              title
-              handle
-              productsCount
-            }
-          }
-        }
-      }
-    `);
+    const categories = await getCategories(storeHash, { limit: 250 });
 
-    const responseJson = await response.json() as ShopifyCollectionsResponse;
+    console.log('[Collections API] Found', categories.length, 'categories');
 
-    if (responseJson.errors) {
-      console.error('[Collections API] GraphQL errors:', responseJson.errors);
-      return json({ 
-        success: false, 
-        error: 'Failed to fetch collections from Shopify',
-        collections: []
-      }, { status: 500 });
-    }
-    
-    const collections = responseJson.data?.collections?.edges || [];
-    console.log('[Collections API] Found', collections.length, 'collections');
-    
     return json({
       success: true,
-      collections: collections.map((edge: CollectionEdge) => ({
-        id: edge.node.id,
-        title: edge.node.title,
-        handle: edge.node.handle,
-        productsCount: edge.node.productsCount
+      collections: categories.map((cat: BCCategory) => ({
+        id: String(cat.id),
+        title: cat.name,
+        handle: cat.url?.url?.replace(/^\/|\/$/g, '') || String(cat.id),
+        productsCount: 0, // BC categories API doesn't return product count directly
       }))
     });
   } catch (error: unknown) {

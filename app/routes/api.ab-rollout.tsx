@@ -1,20 +1,19 @@
 import { json, type ActionFunctionArgs } from "@remix-run/node";
 import { Prisma } from "@prisma/client";
 import prisma from "../db.server";
-import { authenticate } from "../shopify.server";
+import { authenticateAdmin } from "../bigcommerce.server";
 import { rateLimitRequest } from "../utils/rateLimiter.server";
 
 export async function action({ request }: ActionFunctionArgs) {
   try {
-    const { session } = await authenticate.admin(request);
-    const shop = session.shop as string;
+    const { session, storeHash } = await authenticateAdmin(request);
 
     if (request.method !== "POST") {
       return json({ success: false, error: "Method not allowed" }, { status: 405 });
     }
 
     // SECURITY: Strict rate limiting - 5 rollouts per hour (high-impact operation)
-    const rateLimitResult = await rateLimitRequest(request, shop, {
+    const rateLimitResult = await rateLimitRequest(request, storeHash, {
       maxRequests: 5,
       windowMs: 60 * 60 * 1000, // 1 hour
       burstMax: 2,
@@ -43,7 +42,7 @@ export async function action({ request }: ActionFunctionArgs) {
     }
 
     const experiment = await prisma.experiment.findFirst({
-      where: { id: Number(body.experimentId), shopId: shop },
+      where: { id: Number(body.experimentId), shopId: storeHash },
       include: { variants: true },
     });
     if (!experiment) {

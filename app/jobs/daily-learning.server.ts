@@ -63,7 +63,7 @@ export async function runDailyLearning(shop: string): Promise<DailyLearningResul
     // Step 1: Get all tracking events (impressions & clicks)
     const trackingEvents = await db.trackingEvent?.findMany({
       where: {
-        shop,
+        storeHash: shop,
         createdAt: { gte: thirtyDaysAgo },
         event: { in: ['ml_recommendation_served', 'impression', 'click'] }
       },
@@ -79,7 +79,7 @@ export async function runDailyLearning(shop: string): Promise<DailyLearningResul
     // Step 2: Get all attribution data (purchases)
     const attributions = await db.recommendationAttribution?.findMany({
       where: {
-        shop,
+        storeHash: shop,
         createdAt: { gte: thirtyDaysAgo }
       },
       select: {
@@ -187,7 +187,7 @@ export async function runDailyLearning(shop: string): Promise<DailyLearningResul
       }
       
       updates.push({
-        shop,
+        storeHash: shop,
         productId,
         impressions,
         clicks,
@@ -208,8 +208,8 @@ export async function runDailyLearning(shop: string): Promise<DailyLearningResul
     for (const update of updates) {
       await db.mLProductPerformance?.upsert({
         where: {
-          shop_productId: {
-            shop: update.shop,
+          storeHash_productId: {
+            storeHash: update.storeHash,
             productId: update.productId
           }
         },

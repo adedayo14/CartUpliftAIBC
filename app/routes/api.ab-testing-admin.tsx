@@ -1,6 +1,6 @@
 import { json, type ActionFunctionArgs } from "@remix-run/node";
 import { Prisma } from "@prisma/client";
-import { authenticate } from "../shopify.server";
+import { authenticateAdmin } from "../bigcommerce.server";
 import { rateLimitRequest } from "../utils/rateLimiter.server";
 import prisma from "../db.server";
 
@@ -40,11 +40,10 @@ export async function action({ request }: ActionFunctionArgs) {
   console.log("[api.ab-testing-admin] Content-Type:", request.headers.get('content-type'));
   
   try {
-    const { session } = await authenticate.admin(request);
-    const shop = session.shop;
+    const { session, storeHash } = await authenticateAdmin(request);
 
     // SECURITY: Rate limiting - 20 requests per minute (A/B test management)
-    const rateLimitResult = await rateLimitRequest(request, shop, {
+    const rateLimitResult = await rateLimitRequest(request, storeHash, {
       maxRequests: 20,
       windowMs: 60000,
       burstMax: 10,
@@ -58,7 +57,7 @@ export async function action({ request }: ActionFunctionArgs) {
       );
     }
     const jsonData = await request.json().catch(() => ({})) as ABTestingActionRequest;
-    console.log("[api.ab-testing-admin] Authenticated shop:", shop);
+    console.log("[api.ab-testing-admin] Authenticated storeHash:", storeHash);
     console.log("[api.ab-testing-admin] Full JSON payload:", jsonData);
 
     // Handle actions
@@ -84,7 +83,7 @@ export async function action({ request }: ActionFunctionArgs) {
       const expType = exp.type || 'discount'; // default to discount if not specified
       const created = await prisma.experiment.create({
         data: {
-          shopId: shop,
+          shopId: storeHash,
           name: String(exp.name ?? 'Untitled Experiment'),
           type: expType,
           status: exp.status ?? 'running',
@@ -186,9 +185,9 @@ export async function action({ request }: ActionFunctionArgs) {
     return json({ success: false, error: "Invalid action" }, { status: 400 });
 
   } catch (error: unknown) {
-    // If Shopify auth throws a Response (redirect/401), return it as-is
+    // If BigCommerce auth throws a Response (redirect/401), return it as-is
     if (error instanceof Response) {
-      console.warn("[api.ab-testing-admin] Returning thrown Response from authenticate:", error.status);
+      console.warn("[api.ab-testing-admin] Returning thrown Response from authenticateAdmin:", error.status);
       return error;
     }
     console.error("[api.ab-testing-admin] Error:", error);

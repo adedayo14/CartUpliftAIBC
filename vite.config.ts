@@ -59,6 +59,16 @@ export default defineConfig({
   build: {
     assetsInlineLimit: 0,
     target: "es2022",
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes("/node_modules/@bigcommerce/big-design")) return "bigdesign";
+          if (id.includes("/node_modules/@bigcommerce/big-design-icons")) return "bigdesign";
+          if (id.includes("/node_modules/@bigcommerce/big-design-theme")) return "bigdesign";
+          return undefined;
+        },
+      },
+    },
   },
   esbuild: {
     target: "es2022",

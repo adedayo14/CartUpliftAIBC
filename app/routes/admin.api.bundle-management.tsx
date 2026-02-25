@@ -1,73 +1,34 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
-import { authenticate } from "../shopify.server";
+import { authenticateAdmin, bigcommerceApi } from "../bigcommerce.server";
 import { rateLimitRequest } from "../utils/rateLimiter.server";
 import prisma from "../db.server";
 import { BUNDLE_TYPES } from "~/constants/bundle";
 
-// GraphQL Response types
-interface GraphQLError {
-  message: string;
-  locations?: Array<{ line: number; column: number }>;
-  path?: string[];
+// BigCommerce API response types
+interface BCProduct {
+  id: number;
+  name: string;
+  sku: string;
+  price: number;
+  inventory_level: number;
+  is_visible: boolean;
+  custom_url?: { url: string };
+  images?: Array<{ url_standard: string; description: string }>;
+  variants?: Array<{
+    id: number;
+    sku: string;
+    price: number | null;
+    inventory_level: number;
+    option_values?: Array<{ label: string }>;
+  }>;
 }
 
-interface GraphQLCollectionNode {
-  id: string;
-  title: string;
-  handle: string;
-  productsCount: number;
-}
-
-interface GraphQLProductNode {
-  id: string;
-  title: string;
-  handle: string;
-  status: string;
-  totalInventory: number;
-  variants: {
-    edges: Array<{
-      node: {
-        id: string;
-        title: string;
-        price: string;
-        inventoryQuantity: number;
-      };
-    }>;
-  };
-  featuredImage: {
-    url: string;
-    altText: string | null;
-  } | null;
-}
-
-interface CollectionsGraphQLResponse {
-  data?: {
-    collections?: {
-      edges: Array<{
-        node: GraphQLCollectionNode;
-      }>;
-    };
-  };
-  errors?: GraphQLError[];
-}
-
-interface ProductsGraphQLResponse {
-  data?: {
-    products?: {
-      edges: Array<{
-        node: GraphQLProductNode;
-      }>;
-    };
-    collection?: {
-      products?: {
-        edges: Array<{
-          node: GraphQLProductNode;
-        }>;
-      };
-    };
-  };
-  errors?: GraphQLError[];
+interface BCCategory {
+  id: number;
+  name: string;
+  custom_url?: { url: string };
+  is_visible: boolean;
 }
 
 interface CategoryResponse {
@@ -121,16 +82,15 @@ interface BundleActionBody {
 }
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { session, admin } = await authenticate.admin(request);
+  const { storeHash } = await authenticateAdmin(request);
   const url = new URL(request.url);
   const action = url.searchParams.get("action");
 
   try {
     if (action === "repair-ai-bundles") {
-      // Repair AI bundles that are missing product information
       const aiBundles = await prisma.bundle.findMany({
-        where: { 
-          shop: session.shop,
+        where: {
+          storeHash,
           type: { in: ['ml', 'ai_suggested'] },
           status: 'active'
         },
@@ -141,8 +101,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
       const { getBundleInsights } = await import('../models/bundleInsights.server');
       const insights = await getBundleInsights({
-        shop: session.shop,
-        admin,
+        storeHash,
         orderLimit: 40,
         minPairOrders: 2
       });
@@ -151,14 +110,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       const results = [];
 
       for (const bundle of aiBundles) {
-        // Skip if bundle already has products
         if (bundle.products && bundle.products.length > 0) {
           results.push({ bundleId: bundle.id, name: bundle.name, status: 'already-has-products', productsCount: bundle.products.length });
           continue;
         }
 
-        // For AI bundles without products, use the most popular ML bundle (first one after sorting)
-        const matchingInsight = insights.bundles[0]; // Most popular bundle
+        const matchingInsight = insights.bundles[0];
 
         if (!matchingInsight || matchingInsight.productIds.length === 0) {
           results.push({ bundleId: bundle.id, name: bundle.name, status: 'no-insights-available', availableInsights: insights.bundles.length });
@@ -166,27 +123,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         }
 
         try {
-          // Fetch product titles from Shopify
-          const productGids = matchingInsight.productIds.map(id => `gid://shopify/Product/${id}`);
-          const productDetailsQuery = `
-            query getProducts($ids: [ID!]!) {
-              nodes(ids: $ids) {
-                ... on Product {
-                  id
-                  title
-                }
-              }
-            }
-          `;
-          
-          const productsResponse = await admin.graphql(productDetailsQuery, {
-            variables: { ids: productGids }
-          });
-          
-          const productsData = await productsResponse.json();
-          const products = productsData?.data?.nodes || [];
+          // Fetch product details from BigCommerce
+          const productIdList = matchingInsight.productIds.join(',');
+          const productsResponse = await bigcommerceApi(storeHash, `/catalog/products?id:in=${productIdList}&include=images`);
+          const productsData = productsResponse.ok ? await productsResponse.json() : { data: [] };
+          const products: BCProduct[] = productsData.data || [];
 
-          // Update bundle with productIds
           await prisma.bundle.update({
             where: { id: bundle.id },
             data: {
@@ -194,13 +136,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
             }
           });
 
-          // Create BundleProduct records
           const bundleProducts = matchingInsight.productIds.map((productId: string, index: number) => {
-            const productNode = products.find((p: any) => p?.id?.includes(productId));
+            const productNode = products.find((p: BCProduct) => String(p.id) === String(productId));
             return {
               bundleId: bundle.id,
               productId: String(productId),
-              productTitle: productNode?.title || matchingInsight.productTitles[index] || `Product ${productId}`,
+              productTitle: productNode?.name || matchingInsight.productTitles[index] || `Product ${productId}`,
               position: index,
               required: index === 0
             };
@@ -211,10 +152,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           });
 
           repairedCount++;
-          results.push({ 
-            bundleId: bundle.id, 
-            name: bundle.name, 
-            status: 'repaired', 
+          results.push({
+            bundleId: bundle.id,
+            name: bundle.name,
+            status: 'repaired',
             productsAdded: bundleProducts.length,
             mlBundleUsed: matchingInsight.name,
             products: bundleProducts.map(p => ({ id: p.productId, title: p.productTitle }))
@@ -224,21 +165,20 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         }
       }
 
-      return json({ 
-        success: true, 
+      return json({
+        success: true,
         message: `Repaired ${repairedCount} AI bundles`,
         repairedCount,
         totalMLBundlesAvailable: insights.bundles.length,
-        results 
+        results
       });
     }
 
     if (action === "bundles") {
-      // Get all bundles for the shop
       const bundles = await prisma.bundle.findMany({
-        where: { shop: session.shop },
+        where: { storeHash },
         include: {
-          bundles: true  // Include BundleProduct relations
+          bundles: true
         },
         orderBy: { createdAt: 'desc' }
       });
@@ -247,196 +187,82 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     }
 
     if (action === "categories") {
-      // Get shop categories via GraphQL (use already authenticated admin client)
-      // Add timeout protection
-      const graphqlPromise = admin.graphql(`
-        #graphql
-        query getCollections {
-          collections(first: 100) {
-            edges {
-              node {
-                id
-                title
-                handle
-                productsCount
-              }
-            }
-          }
+      try {
+        const categoriesResponse = await bigcommerceApi(storeHash, "/catalog/categories?limit=100&is_visible=true");
+
+        if (!categoriesResponse.ok) {
+          console.error('[Bundle Management] Categories API error:', categoriesResponse.status);
+          return json({ success: false, error: 'Failed to fetch categories', categories: [] }, { status: 500 });
         }
-      `);
 
-      const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error('Collections request timed out')), 10000)
-      );
+        const categoriesData = await categoriesResponse.json();
+        const categories: BCCategory[] = categoriesData.data || [];
 
-      const response = await Promise.race([graphqlPromise, timeoutPromise]) as Response;
-      
-      if (!response.ok) {
-        console.error('🔥 Collections GraphQL request failed:', response.status);
-        return json({ 
-          success: false, 
-          error: 'Failed to fetch collections from Shopify',
-          categories: []
-        }, { status: 500 });
-      }
-
-      const responseJson = await response.json() as CollectionsGraphQLResponse;
-
-      if (responseJson.errors) {
-        console.error('🔥 Collections GraphQL errors:', responseJson.errors);
         return json({
-          success: false,
-          error: 'Failed to fetch collections from Shopify',
-          categories: []
-        }, { status: 500 });
+          success: true,
+          categories: categories.map((cat): CategoryResponse => ({
+            id: String(cat.id),
+            title: cat.name,
+            handle: cat.custom_url?.url?.replace(/^\/|\/$/g, '') || String(cat.id),
+            productsCount: 0
+          }))
+        });
+      } catch (error) {
+        console.error('[Bundle Management] Categories fetch error:', error);
+        return json({ success: false, error: 'Failed to fetch categories', categories: [] }, { status: 500 });
       }
-
-      const collections = responseJson.data?.collections?.edges || [];
-
-      return json({
-        success: true,
-        categories: collections.map((edge): CategoryResponse => ({
-          id: edge.node.id,
-          title: edge.node.title,
-          handle: edge.node.handle,
-          productsCount: edge.node.productsCount
-        }))
-      });
     }
 
     if (action === "products") {
       const categoryId = url.searchParams.get("categoryId");
       const query = url.searchParams.get("query") || "";
-      // Use already authenticated admin client
 
-      let graphqlQuery = `
-        #graphql
-        query getProducts($query: String!) {
-          products(first: 100, query: $query) {
-            edges {
-              node {
-                id
-                title
-                handle
-                status
-                totalInventory
-                variants(first: 10) {
-                  edges {
-                    node {
-                      id
-                      title
-                      price
-                      inventoryQuantity
-                    }
-                  }
-                }
-                featuredImage {
-                  url
-                  altText
-                }
-              }
-            }
-          }
+      try {
+        let apiPath = "/catalog/products?include=variants,images&is_visible=true&limit=100";
+        if (categoryId) {
+          apiPath += `&categories:in=${categoryId}`;
         }
-      `;
+        if (query) {
+          apiPath += `&keyword=${encodeURIComponent(query)}`;
+        }
 
-      if (categoryId) {
-        graphqlQuery = `
-          #graphql
-          query getProductsByCollection($id: ID!, $query: String!) {
-            collection(id: $id) {
-              products(first: 100, query: $query) {
-                edges {
-                  node {
-                    id
-                    title
-                    handle
-                    status
-                    totalInventory
-                    variants(first: 10) {
-                      edges {
-                        node {
-                          id
-                          title
-                          price
-                          inventoryQuantity
-                        }
-                      }
-                    }
-                    featuredImage {
-                      url
-                      altText
-                    }
-                  }
-                }
-              }
-            }
-          }
-        `;
-      }
+        const productsResponse = await bigcommerceApi(storeHash, apiPath);
 
-      const variables = categoryId
-        ? { id: categoryId, query: query || "status:active" }
-        : { query: query || "status:active" };
+        if (!productsResponse.ok) {
+          console.error('[Bundle Management] Products API error:', productsResponse.status);
+          return json({ success: false, error: 'Failed to fetch products', products: [] }, { status: 500 });
+        }
 
-      // Add timeout protection
-      const graphqlPromise = admin.graphql(graphqlQuery, { variables });
-      const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error('Products request timed out')), 10000)
-      );
+        const productsData = await productsResponse.json();
+        const products: BCProduct[] = productsData.data || [];
 
-      const response = await Promise.race([graphqlPromise, timeoutPromise]) as Response;
-      
-      if (!response.ok) {
-        console.error('🔥 Products GraphQL request failed:', response.status);
-        return json({ 
-          success: false, 
-          error: 'Failed to fetch products from Shopify',
-          products: []
-        }, { status: 500 });
-      }
-
-      const responseJson = await response.json() as ProductsGraphQLResponse;
-
-      if (responseJson.errors) {
-        console.error('🔥 Products GraphQL errors:', responseJson.errors);
         return json({
-          success: false,
-          error: 'GraphQL query failed',
-          products: []
-        }, { status: 500 });
+          success: true,
+          products: products.map((product): ProductResponse => ({
+            id: String(product.id),
+            title: product.name,
+            handle: product.custom_url?.url?.replace(/^\/|\/$/g, '') || String(product.id),
+            status: product.is_visible ? 'active' : 'draft',
+            totalInventory: product.inventory_level || 0,
+            variants: (product.variants || []).map((v) => ({
+              id: String(v.id),
+              title: v.option_values?.map(ov => ov.label).join(' / ') || 'Default',
+              price: v.price ?? product.price,
+              inventoryQuantity: v.inventory_level || 0
+            })),
+            price: String(product.price || '0.00'),
+            image: product.images?.[0]?.url_standard
+          }))
+        });
+      } catch (error) {
+        console.error('[Bundle Management] Products fetch error:', error);
+        return json({ success: false, error: 'Failed to fetch products', products: [] }, { status: 500 });
       }
-
-      let products = [];
-      if (categoryId) {
-        products = responseJson.data?.collection?.products?.edges || [];
-      } else {
-        products = responseJson.data?.products?.edges || [];
-      }
-
-      return json({
-        success: true,
-        products: products.map((edge): ProductResponse => ({
-          id: edge.node.id,
-          title: edge.node.title,
-          handle: edge.node.handle,
-          status: edge.node.status,
-          totalInventory: edge.node.totalInventory,
-          variants: edge.node.variants.edges.map((v) => ({
-            id: v.node.id,
-            title: v.node.title,
-            price: parseFloat(v.node.price),
-            inventoryQuantity: v.node.inventoryQuantity
-          })),
-          price: edge.node.variants.edges[0]?.node?.price || "0.00",
-          image: edge.node.featuredImage?.url
-        }))
-      });
     }
 
     return json({ success: false, error: "Invalid action" }, { status: 400 });
   } catch (error: unknown) {
-    console.error("🔥 Bundle management loader error:", error);
+    console.error("[Bundle Management] Loader error:", error);
     const errorMessage = error instanceof Error ? error.message : "Failed to load data";
     return json({
       success: false,
@@ -448,11 +274,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  // Support both JSON and FormData bodies
   let actionType: string | null;
   let body: BundleActionBody = {};
   let shop: string | undefined;
-  let admin;
 
   const contentType = request.headers.get('content-type') || '';
 
@@ -460,7 +284,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     try {
       body = await request.json() as BundleActionBody;
       actionType = body.action || null;
-      shop = body.shop; // Get shop from payload like settings API
+      shop = body.shop;
     } catch (e: unknown) {
       console.error('[Bundle API Action] JSON parse error:', e);
       return json({ success: false, error: 'Invalid JSON' }, { status: 400 });
@@ -472,55 +296,18 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     formData.forEach((v, k) => { body[k] = v; });
   }
 
-  // Always authenticate to get admin API access
-  let session;
   try {
-    const auth = await authenticate.admin(request);
-    session = auth.session;
-    admin = auth.admin;
-    // Use shop from payload if provided, otherwise from session
+    const { storeHash } = await authenticateAdmin(request);
     if (!shop) {
-      shop = session.shop;
+      shop = storeHash;
     }
   } catch (authError: unknown) {
     const errorMessage = authError instanceof Error ? authError.message : 'Unknown error';
-    console.error('[Bundle API Action] ❌ Authentication failed:', errorMessage);
+    console.error('[Bundle API Action] Authentication failed:', errorMessage);
     return json({ success: false, error: 'Authentication failed' }, { status: 401 });
   }
 
   try {
-    if (actionType === 'fix-bundle-ids') {
-      // Fix existing bundles with gid:// prefixes
-      const bundles = await prisma.bundle.findMany({
-        where: {
-          shop: shop,
-          assignedProducts: { not: null }
-        }
-      });
-
-      let updatedCount = 0;
-      for (const bundle of bundles) {
-        if (!bundle.assignedProducts) continue;
-
-        const productIds = JSON.parse(bundle.assignedProducts) as string[];
-        const hasPrefix = productIds.some((id: string) => id.startsWith('gid://'));
-
-        if (hasPrefix) {
-          const cleanedIds = productIds.map((id: string) =>
-            id.replace('gid://shopify/Product/', '')
-          );
-
-          await prisma.bundle.update({
-            where: { id: bundle.id },
-            data: { assignedProducts: JSON.stringify(cleanedIds) }
-          });
-          updatedCount++;
-        }
-      }
-
-      return json({ success: true, updatedCount });
-    }
-    
     if (actionType === 'create-bundle') {
       const name = (body.name as string) || '';
       const description = (body.description as string) || '';
@@ -534,13 +321,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       const minProducts = body.minProducts ? parseInt(String(body.minProducts)) : null;
       const minBundlePrice = body.minBundlePrice ? parseFloat(String(body.minBundlePrice)) : null;
       const assignmentType = (body.assignmentType as string) || 'specific';
-      
-      // NEW FIELDS - Enhanced bundle features
-      const assignedProducts = (body.assignedProducts as string) || '[]';  // Default to empty array JSON string
+
+      const assignedProducts = (body.assignedProducts as string) || '[]';
       const bundleStyle = (body.bundleStyle as string) || 'grid';
       const selectMinQty = body.selectMinQty ? parseInt(String(body.selectMinQty)) : null;
       const selectMaxQty = body.selectMaxQty ? parseInt(String(body.selectMaxQty)) : null;
-      const tierConfig = (body.tierConfig as string) || '[]';  // Default to empty array JSON string
+      const tierConfig = (body.tierConfig as string) || '[]';
       const allowDeselect = body.allowDeselect !== undefined ? String(body.allowDeselect) === 'true' : true;
       const hideIfNoML = body.hideIfNoML !== undefined ? String(body.hideIfNoML) === 'true' : false;
 
@@ -548,10 +334,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         return json({ success: false, error: "Invalid bundle data" }, { status: 400 });
       }
 
-      // Create the bundle
       const bundle = await prisma.bundle.create({
         data: {
-          shop: shop,
+          storeHash: shop,
           name,
           description,
           type,
@@ -562,19 +347,17 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           minProducts,
           minBundlePrice,
           assignmentType,
-          // NEW FIELDS
-          assignedProducts,  // Now defaults to '[]' instead of null
+          assignedProducts,
           bundleStyle,
           selectMinQty,
           selectMaxQty,
           tierConfig,
           allowDeselect,
           hideIfNoML,
-          status: 'active'  // Start as active so it shows immediately
+          status: 'active'
         }
       });
 
-      // Add products to bundle if provided
       if (productIds) {
         try {
           const productIdArray = JSON.parse(productIds) as string[];
@@ -583,7 +366,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
               bundleId: bundle.id,
               productId,
               position: index,
-              required: index === 0 // First product is required by default
+              required: index === 0
             }));
 
             await prisma.bundleProduct.createMany({
@@ -594,75 +377,57 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           console.warn("Failed to parse product IDs:", e);
         }
       }
-      
-      // For AI/ML bundles without products, try to fetch from ML insights and store them
+
+      // For AI/ML bundles without products, try to fetch from ML insights
       if ((type === 'ml' || type === 'ai_suggested') && (!productIds || productIds === '[]')) {
         try {
           const { getBundleInsights } = await import('../models/bundleInsights.server');
           const insights = await getBundleInsights({
-            shop,
-            admin,
+            storeHash: shop!,
             orderLimit: 40,
             minPairOrders: 2
           });
-          
-          // Find matching bundle by name
-          const matchingInsight = insights.bundles.find(b => 
-            b.name.toLowerCase().includes(name.toLowerCase()) || 
+
+          const matchingInsight = insights.bundles.find(b =>
+            b.name.toLowerCase().includes(name.toLowerCase()) ||
             name.toLowerCase().includes(b.name.toLowerCase())
           );
-          
+
           if (matchingInsight && matchingInsight.productIds.length > 0) {
-            console.log(`🔍 Found ML insights for "${name}":`, matchingInsight.productIds);
-            
-            // Store product IDs in the bundle
+            console.log(`Found ML insights for "${name}":`, matchingInsight.productIds);
+
             await prisma.bundle.update({
               where: { id: bundle.id },
               data: {
                 productIds: JSON.stringify(matchingInsight.productIds)
               }
             });
-            
-            // Fetch product titles from Shopify
-            const productGids = matchingInsight.productIds.map(id => `gid://shopify/Product/${id}`);
-            const productDetailsQuery = `
-              query getProducts($ids: [ID!]!) {
-                nodes(ids: $ids) {
-                  ... on Product {
-                    id
-                    title
-                  }
-                }
-              }
-            `;
-            
-            const productsResponse = await admin.graphql(productDetailsQuery, {
-              variables: { ids: productGids }
-            });
-            
-            const productsData = await productsResponse.json();
-            const products = productsData?.data?.nodes || [];
-            
-            // Create BundleProduct records with titles
+
+            // Fetch product titles from BigCommerce
+            const productIdList = matchingInsight.productIds.join(',');
+            const productsResponse = await bigcommerceApi(shop!, `/catalog/products?id:in=${productIdList}`);
+            const productsData = productsResponse.ok ? await productsResponse.json() : { data: [] };
+            const products: BCProduct[] = productsData.data || [];
+
             const bundleProducts = matchingInsight.productIds.map((productId: string, index: number) => {
-              const productNode = products.find((p: any) => p?.id?.includes(productId));
+              const productNode = products.find((p: BCProduct) => String(p.id) === String(productId));
               return {
                 bundleId: bundle.id,
                 productId: String(productId),
-                productTitle: productNode?.title || matchingInsight.productTitles[index] || `Product ${productId}`,
+                productTitle: productNode?.name || matchingInsight.productTitles[index] || `Product ${productId}`,
                 position: index,
                 required: index === 0
               };
             });
-            
+
             await prisma.bundleProduct.createMany({
               data: bundleProducts
             });
-            
-            console.log(`✅ Stored ${bundleProducts.length} products for AI bundle "${name}"`);
+
+            console.log(`Stored ${bundleProducts.length} products for AI bundle "${name}"`);
           }
         } catch (error) {
-          console.warn(`⚠️ Could not fetch ML insights for AI bundle "${name}":`, error);
+          console.warn(`Could not fetch ML insights for AI bundle "${name}":`, error);
         }
       }
 
@@ -683,22 +448,20 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       const allowDeselect = body.allowDeselect !== undefined ? Boolean(body.allowDeselect) : true;
       const hideIfNoML = body.hideIfNoML !== undefined ? Boolean(body.hideIfNoML) : false;
 
-      // Validation: Check for duplicate "show on all" bundles (only if changing to "all")
       if (assignmentType === 'all') {
         const currentBundle = await prisma.bundle.findUnique({
           where: { id: bundleId },
           select: { type: true, assignmentType: true }
         });
 
-        // Only check if we're changing FROM specific TO all, or if it's already "all" and active
         if (currentBundle && (currentBundle.assignmentType !== 'all' || status === 'active')) {
           const existingShowAllBundle = await prisma.bundle.findFirst({
             where: {
-              shop,
+              storeHash: shop,
               type: currentBundle.type,
               assignmentType: 'all',
               status: 'active',
-              id: { not: bundleId } // Exclude current bundle
+              id: { not: bundleId }
             },
             select: { id: true, name: true }
           });
@@ -714,7 +477,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       }
 
       const bundle = await prisma.bundle.update({
-        where: { id: bundleId, shop: shop },
+        where: { id: bundleId, storeHash: shop },
         data: {
           name,
           description,
@@ -736,7 +499,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       const bundleId = (body.bundleId as string);
 
       await prisma.bundle.delete({
-        where: { id: bundleId, shop: shop }
+        where: { id: bundleId, storeHash: shop }
       });
 
       return json({ success: true, message: "Bundle deleted successfully" });
@@ -747,7 +510,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       const status = (body.status as string);
 
       const bundle = await prisma.bundle.update({
-        where: { id: bundleId, shop: shop },
+        where: { id: bundleId, storeHash: shop },
         data: { status }
       });
 

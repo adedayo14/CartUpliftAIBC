@@ -1,11 +1,10 @@
 /**
- * Billing Configuration - Shopify Managed Pricing
+ * Billing Configuration - BigCommerce Unified Billing
  * Defines pricing plans and order limits for Cart Uplift
  *
- * BILLING METHOD: Shopify Managed Pricing
- * - All billing handled through Shopify App Store
- * - Merchants upgrade/downgrade via App Store pricing page
- * - Plan names in Partner Dashboard must contain: "free", "starter", "growth", or "pro"
+ * BILLING METHOD: BigCommerce Unified Billing
+ * - Subscriptions managed via BigCommerce checkout
+ * - Plan changes handled via BigCommerce billing + sync
  *
  * Pricing Philosophy:
  * - All plans have access to all features
@@ -16,7 +15,6 @@
  * - Hard limit is plan limit + 10% buffer
  * - Buffer prevents edge case complaints and provides grace period
  * - At limit, app shows upgrade prompt but continues working during grace
- * - Shopify requires strict enforcement, but 10% buffer is reasonable
  */
 
 import type { PlanTier, PricingPlan } from "../types/billing";
@@ -29,7 +27,7 @@ export const PRICING_PLANS: Record<PlanTier, PricingPlan> = {
     id: "starter",
     name: "Starter",
     price: 29,
-    interval: "EVERY_30_DAYS",
+    interval: "MONTH",
     orderLimit: ORDER_LIMITS.STARTER,
     trialDays: 14,
     features: [
@@ -47,7 +45,7 @@ export const PRICING_PLANS: Record<PlanTier, PricingPlan> = {
     id: "growth",
     name: "Growth",
     price: 79,
-    interval: "EVERY_30_DAYS",
+    interval: "MONTH",
     orderLimit: ORDER_LIMITS.GROWTH,
     trialDays: 14,
     features: [
@@ -65,7 +63,7 @@ export const PRICING_PLANS: Record<PlanTier, PricingPlan> = {
     id: "pro",
     name: "Pro",
     price: 199,
-    interval: "EVERY_30_DAYS",
+    interval: "MONTH",
     orderLimit: ORDER_LIMITS.PRO,
     trialDays: 14,
     features: [
@@ -138,7 +136,7 @@ export function isApproachingLimit(currentCount: number, tier: PlanTier): boolea
 
 /**
  * Check if hard limit is reached (base + 10% buffer)
- * App should disable at this point per Shopify requirements
+ * App should disable at this point
  */
 export function isLimitReached(currentCount: number, tier: PlanTier): boolean {
   const hardLimit = getHardOrderLimit(tier);
@@ -192,4 +190,3 @@ export function isHigherTier(planA: PlanTier, planB: PlanTier): boolean {
   };
   return prices[planA] > prices[planB];
 }
-

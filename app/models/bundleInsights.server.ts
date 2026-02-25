@@ -1,13 +1,6 @@
-import { unauthenticated } from "~/shopify.server";
+import { getOrders, getOrderProducts } from "~/services/bigcommerce-api.server";
 import { logger } from "~/utils/logger.server";
 import { BUNDLE_TYPES, BUNDLE_STATUS, type BundleType, type BundleStatus } from "~/constants/bundle";
-
-interface GraphQLAdminClient {
-  graphql: (
-    query: string,
-    options?: { variables?: Record<string, unknown> }
-  ) => Promise<Response>;
-}
 
 export interface BundleSummary {
   id: string;
@@ -32,8 +25,7 @@ export interface BundleOpportunity {
 }
 
 interface BundleInsightsOptions {
-  shop: string;
-  admin?: GraphQLAdminClient;
+  storeHash: string;
   orderLimit?: number;
   minPairOrders?: number;
 }
@@ -55,105 +47,42 @@ interface BundleAggregate {
   regularRevenue: number;
 }
 
-const RECENT_ORDERS_QUERY = `#graphql
-  query BundleInsightsOrders($first: Int!) {
-    orders(first: $first, sortKey: PROCESSED_AT, reverse: true) {
-      edges {
-        node {
-          id
-          processedAt
-          lineItems(first: 25) {
-            edges {
-              node {
-                quantity
-                originalTotalSet { shopMoney { amount } }
-                discountedTotalSet { shopMoney { amount } }
-                product {
-                  id
-                  title
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-`;
-
 export async function getBundleInsights({
-  shop,
-  admin,
+  storeHash,
   orderLimit = 40,
   minPairOrders = 2,
 }: BundleInsightsOptions) {
-  let adminClient = admin;
-
-  if (!adminClient) {
-    const { admin: unauthenticatedAdmin } = await unauthenticated.admin(shop);
-    adminClient = unauthenticatedAdmin;
-  }
-
-  if (!adminClient) {
-    return { bundles: [], opportunities: [], totalOrdersConsidered: 0 };
-  }
-
   try {
-    const response = await adminClient.graphql(RECENT_ORDERS_QUERY, {
-      variables: { first: orderLimit },
+    // Fetch recent orders from BigCommerce REST API
+    const orders = await getOrders(storeHash, {
+      limit: orderLimit,
+      sort: "date_created:desc",
     });
-
-    if (!response.ok) {
-      logger.warn("Bundle insights GraphQL error", await safeParseError(response));
-      return { bundles: [], opportunities: [], totalOrdersConsidered: 0 };
-    }
-
-    const payload = await response.json();
-
-    if (payload?.errors?.length) {
-      logger.warn("Bundle insights GraphQL errors", payload.errors);
-      return { bundles: [], opportunities: [], totalOrdersConsidered: 0 };
-    }
-
-    const orderEdges: unknown[] = payload?.data?.orders?.edges ?? [];
 
     const pairMap = new Map<string, BundleAggregate>();
     let totalOrdersConsidered = 0;
 
-    for (const edge of orderEdges) {
-      const lineItems: unknown[] = edge?.node?.lineItems?.edges ?? [];
-      const parsedItems = lineItems
-        .map<LineItemAggregate | null>((liEdge) => {
-          const node = liEdge?.node;
-          const productGid: string | undefined = node?.product?.id;
-          const title: string | undefined = node?.product?.title ?? undefined;
-          if (!productGid || !title) return null;
+    // Process each order and its line items
+    for (const order of orders) {
+      let orderProducts;
+      try {
+        orderProducts = await getOrderProducts(storeHash, order.id);
+      } catch (err) {
+        logger.warn(`Failed to fetch products for order ${order.id}:`, err);
+        continue;
+      }
 
-          const productId = productGid.replace("gid://shopify/Product/", "");
-          const quantity = Number(node?.quantity ?? 0);
-          const discountedAmount = Number(
-            node?.discountedTotalSet?.shopMoney?.amount ?? 0
-          );
-          const originalAmount = Number(
-            node?.originalTotalSet?.shopMoney?.amount ?? node?.discountedTotalSet?.shopMoney?.amount ?? 0
-          );
+      const parsedItems: LineItemAggregate[] = orderProducts
+        .filter(item => item.product_id > 0) // Skip non-product line items
+        .map(item => ({
+          productId: String(item.product_id),
+          title: item.name || 'Unknown Product',
+          quantity: item.quantity,
+          discountedAmount: parseFloat(item.total_inc_tax || '0'),
+          originalAmount: parseFloat(item.base_total || item.total_inc_tax || '0'),
+        }));
 
-          if (!productId || Number.isNaN(quantity) || quantity <= 0) return null;
-
-          return {
-            productId,
-            title,
-            quantity,
-            discountedAmount: Number.isFinite(discountedAmount)
-              ? discountedAmount
-              : 0,
-            originalAmount: Number.isFinite(originalAmount)
-              ? originalAmount
-              : 0,
-          } satisfies LineItemAggregate;
-        })
-        .filter(Boolean) as LineItemAggregate[];
-
+      // Deduplicate by product
       const uniqueByProduct = new Map<string, LineItemAggregate>();
       for (const item of parsedItems) {
         const existing = uniqueByProduct.get(item.productId);
@@ -284,12 +213,4 @@ function classifyConfidence(orderCount: number): "High" | "Medium" | "Low" {
   if (orderCount >= 5) return "High";
   if (orderCount >= 3) return "Medium";
   return "Low";
-}
-
-async function safeParseError(response: Response) {
-  try {
-    return await response.json();
-  } catch (_) {
-    return { status: response.status, statusText: response.statusText };
-  }
 }

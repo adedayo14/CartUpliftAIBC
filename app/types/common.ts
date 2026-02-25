@@ -24,13 +24,13 @@ export interface ApiSuccess<T> {
   message?: string;
 }
 
-// Shopify types
-export interface ShopifyProduct {
+// BigCommerce types
+export interface BCProduct {
   id: string;
   title: string;
   handle: string;
-  variants: ShopifyVariant[];
-  images: ShopifyImage[];
+  variants: BCVariant[];
+  images: BCImage[];
   price?: string;
   compareAtPrice?: string;
   vendor?: string;
@@ -38,7 +38,7 @@ export interface ShopifyProduct {
   tags?: string[];
 }
 
-export interface ShopifyVariant {
+export interface BCVariant {
   id: string;
   title: string;
   price: string;
@@ -48,7 +48,7 @@ export interface ShopifyVariant {
   inventoryQuantity?: number;
 }
 
-export interface ShopifyImage {
+export interface BCImage {
   id?: string;
   url: string;
   altText?: string;
@@ -56,14 +56,14 @@ export interface ShopifyImage {
   height?: number;
 }
 
-export interface ShopifyCart {
-  items: ShopifyCartItem[];
+export interface BCCart {
+  items: BCCartItem[];
   total: number;
   subtotal: number;
   currency: string;
 }
 
-export interface ShopifyCartItem {
+export interface BCCartItem {
   id: string;
   productId: string;
   variantId: string;
@@ -73,17 +73,17 @@ export interface ShopifyCartItem {
   image?: string;
 }
 
-export interface ShopifyOrder {
+export interface BCOrder {
   id: string;
   orderNumber: number;
   total: number;
   subtotal: number;
   currency: string;
-  lineItems: ShopifyLineItem[];
-  customer?: ShopifyCustomer;
+  lineItems: BCLineItem[];
+  customer?: BCCustomer;
 }
 
-export interface ShopifyLineItem {
+export interface BCLineItem {
   id: string;
   productId: string;
   variantId: string;
@@ -92,7 +92,7 @@ export interface ShopifyLineItem {
   price: number;
 }
 
-export interface ShopifyCustomer {
+export interface BCCustomer {
   id: string;
   email?: string;
   firstName?: string;
@@ -269,8 +269,8 @@ export type ValueFormat = "percent" | "currency" | "number";
 // Experiment types
 export type ExperimentType = "discount" | "bundle" | "shipping" | "upsell";
 
-// Shopify session extended type
-export interface ExtendedShopifySession {
+// Session extended type
+export interface ExtendedSession {
   shop: string;
   currency?: string;
   [key: string]: unknown;

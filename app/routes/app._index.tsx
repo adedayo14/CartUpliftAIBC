@@ -3,21 +3,20 @@ import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
 import { useLoaderData, useSearchParams, useNavigate, useFetcher } from "@remix-run/react";
 import {
-  Page,
-  Layout,
-  Card,
-  Button,
-  BlockStack,
-  InlineStack,
-  Text,
-  Badge,
   Box,
-  Divider,
-  InlineGrid,
-  Banner,
-} from "@shopify/polaris";
-import { TitleBar } from "@shopify/app-bridge-react";
-import { authenticate } from "../shopify.server";
+  Flex,
+  Panel,
+  Text,
+  H1,
+  H2,
+  H3,
+  Button,
+  Badge,
+  Grid,
+  HR,
+} from "@bigcommerce/big-design";
+import { CloseIcon } from "@bigcommerce/big-design-icons";
+import { authenticateAdmin } from "../bigcommerce.server";
 import { getSettings } from "../models/settings.server";
 import { getOrCreateSubscription } from "../services/billing.server";
 import { PlanBadge } from "../components/PlanBadge";
@@ -42,8 +41,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   console.log("[app._index action] ===============================");
 
   try {
-    const { session } = await authenticate.admin(request);
-    const { shop } = session;
+    const { session, storeHash } = await authenticateAdmin(request);
+    const shop = storeHash;
     console.log("[app._index action] Authenticated shop:", shop);
     
     const formData = await request.formData();
@@ -104,21 +103,21 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { session, admin } = await authenticate.admin(request);
-  const { shop } = session;
+  const { session, storeHash } = await authenticateAdmin(request);
+  const shop = storeHash;
 
   const search = new URL(request.url).search;
 
   // Get app embed activation status and subscription info
   const settings = await getSettings(shop);
-  const subscription = await getOrCreateSubscription(shop, admin);
+  const subscription = await getOrCreateSubscription(shop);
 
   // AUTO-MIGRATION: Convert legacy FREE subscriptions to STARTER trial
   if (subscription.planTier === 'free' as any) {
     console.log('[app._index] Auto-migrating FREE subscription to STARTER trial');
     const trialEnd = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
     await prisma.subscription.update({
-      where: { shop },
+      where: { storeHash },
       data: {
         planTier: 'starter',
         planStatus: 'trial',
@@ -126,7 +125,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       }
     });
     // Reload subscription after migration
-    const updatedSub = await getOrCreateSubscription(shop, admin);
+    const updatedSub = await getOrCreateSubscription(shop);
     Object.assign(subscription, updatedSub);
   }
 
@@ -135,16 +134,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const dbSettings = await getSettingsWithOnboarding(shop);
 
   // Count bundles for the store
-  const bundleCount = await prisma.bundle.count({ where: { shop } });
+  const bundleCount = await prisma.bundle.count({ where: { storeHash } });
 
   // Check if onboarding feature is available
   const onboardingAvailable = await hasOnboardingFields();
 
   console.log("[app._index loader] Shop:", shop, "Bundles:", bundleCount);
 
-  // Shopify Managed Pricing - pass billing info to frontend
-  // Frontend will handle upgrade navigation to App Store
-  const isTestMode = process.env.SHOPIFY_BILLING_TEST_MODE === 'true';
+  // BigCommerce billing - pass billing info to frontend
+  const isTestMode = process.env.BILLING_TEST_MODE === 'true';
 
   return json({
     shop,
@@ -216,7 +214,7 @@ export default function Index() {
   const showOnboarding = onboarding.available && !onboarding.completed && !onboarding.dismissed;
 
   const handleUpgradeClick = () => {
-    // Navigate to billing route which handles Shopify Managed Pricing redirect
+    // Navigate to billing route which handles BigCommerce billing redirect
     navigate('/admin/billing');
   };
 
@@ -241,21 +239,15 @@ export default function Index() {
   const setupSteps: SetupStep[] = [
     {
       id: "theme-editor",
-      title: "Enable Cart Uplift in your theme",
-      description: "In App embeds, switch on Cart Uplift – Smart Cart. You can switch this off at any time.",
+      title: "Verify storefront scripts",
+      description: "Cart Uplift installs storefront scripts automatically. Confirm your settings and preview results.",
       completed: onboarding.steps.themeEditor,
-      videoUrl: "https://www.youtube.com/watch?v=ukL179incJ8",
-      helpLink: {
-        label: "Open App embeds",
-        url: `https://${shop}/admin/themes/current/editor?context=apps`,
-      },
       action: {
-        label: "Enable Cart Uplift",
-        url: `https://${shop}/admin/themes/current/editor?context=apps`,
-        external: true,
+        label: "Open Settings",
+        url: "/admin/settings",
       },
       completeAction: {
-        label: "I've enabled it",
+        label: "I've verified it",
         onClick: () => completeStep("theme-editor"),
       },
     },
@@ -277,108 +269,129 @@ export default function Index() {
   ];
 
   return (
-    <Page>
-      <TitleBar title="Cart Uplift" />
-
-      <Layout>
-        <Layout.Section>
-          <BlockStack gap="600">
+    <Box padding="medium" style={{ maxWidth: "1200px", margin: "0 auto" }}>
+      <Flex flexDirection="column" flexGap="1.5rem">
+        <Box>
+          <Flex flexDirection="column" flexGap="1.5rem">
             {/* Order Limit Warnings */}
             {isLimitReached && (
-              <Banner
-                title="Order limit reached"
-                tone="critical"
+              <Box
+                style={{
+                  borderLeft: "4px solid #c62828",
+                  backgroundColor: "#ffebee",
+                  padding: "1rem",
+                  borderRadius: "6px",
+                }}
               >
-                <p>
-                  You've reached your plan's order limit ({orderLimit} orders/month).
-                  Please upgrade to continue using Cart Uplift features.
-                </p>
-                <Box paddingBlockStart="200">
-                  <Button
-                    variant="primary"
-                    onClick={handleUpgradeClick}
-                    disabled={isTestMode}
-                  >
-                    Upgrade Plan
-                  </Button>
+                <Box>
+                  <H3>Order limit reached</H3>
+                  <p>
+                    You've reached your plan's order limit ({orderLimit} orders/month).
+                    Please upgrade to continue using Cart Uplift features.
+                  </p>
+                  <Box style={{ paddingTop: "0.5rem" }}>
+                    <Button
+                      variant="primary"
+                      onClick={handleUpgradeClick}
+                      disabled={isTestMode}
+                    >
+                      Upgrade Plan
+                    </Button>
+                  </Box>
                 </Box>
-              </Banner>
+              </Box>
             )}
-            
+
             {!isLimitReached && isInGrace && (
-              <Banner
-                title="Approaching order limit"
-                tone="warning"
+              <Box
+                style={{
+                  borderLeft: "4px solid #ed6c02",
+                  backgroundColor: "#fff3e0",
+                  padding: "1rem",
+                  borderRadius: "6px",
+                }}
               >
-                <p>
-                  You're in the grace period ({orderCount}/{orderLimit} orders).
-                  Upgrade soon to avoid service interruption.
-                </p>
-                <Box paddingBlockStart="200">
-                  <Button
-                    onClick={handleUpgradeClick}
-                    disabled={isTestMode}
-                  >
-                    View Plans
-                  </Button>
+                <Box>
+                  <H3>Approaching order limit</H3>
+                  <p>
+                    You're in the grace period ({orderCount}/{orderLimit} orders).
+                    Upgrade soon to avoid service interruption.
+                  </p>
+                  <Box style={{ paddingTop: "0.5rem" }}>
+                    <Button
+                      variant="secondary"
+                      onClick={handleUpgradeClick}
+                      disabled={isTestMode}
+                    >
+                      View Plans
+                    </Button>
+                  </Box>
                 </Box>
-              </Banner>
+              </Box>
             )}
-            
+
             {!isLimitReached && !isInGrace && isApproaching && (
-              <Banner
-                title="Nearing order limit"
-                tone="info"
+              <Box
+                style={{
+                  borderLeft: "4px solid #1565c0",
+                  backgroundColor: "#e3f2fd",
+                  padding: "1rem",
+                  borderRadius: "6px",
+                }}
               >
-                <p>
-                  You've used {orderCount} of {orderLimit} orders this month.
-                  Consider upgrading to avoid hitting your limit.
-                </p>
-                <Box paddingBlockStart="200">
-                  <Button
-                    onClick={handleUpgradeClick}
-                    disabled={isTestMode}
-                  >
-                    View Plans
-                  </Button>
+                <Box>
+                  <H3>Nearing order limit</H3>
+                  <p>
+                    You've used {orderCount} of {orderLimit} orders this month.
+                    Consider upgrading to avoid hitting your limit.
+                  </p>
+                  <Box style={{ paddingTop: "0.5rem" }}>
+                    <Button
+                      variant="secondary"
+                      onClick={handleUpgradeClick}
+                      disabled={isTestMode}
+                    >
+                      View Plans
+                    </Button>
+                  </Box>
                 </Box>
-              </Banner>
+              </Box>
             )}
 
             {/* Hero */}
-            <Card>
-              <BlockStack gap="500">
-                <BlockStack gap="200">
-                  <InlineStack gap="200" align="space-between" blockAlign="center">
-                    <Text variant="heading2xl" as="h1">
-                      Cart Uplift
+            <Panel>
+              <Box style={{ padding: "1rem", borderRadius: "6px" }}>
+                <Flex flexDirection="column" flexGap="1.25rem">
+                  <Flex flexDirection="column" flexGap="0.5rem">
+                    <Flex flexDirection="row" flexGap="0.5rem" justifyContent="space-between" alignItems="center">
+                      <H1>Cart Uplift</H1>
+                      <PlanBadge
+                        plan={planTier}
+                        orderCount={orderCount}
+                        orderLimit={orderLimit}
+                        isApproaching={isApproaching || isInGrace}
+                      />
+                    </Flex>
+                    <Text color="secondary">
+                      AI cart upsells, bundles and frequently bought together. Configure what appears in your cart.
                     </Text>
-                    <PlanBadge
-                      plan={planTier}
-                      orderCount={orderCount}
-                      orderLimit={orderLimit}
-                      isApproaching={isApproaching || isInGrace}
-                    />
-                  </InlineStack>
-                  <Text variant="bodyLg" as="p" tone="subdued">
-                    AI cart upsells, bundles and frequently bought together. Configure what appears in your cart.
-                  </Text>
-                </BlockStack>
+                  </Flex>
 
-                <InlineStack gap="300">
-                  <a href={`/admin/settings${safeSearch}`} className="app-link-no-decoration">
-                    <Button size="large" variant="primary">
-                      Settings
-                    </Button>
-                  </a>
-                  <a href={`/admin/bundles${safeSearch}`} className="app-link-no-decoration">
-                    <Button size="large" variant="secondary">
-                      Frequently bought together
-                    </Button>
-                  </a>
-                </InlineStack>
-              </BlockStack>
-            </Card>
+                  <Flex flexDirection="row" flexGap="0.75rem">
+                    <a href={`/admin/settings${safeSearch}`} className="app-link-no-decoration">
+                      <Button variant="primary">
+                        Settings
+                      </Button>
+                    </a>
+                    <a href={`/admin/bundles${safeSearch}`} className="app-link-no-decoration">
+                      <Button variant="secondary">
+                        Frequently bought together
+                      </Button>
+                    </a>
+                  </Flex>
+                </Flex>
+              </Box>
+            </Panel>
 
             {/* Setup Checklist - Shows until all steps complete or dismissed */}
             {/* ROBUST: Wrapped in error boundary to prevent breaking the entire app */}
@@ -393,258 +406,256 @@ export default function Index() {
             )}
 
             {/* Features */}
-            <Card>
-              <BlockStack gap="500">
-                <BlockStack gap="200">
-                  <Text variant="headingLg" as="h2">
-                    Features that grow revenue
-                  </Text>
-                  <Text variant="bodyMd" as="p" tone="subdued">
-                    Practical tools for higher spend and a smoother shopping experience.
-                  </Text>
-                </BlockStack>
+            <Panel>
+              <Box style={{ padding: "1rem", borderRadius: "6px" }}>
+                <Flex flexDirection="column" flexGap="1.25rem">
+                  <Flex flexDirection="column" flexGap="0.5rem">
+                    <H2>Features that grow revenue</H2>
+                    <Text color="secondary">
+                      Practical tools for higher spend and a smoother shopping experience.
+                    </Text>
+                  </Flex>
 
-                <Divider />
+                  <HR />
 
-                <InlineGrid columns={{ xs: 1, sm: 2, md: 3, lg: 5 }} gap="400">
-                  {/* AI Recommendations */}
-                  <Box padding="400" background="bg-surface-secondary" borderRadius="300">
-                    <BlockStack gap="200">
-                      <Text variant="headingMd" as="h3">
-                        Bespoke recommendations
-                      </Text>
-                      <Text variant="bodyMd" as="p" tone="subdued">
-                        Suggestions tailored to each visitor, based on live browsing and purchase signals.
-                      </Text>
-                    </BlockStack>
-                  </Box>
+                  <Grid
+                    gridColumns={{
+                      mobile: "repeat(1, minmax(0, 1fr))",
+                      tablet: "repeat(2, minmax(0, 1fr))",
+                      desktop: "repeat(3, minmax(0, 1fr))",
+                      wide: "repeat(5, minmax(0, 1fr))",
+                    }}
+                    gridGap="1rem"
+                  >
+                    {/* AI Recommendations */}
+                    <Box backgroundColor="secondary10" style={{ padding: "1rem", borderRadius: "8px" }}>
+                      <Flex flexDirection="column" flexGap="0.5rem">
+                        <H3>Bespoke recommendations</H3>
+                        <Text color="secondary">
+                          Suggestions tailored to each visitor, based on live browsing and purchase signals.
+                        </Text>
+                      </Flex>
+                    </Box>
 
-                  {/* Smart FBT */}
-                  <Box padding="400" background="bg-surface-secondary" borderRadius="300">
-                    <BlockStack gap="200">
-                      <Text variant="headingMd" as="h3">
-                        Smart bundles
-                      </Text>
-                      <Text variant="bodyMd" as="p" tone="subdued">
-                        Spots items often bought together and builds offers with flexible discounts.
-                      </Text>
-                    </BlockStack>
-                  </Box>
+                    {/* Smart FBT */}
+                    <Box backgroundColor="secondary10" style={{ padding: "1rem", borderRadius: "8px" }}>
+                      <Flex flexDirection="column" flexGap="0.5rem">
+                        <H3>Smart bundles</H3>
+                        <Text color="secondary">
+                          Spots items often bought together and builds offers with flexible discounts.
+                        </Text>
+                      </Flex>
+                    </Box>
 
-                  {/* Progress incentives */}
-                  <Box padding="400" background="bg-surface-secondary" borderRadius="300">
-                    <BlockStack gap="200">
-                      <Text variant="headingMd" as="h3">
-                        Progress incentives
-                      </Text>
-                      <Text variant="bodyMd" as="p" tone="subdued">
-                        Progress bars for free shipping and rewards that help lift cart value.
-                      </Text>
-                    </BlockStack>
-                  </Box>
+                    {/* Progress incentives */}
+                    <Box backgroundColor="secondary10" style={{ padding: "1rem", borderRadius: "8px" }}>
+                      <Flex flexDirection="column" flexGap="0.5rem">
+                        <H3>Progress incentives</H3>
+                        <Text color="secondary">
+                          Progress bars for free shipping and rewards that help lift cart value.
+                        </Text>
+                      </Flex>
+                    </Box>
 
-                  {/* Gift with purchase */}
-                  <Box padding="400" background="bg-surface-secondary" borderRadius="300">
-                    <BlockStack gap="200">
-                      <Text variant="headingMd" as="h3">
-                        Gift with purchase
-                      </Text>
-                      <Text variant="bodyMd" as="p" tone="subdued">
-                        Reward customers at set spend levels. The app handles the rest.
-                      </Text>
-                    </BlockStack>
-                  </Box>
+                    {/* Gift with purchase */}
+                    <Box backgroundColor="secondary10" style={{ padding: "1rem", borderRadius: "8px" }}>
+                      <Flex flexDirection="column" flexGap="0.5rem">
+                        <H3>Gift with purchase</H3>
+                        <Text color="secondary">
+                          Reward customers at set spend levels. The app handles the rest.
+                        </Text>
+                      </Flex>
+                    </Box>
 
-                  {/* Revenue analytics */}
-                  <Box padding="400" background="bg-surface-secondary" borderRadius="300">
-                    <BlockStack gap="200">
-                      <Text variant="headingMd" as="h3">
-                        Revenue analytics
-                      </Text>
-                      <Text variant="bodyMd" as="p" tone="subdued">
-                        Track impressions, clicks, conversions and attributed revenue in real time.
-                      </Text>
-                    </BlockStack>
-                  </Box>
-                </InlineGrid>
-              </BlockStack>
-            </Card>
+                    {/* Revenue analytics */}
+                    <Box backgroundColor="secondary10" style={{ padding: "1rem", borderRadius: "8px" }}>
+                      <Flex flexDirection="column" flexGap="0.5rem">
+                        <H3>Revenue analytics</H3>
+                        <Text color="secondary">
+                          Track impressions, clicks, conversions and attributed revenue in real time.
+                        </Text>
+                      </Flex>
+                    </Box>
+                  </Grid>
+                </Flex>
+              </Box>
+            </Panel>
 
             {/* How it works */}
-            <Card>
-              <BlockStack gap="500">
-                <BlockStack gap="200">
-                  <Text variant="headingLg" as="h2">
-                    How it works
-                  </Text>
-                  <Text variant="bodyMd" as="p" tone="subdued">
-                    Three steps to raise average order value.
-                  </Text>
-                </BlockStack>
+            <Panel>
+              <Box style={{ padding: "1rem", borderRadius: "6px" }}>
+                <Flex flexDirection="column" flexGap="1.25rem">
+                  <Flex flexDirection="column" flexGap="0.5rem">
+                    <H2>How it works</H2>
+                    <Text color="secondary">
+                      Three steps to raise average order value.
+                    </Text>
+                  </Flex>
 
-                <Divider />
+                  <HR />
 
-                <InlineGrid columns={{ xs: 1, md: 3 }} gap="500">
-                  {/* Step 1 */}
-                  <BlockStack gap="300">
-                    <Box
-                      background="bg-fill-info"
-                      padding="200"
-                      borderRadius="200"
-                      width="32px"
-                      minHeight="32px"
-                    >
-                      <Text variant="headingMd" as="span" alignment="center">
-                        1
-                      </Text>
-                    </Box>
-                    <BlockStack gap="200">
-                      <Text variant="headingMd" as="h3">
-                        Understands real behaviour
-                      </Text>
-                      <Text variant="bodyMd" as="p" tone="subdued">
-                        The model analyses browsing and purchase patterns to learn how your products relate each other.
-                      </Text>
-                    </BlockStack>
-                  </BlockStack>
+                  <Grid
+                    gridColumns={{
+                      mobile: "repeat(1, minmax(0, 1fr))",
+                      tablet: "repeat(1, minmax(0, 1fr))",
+                      desktop: "repeat(3, minmax(0, 1fr))",
+                    }}
+                    gridGap="1.25rem"
+                  >
+                    {/* Step 1 */}
+                    <Flex flexDirection="column" flexGap="0.75rem">
+                      <Box
+                        backgroundColor="primary10"
+                        style={{
+                          padding: "0.5rem",
+                          borderRadius: "6px",
+                          width: "32px",
+                          minHeight: "32px",
+                          textAlign: "center",
+                        }}
+                      >
+                        <H3>1</H3>
+                      </Box>
+                      <Flex flexDirection="column" flexGap="0.5rem">
+                        <H3>Understands real behaviour</H3>
+                        <Text color="secondary">
+                          The model analyses browsing and purchase patterns to learn how your products relate each other.
+                        </Text>
+                      </Flex>
+                    </Flex>
 
-                  {/* Step 2 */}
-                  <BlockStack gap="300">
-                    <Box
-                      background="bg-fill-success"
-                      padding="200"
-                      borderRadius="200"
-                      width="32px"
-                      minHeight="32px"
-                    >
-                      <Text variant="headingMd" as="span" alignment="center">
-                        <span className="app-step-number-white">2</span>
-                      </Text>
-                    </Box>
-                    <BlockStack gap="200">
-                      <Text variant="headingMd" as="h3">
-                        Shows relevant suggestions
-                      </Text>
-                      <Text variant="bodyMd" as="p" tone="subdued">
-                        Personalised products and smart offers appear in cart and on product pages.
-                      </Text>
-                    </BlockStack>
-                  </BlockStack>
+                    {/* Step 2 */}
+                    <Flex flexDirection="column" flexGap="0.75rem">
+                      <Box
+                        backgroundColor="success10"
+                        style={{
+                          padding: "0.5rem",
+                          borderRadius: "6px",
+                          width: "32px",
+                          minHeight: "32px",
+                          textAlign: "center",
+                        }}
+                      >
+                        <H3><span className="app-step-number-white">2</span></H3>
+                      </Box>
+                      <Flex flexDirection="column" flexGap="0.5rem">
+                        <H3>Shows relevant suggestions</H3>
+                        <Text color="secondary">
+                          Personalised products and smart offers appear in cart and on product pages.
+                        </Text>
+                      </Flex>
+                    </Flex>
 
-                  {/* Step 3 */}
-                  <BlockStack gap="300">
-                    <Box
-                      background="bg-fill-warning"
-                      padding="200"
-                      borderRadius="200"
-                      width="32px"
-                      minHeight="32px"
-                    >
-                      <Text variant="headingMd" as="span" alignment="center">
-                        3
-                      </Text>
-                    </Box>
-                    <BlockStack gap="200">
-                      <Text variant="headingMd" as="h3">
-                        Measures and improves
-                      </Text>
-                      <Text variant="bodyMd" as="p" tone="subdued">
-                        Built-in testing tracks performance and continually optimises the model. The more you use it the better it gets!
-                      </Text>
-                    </BlockStack>
-                  </BlockStack>
-                </InlineGrid>
-              </BlockStack>
-            </Card>
+                    {/* Step 3 */}
+                    <Flex flexDirection="column" flexGap="0.75rem">
+                      <Box
+                        backgroundColor="warning10"
+                        style={{
+                          padding: "0.5rem",
+                          borderRadius: "6px",
+                          width: "32px",
+                          minHeight: "32px",
+                          textAlign: "center",
+                        }}
+                      >
+                        <H3>3</H3>
+                      </Box>
+                      <Flex flexDirection="column" flexGap="0.5rem">
+                        <H3>Measures and improves</H3>
+                        <Text color="secondary">
+                          Built-in testing tracks performance and continually optimises the model. The more you use it the better it gets!
+                        </Text>
+                      </Flex>
+                    </Flex>
+                  </Grid>
+                </Flex>
+              </Box>
+            </Panel>
 
             {/* Why it works */}
-            <Card>
-              <BlockStack gap="500">
-                <BlockStack gap="200">
-                  <Text variant="headingLg" as="h2">
-                    Why AI beats static rules
-                  </Text>
-                  <Text variant="bodyMd" as="p" tone="subdued">
-                    Smarter recommendations, better results. Built to learn from real customer behaviour and adapt as patterns change.
-                  </Text>
-                </BlockStack>
+            <Panel>
+              <Box style={{ padding: "1rem", borderRadius: "6px" }}>
+                <Flex flexDirection="column" flexGap="1.25rem">
+                  <Flex flexDirection="column" flexGap="0.5rem">
+                    <H2>Why AI beats static rules</H2>
+                    <Text color="secondary">
+                      Smarter recommendations, better results. Built to learn from real customer behaviour and adapt as patterns change.
+                    </Text>
+                  </Flex>
 
-                <Divider />
+                  <HR />
 
-                <Box
-                  padding="500"
-                  borderRadius="300"
-                >
-                  <BlockStack gap="200">
-                    <InlineGrid columns={{ xs: 1, md: 2 }} gap="400">
-                      <BlockStack gap="200">
-                        <Text variant="headingMd" as="h3">
-                          Learns continuously
-                        </Text>
-                        <Text variant="bodyMd" as="p">
-                          No hard-coded rules. The model adapts to what people view, click and buy so suggestions stay relevant.
-                        </Text>
-                      </BlockStack>
+                  <Box style={{ padding: "1.25rem", borderRadius: "8px" }}>
+                    <Flex flexDirection="column" flexGap="0.5rem">
+                      <Grid
+                        gridColumns={{
+                          mobile: "repeat(1, minmax(0, 1fr))",
+                          tablet: "repeat(1, minmax(0, 1fr))",
+                          desktop: "repeat(2, minmax(0, 1fr))",
+                        }}
+                        gridGap="1rem"
+                      >
+                        <Flex flexDirection="column" flexGap="0.5rem">
+                          <H3>Learns continuously</H3>
+                          <Text>
+                            No hard-coded rules. The model adapts to what people view, click and buy so suggestions stay relevant.
+                          </Text>
+                        </Flex>
 
-                      <BlockStack gap="200">
-                        <Text variant="headingMd" as="h3">
-                          Personal to each shopper
-                        </Text>
-                        <Text variant="bodyMd" as="p">
-                          Not generic. Visitors see products that fit their intent and context on your site.
-                        </Text>
-                      </BlockStack>
+                        <Flex flexDirection="column" flexGap="0.5rem">
+                          <H3>Personal to each shopper</H3>
+                          <Text>
+                            Not generic. Visitors see products that fit their intent and context on your site.
+                          </Text>
+                        </Flex>
 
-                      <BlockStack gap="200">
-                        <Text variant="headingMd" as="h3">
-                          FBT - Smart product pairing
-                        </Text>
-                        <Text variant="bodyMd" as="p">
-                          Identifies products often bought together and offers fair discounts that feel natural.
-                        </Text>
-                      </BlockStack>
+                        <Flex flexDirection="column" flexGap="0.5rem">
+                          <H3>FBT - Smart product pairing</H3>
+                          <Text>
+                            Identifies products often bought together and offers fair discounts that feel natural.
+                          </Text>
+                        </Flex>
 
-                      <BlockStack gap="200">
-                        <Text variant="headingMd" as="h3">
-                          Optimises itself
-                        </Text>
-                        <Text variant="bodyMd" as="p">
-                          Tracks what converts and quietly removes suggestions that don’t perform. Your recommendations get better over time.
-                        </Text>
-                      </BlockStack>
-                    </InlineGrid>
-                  </BlockStack>
-                </Box>
-              </BlockStack>
-            </Card>
+                        <Flex flexDirection="column" flexGap="0.5rem">
+                          <H3>Optimises itself</H3>
+                          <Text>
+                            Tracks what converts and quietly removes suggestions that don't perform. Your recommendations get better over time.
+                          </Text>
+                        </Flex>
+                      </Grid>
+                    </Flex>
+                  </Box>
+                </Flex>
+              </Box>
+            </Panel>
 
             {/* Support */}
-            <Card>
-              <BlockStack gap="400">
-                <BlockStack gap="200">
-                  <Text variant="headingMd" as="h3">
-                    Need help getting started?
-                  </Text>
-                  <Text variant="bodyMd" as="p" tone="subdued">
-                    We can help with set-up and best practice for your catalogue.
-                  </Text>
-                </BlockStack>
-                <InlineStack gap="300">
-                  <Button onClick={() => setSupportModalOpen(true)}>
-                    Contact support
-                  </Button>
-                </InlineStack>
-              </BlockStack>
-            </Card>
-          </BlockStack>
-        </Layout.Section>
-      </Layout>
-      
-      <SupportModal 
+            <Panel>
+              <Box style={{ padding: "1rem", borderRadius: "6px" }}>
+                <Flex flexDirection="column" flexGap="1rem">
+                  <Flex flexDirection="column" flexGap="0.5rem">
+                    <H3>Need help getting started?</H3>
+                    <Text color="secondary">
+                      We can help with set-up and best practice for your catalogue.
+                    </Text>
+                  </Flex>
+                  <Flex flexDirection="row" flexGap="0.75rem">
+                    <Button variant="secondary" onClick={() => setSupportModalOpen(true)}>
+                      Contact support
+                    </Button>
+                  </Flex>
+                </Flex>
+              </Box>
+            </Panel>
+          </Flex>
+        </Box>
+      </Flex>
+
+      <SupportModal
         open={supportModalOpen}
         onClose={() => setSupportModalOpen(false)}
         planTier={planTier}
       />
-    </Page>
+    </Box>
   );
 }

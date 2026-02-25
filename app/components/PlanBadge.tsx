@@ -1,4 +1,4 @@
-import { Badge, Text } from "@shopify/polaris";
+import { Badge, Small } from "@bigcommerce/big-design";
 import type { PlanTier } from "../types/billing";
 import styles from "./PlanBadge.module.css";
 
@@ -17,7 +17,7 @@ export function PlanBadge({ plan, orderCount, orderLimit, isApproaching, onClick
     pro: "Pro",
   };
 
-  const badgeTone = isApproaching ? "warning" : "info";
+  const badgeVariant = isApproaching ? "warning" : "secondary";
   // Fallback for legacy "free" tier (migration in progress)
   const label = planLabels[plan] || "Starter (Trial)";
   // Check for Infinity (converted to 999999 in serialization) or Pro plan
@@ -27,11 +27,11 @@ export function PlanBadge({ plan, orderCount, orderLimit, isApproaching, onClick
 
   return (
     <Wrapper onClick={onClick} className={styles.planBadge} style={onClick ? undefined : { cursor: 'default' }}>
-      <Badge tone={badgeTone}>{label}</Badge>
+      <Badge variant={badgeVariant} label={label} />
       {!isUnlimited && orderLimit > 0 && (
-        <Text as="span" variant="bodySm" tone="subdued">
+        <Small>
           {orderCount}/{orderLimit}
-        </Text>
+        </Small>
       )}
     </Wrapper>
   );

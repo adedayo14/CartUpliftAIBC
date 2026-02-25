@@ -1,21 +1,22 @@
 import { json, type LoaderFunctionArgs, type ActionFunctionArgs } from "@remix-run/node";
 import { useLoaderData, useFetcher } from "@remix-run/react";
 import { useState } from "react";
-import { AppProvider } from "@shopify/polaris";
-import "@shopify/polaris/build/esm/styles.css";
 import {
-  Page,
-  Layout,
-  Card,
+  Box,
+  Grid,
+  GridItem,
+  Panel,
   Button,
-  BlockStack,
+  Flex,
   Text,
-  TextField,
-  FormLayout,
-  Banner,
-} from "@shopify/polaris";
+  Input,
+  Textarea,
+  Message,
+  H1,
+  H2,
+} from "@bigcommerce/big-design";
 
-// This is a standalone page - no Shopify authentication required
+// This is a standalone page - no BigCommerce authentication required
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const url = new URL(request.url);
   const shop = url.searchParams.get("shop") || "";
@@ -26,7 +27,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 export const action = async ({ request }: ActionFunctionArgs) => {
   const url = new URL(request.url);
   const shop = url.searchParams.get("shop") || "";
-  
+
   const formData = await request.formData();
   const subject = formData.get("subject")?.toString() || "";
   const message = formData.get("message")?.toString() || "";
@@ -35,7 +36,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     // Forward to the contact-support API
     const response = await fetch(`${url.origin}/api/contact-support`, {
       method: 'POST',
-      headers: { 
+      headers: {
         'Content-Type': 'application/json',
         'X-Shop-Domain': shop,
       },
@@ -82,86 +83,90 @@ export default function SupportPage() {
   }
 
   return (
-    <AppProvider i18n={{}}>
-      <Page>
-        <Layout>
-          <Layout.Section>
-            <BlockStack gap="500">
+    <>
+      <Box padding="medium">
+        <Grid gridColumns="1fr">
+          <GridItem>
+            <Flex flexDirection="column" flexGap="1.25rem">
               {/* Header */}
-              <Card>
-                <BlockStack gap="400">
-                  <BlockStack gap="200">
-                    <Text variant="headingXl" as="h1">
+              <Panel>
+                <Flex flexDirection="column" flexGap="1rem">
+                  <Flex flexDirection="column" flexGap="0.5rem">
+                    <H1>
                       Cart Uplift Support
-                    </Text>
-                    <Text variant="bodyLg" as="p" tone="subdued">
+                    </H1>
+                    <Text color="secondary">
                       {shop && `Support for ${shop}`}
                     </Text>
-                  </BlockStack>
-                </BlockStack>
-              </Card>
+                  </Flex>
+                </Flex>
+              </Panel>
 
               {/* Email Support Form */}
-              <Card>
-                <BlockStack gap="400">
-                  <BlockStack gap="200">
-                    <Text variant="headingLg" as="h2">
+              <Panel>
+                <Flex flexDirection="column" flexGap="1rem">
+                  <Flex flexDirection="column" flexGap="0.5rem">
+                    <H2>
                       Send us a message
-                    </Text>
-                    <Text variant="bodyMd" as="p" tone="subdued">
+                    </H2>
+                    <Text color="secondary">
                       We'll get back to you as soon as possible.
                     </Text>
-                  </BlockStack>
+                  </Flex>
 
                   {isSuccess && (
-                    <Banner tone="success">
-                      <Text as="p">
-                        Your message has been sent! We'll respond soon.
-                      </Text>
-                    </Banner>
+                    <Message
+                      type="success"
+                      messages={[
+                        {
+                          text: "Your message has been sent! We'll respond soon.",
+                        },
+                      ]}
+                    />
                   )}
 
                   {error && (
-                    <Banner tone="critical">
-                      <Text as="p">{error}</Text>
-                    </Banner>
+                    <Message
+                      type="error"
+                      messages={[
+                        {
+                          text: error,
+                        },
+                      ]}
+                    />
                   )}
 
-                  <FormLayout>
-                    <TextField
-                      label="Subject"
-                      value={subject}
-                      onChange={setSubject}
-                      placeholder="e.g., Help with setting up bundles"
-                      autoComplete="off"
-                      disabled={isSuccess}
-                    />
+                  <Input
+                    label="Subject"
+                    value={subject}
+                    onChange={(e) => setSubject(e.target.value)}
+                    placeholder="e.g., Help with setting up bundles"
+                    disabled={isSuccess}
+                  />
 
-                    <TextField
-                      label="Message"
-                      value={message}
-                      onChange={setMessage}
-                      multiline={8}
-                      placeholder="Please describe your issue or question in detail..."
-                      autoComplete="off"
-                      disabled={isSuccess}
-                    />
+                  <Textarea
+                    label="Message"
+                    value={message}
+                    onChange={(e) => setMessage(e.target.value)}
+                    rows={8}
+                    placeholder="Please describe your issue or question in detail..."
+                    disabled={isSuccess}
+                  />
 
-                    <Button
-                      onClick={handleSubmit}
-                      loading={isSubmitting}
-                      disabled={!subject || !message || isSuccess}
-                      variant="primary"
-                    >
-                      {isSuccess ? "Sent!" : "Send message"}
-                    </Button>
-                  </FormLayout>
-                </BlockStack>
-              </Card>
-            </BlockStack>
-          </Layout.Section>
-        </Layout>
-      </Page>
-    </AppProvider>
+                  <Button
+                    onClick={handleSubmit}
+                    isLoading={isSubmitting}
+                    disabled={!subject || !message || isSuccess}
+                    variant="primary"
+                  >
+                    {isSuccess ? "Sent!" : "Send message"}
+                  </Button>
+                </Flex>
+              </Panel>
+            </Flex>
+          </GridItem>
+        </Grid>
+      </Box>
+    </>
   );
 }

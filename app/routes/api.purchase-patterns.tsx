@@ -1,14 +1,12 @@
 import type { LoaderFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
-import { authenticate } from "../shopify.server";
 import { validateCorsOrigin, getCorsHeaders } from "../services/security.server";
 import prisma from "../db.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   try {
-    const { session } = await authenticate.public.appProxy(request);
     const url = new URL(request.url);
-    const shop = url.searchParams.get('shop') || session?.shop;
+    const shop = url.searchParams.get('store_hash') || url.searchParams.get('shop');
 
     if (!shop) {
       return json({ error: 'Shop parameter required' }, { status: 400 });
@@ -21,7 +19,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
     // Fetch product pairs from ML similarity data
     const similarityData = await prisma.mLProductSimilarity.findMany({
-      where: { shop },
+      where: { storeHash: shop },
       orderBy: { overallScore: 'desc' },
       take: 50 // Top 50 product pairs
     });
@@ -38,7 +36,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     // Get store metadata for AOV calculation from checkout events
     const recentOrders = await prisma.trackingEvent.findMany({
       where: {
-        shop,
+        storeHash: shop,
         event: 'purchase'
       },
       select: { revenueCents: true },

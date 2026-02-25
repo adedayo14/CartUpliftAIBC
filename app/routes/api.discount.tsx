@@ -1,6 +1,6 @@
 import type { ActionFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
-import { authenticate } from "../shopify.server";
+import { authenticateAdmin, bigcommerceApi } from "../bigcommerce.server";
 import { rateLimitByIP } from "../utils/rateLimiter.server";
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -18,7 +18,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       );
     }
 
-    const { session } = await authenticate.public.appProxy(request);
+    const { session, storeHash } = await authenticateAdmin(request);
 
     if (!session) {
       return json({ error: "Unauthorized" }, { status: 401 });
@@ -31,91 +31,49 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       return json({ error: "Discount code is required" }, { status: 400 });
     }
 
-    // Use Shopify Admin API to validate discount
-    const { admin } = await authenticate.admin(request);
-    
+    // BigCommerce Coupons API (GET /v2/coupons?code=...) validates discount codes.
     try {
-      // Query for discount codes
-      const discountQuery = `
-        query getDiscountByCode($query: String!) {
-          discountCodes(first: 1, query: $query) {
-            edges {
-              node {
-                id
-                code
-                ... on DiscountCodeBasic {
-                  status
-                  summary
-                  startsAt
-                  endsAt
-                  usageLimit
-                }
-                ... on DiscountCodeBxgy {
-                  status
-                  summary
-                  startsAt
-                  endsAt
-                  usageLimit
-                }
-                ... on DiscountCodeFreeShipping {
-                  status
-                  summary
-                  startsAt
-                  endsAt
-                  usageLimit
-                }
-              }
-            }
-          }
-        }
-      `;
+      // Validate discount code via BigCommerce Coupons API (v2)
+      const couponsResponse = await bigcommerceApi(
+        storeHash,
+        `/coupons?code=${encodeURIComponent(discountCode)}`,
+        { version: "v2" }
+      );
+      const coupons = await couponsResponse.json();
 
-      const discountResponse = await admin.graphql(discountQuery, {
-        variables: {
-          query: `code:${discountCode}`
-        }
-      });
-
-      const discountData = await discountResponse.json();
-      
-      if (discountData.data?.discountCodes?.edges?.length > 0) {
-        const discount = discountData.data.discountCodes.edges[0].node;
-        
-        // Check if discount is active
-        const now = new Date();
-        const startsAt = discount.startsAt ? new Date(discount.startsAt) : null;
-        const endsAt = discount.endsAt ? new Date(discount.endsAt) : null;
-        
-        if (discount.status === 'ACTIVE' && 
-            (!startsAt || startsAt <= now) && 
-            (!endsAt || endsAt >= now)) {
-          
-          return json({ 
-            success: true, 
-            discount: {
-              code: discount.code,
-              summary: discount.summary,
-              status: discount.status
-            }
-          });
-        } else {
-          return json({ 
-            success: false, 
-            error: "Discount code is not active or has expired" 
-          });
-        }
-      } else {
-        return json({ 
-          success: false, 
-          error: "Invalid discount code" 
+      if (!Array.isArray(coupons) || coupons.length === 0) {
+        return json({
+          success: false,
+          error: "Invalid discount code"
         });
       }
 
-    } catch (graphqlError) {
-      console.error('GraphQL Error:', graphqlError);
-      return json({ 
-        success: false, 
-        error: "Unable to validate discount code" 
+      const coupon = coupons[0];
+
+      if (!coupon.enabled) {
+        return json({
+          success: false,
+          error: "This discount code is no longer active"
+        });
+      }
+
+      return json({
+        success: true,
+        discount: {
+          id: String(coupon.id),
+          code: coupon.code,
+          title: coupon.name,
+          type: coupon.type,
+          value: coupon.amount,
+          enabled: coupon.enabled,
+        }
+      });
+
+    } catch (apiError) {
+      console.error('Discount validation error:', apiError);
+      return json({
+        success: false,
+        error: "Unable to validate discount code"
       });
     }
 

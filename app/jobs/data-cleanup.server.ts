@@ -35,14 +35,14 @@ export async function cleanupOldData(): Promise<CleanupResult> {
   try {
     // Get all unique shops that have settings
     const shops = await prisma.settings.findMany({
-      select: { shop: true, mlDataRetentionDays: true },
-      distinct: ['shop'],
+      select: { storeHash: true, mlDataRetentionDays: true },
+      distinct: ['storeHash'],
     });
 
     console.log(`[Data Cleanup] Processing ${shops.length} shops`);
 
     for (const shopConfig of shops) {
-      const { shop, mlDataRetentionDays } = shopConfig;
+      const { storeHash: shop, mlDataRetentionDays } = shopConfig;
 
       // Parse retention period (default 90 days if not set)
       const retentionDays = parseInt(String(mlDataRetentionDays || '90'), 10);
@@ -64,7 +64,7 @@ export async function cleanupOldData(): Promise<CleanupResult> {
         // 1. Delete old tracking events
         const trackingDeleted = await prisma.trackingEvent.deleteMany({
           where: {
-            shop,
+            storeHash: shop,
             createdAt: {
               lt: cutoffDate,
             },
@@ -74,7 +74,7 @@ export async function cleanupOldData(): Promise<CleanupResult> {
         // 2. Delete old analytics events
         const analyticsDeleted = await prisma.analyticsEvent.deleteMany({
           where: {
-            shop,
+            storeHash: shop,
             timestamp: {
               lt: cutoffDate,
             },
@@ -84,7 +84,7 @@ export async function cleanupOldData(): Promise<CleanupResult> {
         // 3. Delete stale user profiles (not active recently)
         const profilesDeleted = await prisma.mLUserProfile.deleteMany({
           where: {
-            shop,
+            storeHash: shop,
             lastActivity: {
               lt: cutoffDate,
             },
@@ -94,7 +94,7 @@ export async function cleanupOldData(): Promise<CleanupResult> {
         // 4. Delete stale product similarities (not computed recently)
         const similaritiesDeleted = await prisma.mLProductSimilarity.deleteMany({
           where: {
-            shop,
+            storeHash: shop,
             computedAt: {
               lt: cutoffDate,
             },
@@ -123,7 +123,7 @@ export async function cleanupOldData(): Promise<CleanupResult> {
         // Record cleanup job completion
         await prisma.mLDataRetentionJob.create({
           data: {
-            shop,
+            storeHash: shop,
             jobType: "cleanup",
             status: "completed",
             dataType: "all",
@@ -156,7 +156,7 @@ export async function cleanupOldData(): Promise<CleanupResult> {
  */
 export async function getCleanupHistory(shop: string, limit = 10) {
   return await prisma.mLDataRetentionJob.findMany({
-    where: { shop },
+    where: { storeHash: shop },
     orderBy: { completedAt: 'desc' },
     take: limit,
   });
@@ -171,16 +171,16 @@ export async function estimateCleanup(shop: string, retentionDays: number) {
 
   const [tracking, analytics, profiles, similarities] = await Promise.all([
     prisma.trackingEvent.count({
-      where: { shop, createdAt: { lt: cutoffDate } },
+      where: { storeHash: shop, createdAt: { lt: cutoffDate } },
     }),
     prisma.analyticsEvent.count({
-      where: { shop, timestamp: { lt: cutoffDate } },
+      where: { storeHash: shop, timestamp: { lt: cutoffDate } },
     }),
     prisma.mLUserProfile.count({
-      where: { shop, lastActivity: { lt: cutoffDate } },
+      where: { storeHash: shop, lastActivity: { lt: cutoffDate } },
     }),
     prisma.mLProductSimilarity.count({
-      where: { shop, computedAt: { lt: cutoffDate } },
+      where: { storeHash: shop, computedAt: { lt: cutoffDate } },
     }),
   ]);
 

@@ -1,56 +1,10 @@
 import type { LoaderFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
-import { authenticate } from "../shopify.server";
+import { authenticateAdmin, bigcommerceApi } from "../bigcommerce.server";
+import prisma from "../db.server";
 import { rateLimitRequest } from "../utils/rateLimiter.server";
 
 // Type definitions
-interface GraphQLOrderLineItem {
-  quantity: number;
-  product: {
-    id: string;
-    title: string;
-    handle: string;
-    media: {
-      edges: Array<{
-        node: {
-          image?: {
-            url: string;
-            altText: string;
-          };
-        };
-      }>;
-    };
-  };
-  variant: {
-    id: string;
-    price: string;
-  };
-}
-
-interface GraphQLOrderNode {
-  id: string;
-  createdAt: string;
-  totalPriceSet: {
-    shopMoney: {
-      amount: string;
-    };
-  };
-  lineItems: {
-    edges: Array<{
-      node: GraphQLOrderLineItem;
-    }>;
-  };
-}
-
-interface GraphQLOrdersResponse {
-  data?: {
-    orders: {
-      edges: Array<{
-        node: GraphQLOrderNode;
-      }>;
-    };
-  };
-}
 
 interface ProductInfo {
   id: string;
@@ -92,12 +46,17 @@ interface BundleOpportunity {
   lift?: number;
 }
 
-export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { admin, session } = await authenticate.admin(request);
-  const shop = session.shop;
+interface OrderRecord {
+  orderId: string;
+  orderValue: number;
+  productIds: string[];
+  createdAt: Date;
+}
 
-  // SECURITY: Strict rate limiting - 10 requests per minute (very expensive 500-order query)
-  const rateLimitResult = await rateLimitRequest(request, shop, {
+export const loader = async ({ request }: LoaderFunctionArgs) => {
+  const { storeHash } = await authenticateAdmin(request);
+
+  const rateLimitResult = await rateLimitRequest(request, storeHash, {
     maxRequests: 10,
     windowMs: 60 * 1000,
     burstMax: 3,
@@ -120,71 +79,111 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   }
 
   const url = new URL(request.url);
-  // Optional mode to switch scoring strategy without breaking callers
-  // "basic" keeps the old behavior; "advanced" uses time-decayed lift/confidence.
   const mode = (url.searchParams.get("mode") || "advanced").toLowerCase();
   const includeDebug = url.searchParams.get("debug") === "1";
 
   try {
-    // Fetch recent orders to analyze product associations
-    const response = await admin.graphql(`
-      #graphql
-      query getOrderAssociations($first: Int!) {
-        orders(first: $first, sortKey: CREATED_AT, reverse: true) {
-          edges {
-            node {
-              id
-              createdAt
-              totalPriceSet {
-                shopMoney {
-                  amount
-                }
-              }
-              lineItems(first: 20) {
-                edges {
-                  node {
-                    quantity
-                    product {
-                      id
-                      title
-                      handle
-                      media(first: 1) {
-                        edges {
-                          node {
-                            ... on MediaImage {
-                              image {
-                                url
-                                altText
-                              }
-                            }
-                          }
-                        }
-                      }
-                    }
-                    variant {
-                      id
-                      price
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    `, {
-      variables: {
-        first: 500 // Analyze more orders for better associations
-      }
+    // Query purchase events from our own database instead of calling BigCommerce orders API.
+    // AnalyticsEvent rows with eventType "purchase" carry orderId, orderValue, and productIds (JSON array).
+    const purchaseEvents = await prisma.analyticsEvent.findMany({
+      where: {
+        storeHash,
+        eventType: "purchase",
+        orderId: { not: null },
+        productIds: { not: null },
+      },
+      orderBy: { timestamp: "desc" },
+      take: 500,
+      select: {
+        orderId: true,
+        orderValue: true,
+        productIds: true,
+        timestamp: true,
+      },
     });
 
-    const responseData = await response.json() as GraphQLOrdersResponse;
-    const orders = responseData.data?.orders?.edges || [];
+    // Deduplicate by orderId and parse productIds JSON
+    const orderMap = new Map<string, OrderRecord>();
+    for (const evt of purchaseEvents) {
+      if (!evt.orderId || !evt.productIds) continue;
+      if (orderMap.has(evt.orderId)) continue;
+
+      let parsedIds: string[];
+      try {
+        const raw = JSON.parse(evt.productIds);
+        parsedIds = Array.isArray(raw) ? raw.map(String) : [];
+      } catch {
+        continue;
+      }
+
+      if (parsedIds.length === 0) continue;
+
+      orderMap.set(evt.orderId, {
+        orderId: evt.orderId,
+        orderValue: evt.orderValue ? Number(evt.orderValue) : 0,
+        productIds: parsedIds,
+        createdAt: evt.timestamp,
+      });
+    }
+
+    const orders = Array.from(orderMap.values());
+
+    // Collect all unique product IDs to fetch details from BigCommerce catalog
+    const allProductIds = new Set<string>();
+    for (const order of orders) {
+      for (const pid of order.productIds) {
+        allProductIds.add(pid);
+      }
+    }
+
+    // Fetch product details from BigCommerce catalog API (batch)
+    const productInfoMap = new Map<string, ProductInfo>();
+    const productIdArray = Array.from(allProductIds);
+
+    if (productIdArray.length > 0) {
+      // BigCommerce allows up to 250 IDs per request; batch if needed
+      const BATCH_SIZE = 250;
+      for (let i = 0; i < productIdArray.length; i += BATCH_SIZE) {
+        const batch = productIdArray.slice(i, i + BATCH_SIZE);
+        const idsParam = batch.join(",");
+        try {
+          const catalogRes = await bigcommerceApi(
+            storeHash,
+            `/catalog/products?id:in=${idsParam}&include=images&limit=${BATCH_SIZE}`
+          );
+          if (catalogRes.ok) {
+            const catalogData = await catalogRes.json();
+            const products = catalogData.data || [];
+            for (const p of products) {
+              const primaryImage = (p.images || []).find((img: { is_thumbnail?: boolean }) => img.is_thumbnail) || (p.images || [])[0];
+              productInfoMap.set(String(p.id), {
+                id: String(p.id),
+                title: p.name || "",
+                handle: p.custom_url?.url?.replace(/\//g, "") || String(p.id),
+                image: primaryImage?.url_standard || primaryImage?.url_thumbnail || "",
+                price: parseFloat(p.price) || 0,
+              });
+            }
+          }
+        } catch {
+          // Continue with whatever product info we have
+        }
+      }
+    }
+
+    // Fallback product info for IDs we couldn't fetch
+    function getProductInfo(productId: string): ProductInfo {
+      return productInfoMap.get(productId) || {
+        id: productId,
+        title: `Product ${productId}`,
+        handle: productId,
+        image: "",
+        price: 0,
+      };
+    }
 
     // Build product association matrix
     const associations: Record<string, AssociationData> = {};
-
-    // Global counters
     const productAppearances: Record<string, number> = {};
     const productWeightedAppearances: Record<string, number> = {};
 
@@ -193,38 +192,25 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     const LN2_OVER_HL = Math.log(2) / HALF_LIFE_DAYS;
 
     // Analyze each order for product associations
-    orders.forEach((order: { node: GraphQLOrderNode }) => {
-      const orderNode = order.node;
-      const orderValue = parseFloat(orderNode.totalPriceSet.shopMoney.amount);
-      const lineItems = orderNode.lineItems.edges;
-      const createdAt = new Date(orderNode.createdAt);
-      const ageDays = Math.max(0, (Date.now() - createdAt.getTime()) / (1000 * 60 * 60 * 24));
+    for (const order of orders) {
+      const orderValue = order.orderValue;
+      const productIds = order.productIds;
+      const ageDays = Math.max(0, (Date.now() - order.createdAt.getTime()) / (1000 * 60 * 60 * 24));
       const decayWeight = Math.exp(-LN2_OVER_HL * ageDays);
 
       // Skip single-item orders for association analysis
-      if (lineItems.length < 2) return;
+      if (productIds.length < 2) continue;
 
       // Analyze all product pairs in this order
-      for (let i = 0; i < lineItems.length; i++) {
-        for (let j = i + 1; j < lineItems.length; j++) {
-          const itemA = lineItems[i].node;
-          const itemB = lineItems[j].node;
-          
-          if (!itemA.product || !itemB.product) continue;
-
-          const productAId = itemA.product.id.replace('gid://shopify/Product/', '');
-          const productBId = itemB.product.id.replace('gid://shopify/Product/', '');
+      for (let i = 0; i < productIds.length; i++) {
+        for (let j = i + 1; j < productIds.length; j++) {
+          const productAId = productIds[i];
+          const productBId = productIds[j];
 
           // Initialize tracking for product A
           if (!associations[productAId]) {
             associations[productAId] = {
-              product: {
-                id: productAId,
-                title: itemA.product.title,
-                handle: itemA.product.handle,
-                image: itemA.product.media.edges[0]?.node?.image?.url || '',
-                price: parseFloat(itemA.variant?.price || 0)
-              },
+              product: getProductInfo(productAId),
               associatedWith: {},
               totalOrders: 0,
               appearances: 0,
@@ -235,13 +221,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           // Initialize tracking for product B
           if (!associations[productBId]) {
             associations[productBId] = {
-              product: {
-                id: productBId,
-                title: itemB.product.title,
-                handle: itemB.product.handle,
-                image: itemB.product.media.edges[0]?.node?.image?.url || '',
-                price: parseFloat(itemB.variant?.price || 0)
-              },
+              product: getProductInfo(productBId),
               associatedWith: {},
               totalOrders: 0,
               appearances: 0,
@@ -278,22 +258,22 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           associations[productAId].associatedWith[productBId].weightedCoOccurrence += decayWeight;
           associations[productAId].associatedWith[productBId].totalRevenue += orderValue;
           associations[productAId].associatedWith[productBId].weightedRevenue += orderValue * decayWeight;
-          associations[productAId].associatedWith[productBId].avgOrderValue = 
-            associations[productAId].associatedWith[productBId].totalRevenue / 
+          associations[productAId].associatedWith[productBId].avgOrderValue =
+            associations[productAId].associatedWith[productBId].totalRevenue /
             associations[productAId].associatedWith[productBId].coOccurrence;
 
           associations[productBId].associatedWith[productAId].coOccurrence++;
           associations[productBId].associatedWith[productAId].weightedCoOccurrence += decayWeight;
           associations[productBId].associatedWith[productAId].totalRevenue += orderValue;
           associations[productBId].associatedWith[productAId].weightedRevenue += orderValue * decayWeight;
-          associations[productBId].associatedWith[productAId].avgOrderValue = 
-            associations[productBId].associatedWith[productAId].totalRevenue / 
+          associations[productBId].associatedWith[productAId].avgOrderValue =
+            associations[productBId].associatedWith[productAId].totalRevenue /
             associations[productBId].associatedWith[productAId].coOccurrence;
 
           associations[productAId].totalOrders++;
           associations[productBId].totalOrders++;
 
-          // Track appearances per order (count each item once per order for A and B)
+          // Track appearances per order
           associations[productAId].appearances++;
           associations[productBId].appearances++;
           associations[productAId].weightedAppearances += decayWeight;
@@ -304,12 +284,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           productWeightedAppearances[productBId] = (productWeightedAppearances[productBId] || 0) + decayWeight;
         }
       }
-    });
+    }
 
     // Find the best bundle opportunities
     const bundleOpportunities: BundleOpportunity[] = [];
-    
-    // Total unique products considered
+
     for (const [productId, data] of Object.entries(associations)) {
       // Only consider products that appear in multiple orders
       if (data.totalOrders < 3) continue;
@@ -319,15 +298,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         if (mode === 'basic') {
           const associationStrength = assocData.coOccurrence / data.totalOrders;
           if (associationStrength >= 0.6 && assocData.coOccurrence >= 5) {
-            // Check if we already have this bundle (avoid duplicates)
-            const existingBundle = bundleOpportunities.find(bundle => 
+            const existingBundle = bundleOpportunities.find(bundle =>
               (bundle.productA.id === productId && bundle.productB.id === associatedId) ||
               (bundle.productA.id === associatedId && bundle.productB.id === productId)
             );
 
             if (!existingBundle) {
               const totalBundleValue = data.product.price + (associations[associatedId]?.product.price || 0);
-              const suggestedDiscount = Math.min(Math.floor(associationStrength * 20), 15); // Max 15% discount
+              const suggestedDiscount = Math.min(Math.floor(associationStrength * 20), 15);
 
               bundleOpportunities.push({
                 productA: data.product,
@@ -358,15 +336,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         const passes = (confidence >= 0.3 && weightedCo >= 3) || (lift >= 1.2 && weightedCo >= 2.5);
         if (!passes) continue;
 
-          // Check if we already have this bundle (avoid duplicates)
-          const existingBundle = bundleOpportunities.find(bundle => 
+          const existingBundle = bundleOpportunities.find(bundle =>
             (bundle.productA.id === productId && bundle.productB.id === associatedId) ||
             (bundle.productA.id === associatedId && bundle.productB.id === productId)
           );
 
           if (!existingBundle) {
             const totalBundleValue = data.product.price + (associations[associatedId]?.product.price || 0);
-            // Scale suggested discount by confidence, cap at 15%
             const suggestedDiscount = Math.min(Math.floor(Math.min(1, confidence) * 20), 15);
 
             bundleOpportunities.push({
@@ -384,7 +360,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         }
       }
 
-    // Sort by score: prefer higher lift/confidence and revenue (advanced), fall back to old score (basic)
+    // Sort by score
     bundleOpportunities.sort((a, b) => {
       if (mode === 'advanced') {
         const liftA = a.lift ?? a.associationStrength / 100;
@@ -399,7 +375,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     });
 
     return json({
-      bundleOpportunities: bundleOpportunities.slice(0, 10), // Top 10 bundle opportunities
+      bundleOpportunities: bundleOpportunities.slice(0, 10),
       totalAssociations: Object.keys(associations).length,
       analyzedOrders: orders.length,
       mode

@@ -27,11 +27,15 @@ export const loader = async ({ request: _request }: LoaderFunctionArgs) => {
         hasSettings
       },
       env: {
-        hasApiKey: !!process.env.SHOPIFY_API_KEY,
-        hasApiSecret: !!process.env.SHOPIFY_API_SECRET,
+        hasApiKey: !!process.env.BC_CLIENT_ID,
+        hasApiSecret: !!process.env.BC_CLIENT_SECRET,
         hasDatabaseUrl: !!process.env.DATABASE_URL,
         hasSessionSecret: !!process.env.SESSION_SECRET,
-        hasAppUrl: !!process.env.SHOPIFY_APP_URL,
+        hasAppUrl: !!process.env.BC_APP_URL,
+        hasBillingProvider: !!process.env.BILLING_PROVIDER,
+        hasPartnerAccountUuid: !!process.env.BC_PARTNER_ACCOUNT_UUID,
+        hasAccountApiToken: !!process.env.BC_ACCOUNT_API_TOKEN,
+        hasApplicationId: !!process.env.BC_APPLICATION_ID,
         nodeEnv: process.env.NODE_ENV
       }
     });

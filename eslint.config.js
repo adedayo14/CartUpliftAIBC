@@ -18,9 +18,8 @@ export default [
       "extensions/**",
       // Misc large/binary bundles
       "cartuplift-main.bundle",
-      // Generated local history and Shopify dev bundles
+      // Generated local history
       ".history/**",
-      ".shopify/**",
     ],
   },
   {
@@ -35,7 +34,6 @@ export default [
       globals: {
         ...globals.browser,
         ...globals.node,
-        shopify: "readonly",
       },
     },
     settings: {
@@ -86,7 +84,6 @@ export default [
   {
     files: [
       "scripts/ml-seed-orders.js",
-      "scripts/bulk-inventory-increase.js",
     ],
     languageOptions: {
       parserOptions: { ecmaVersion: "latest", sourceType: "script" },

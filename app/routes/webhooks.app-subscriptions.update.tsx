@@ -1,15 +1,15 @@
 import { type ActionFunctionArgs } from "@remix-run/node";
 import db from "~/db.server";
-import { authenticate } from "~/shopify.server";
+import { authenticateWebhook } from "../bigcommerce.server";
 import type { PlanTier } from "~/types/billing";
 
 /**
- * 💳 SUBSCRIPTION UPDATE WEBHOOK (Shopify Managed Pricing)
+ * 💳 SUBSCRIPTION UPDATE WEBHOOK (BigCommerce Billing)
  *
- * Purpose: Sync plan changes from Shopify to our database
- * Triggered: When merchant upgrades/downgrades via Shopify App Store
+ * Purpose: Sync plan changes from BigCommerce to our database
+ * Triggered: When merchant upgrades/downgrades via BigCommerce
  *
- * This is CRITICAL for Managed Pricing - without this webhook,
+ * This is CRITICAL for billing sync - without this webhook,
  * plan changes won't be reflected in the app until admin visits.
  */
 
@@ -19,44 +19,39 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   try {
     console.log("💳 Subscription webhook START:", new Date().toISOString());
 
-    const { topic, shop, payload } = await authenticate.webhook(request);
+    const { storeHash, payload } = await authenticateWebhook(request);
 
     console.log("✅ Webhook authenticated:", {
-      topic,
-      shop,
+      storeHash,
       subscriptionId: payload.id,
       planName: payload.name,
       status: payload.status
     });
 
-    if (topic !== "APP_SUBSCRIPTIONS_UPDATE") {
-      console.error("❌ Invalid topic:", topic);
-      return new Response("Invalid topic", { status: 400 });
-    }
-
-    // Map Shopify plan name to our internal tier
+    // Map BigCommerce plan name to our internal tier
+    const productLevel = (payload.product?.productLevel || payload.product_level || '').toString().toLowerCase();
     const planName = (payload.name?.toLowerCase() || '');
     let planTier: PlanTier = 'starter'; // Default
 
-    if (planName.includes('starter')) {
+    if (productLevel.includes('starter') || planName.includes('starter')) {
       planTier = 'starter';
-    } else if (planName.includes('growth')) {
+    } else if (productLevel.includes('growth') || planName.includes('growth')) {
       planTier = 'growth';
-    } else if (planName.includes('pro')) {
+    } else if (productLevel.includes('pro') || planName.includes('pro')) {
       planTier = 'pro';
     }
 
     console.log(`📊 Plan mapping: "${payload.name}" → "${planTier}"`);
 
-    // Map Shopify status to our status
-    const shopifyStatus = payload.status?.toUpperCase();
+    // Map BigCommerce status to our status
+    const bcStatus = payload.status?.toUpperCase();
     let planStatus = 'active';
 
-    if (shopifyStatus === 'CANCELLED' || shopifyStatus === 'EXPIRED') {
+    if (bcStatus === 'CANCELLED' || bcStatus === 'EXPIRED') {
       planStatus = 'cancelled';
-    } else if (shopifyStatus === 'PENDING') {
+    } else if (bcStatus === 'PENDING') {
       planStatus = 'pending';
-    } else if (shopifyStatus === 'ACTIVE') {
+    } else if (bcStatus === 'ACTIVE') {
       planStatus = 'active';
     }
 
@@ -64,11 +59,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
     // Get existing subscription
     const existingSub = await db.subscription.findUnique({
-      where: { shop },
+      where: { storeHash },
     });
 
     if (!existingSub) {
-      console.log(`📝 No existing subscription found for ${shop}, creating new record`);
+      console.log(`📝 No existing subscription found for ${storeHash}, creating new record`);
     } else {
       console.log(`📝 Existing subscription: ${existingSub.planTier} (${existingSub.planStatus})`);
     }
@@ -76,12 +71,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     // Update or create subscription
     const now = new Date();
     const subscription = await db.subscription.upsert({
-      where: { shop },
+      where: { storeHash },
       create: {
-        shop,
+        storeHash,
         planTier,
         planStatus,
-        chargeId: payload.id?.toString(),
+        bcSubscriptionId: payload.id?.toString(),
+        bcProductLevel: planTier,
         billingPeriodStart: now,
         monthlyOrderCount: 0,
         lastOrderCountReset: now,
@@ -89,7 +85,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       update: {
         planTier,
         planStatus,
-        chargeId: payload.id?.toString(),
+        bcSubscriptionId: payload.id?.toString(),
+        bcProductLevel: planTier,
         // Reset limits on plan change
         orderLimitWarningShown: false,
         orderLimitReached: false,
@@ -104,7 +101,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
     const duration = Date.now() - startTime;
     console.log(`✅ Subscription updated in ${duration}ms:`, {
-      shop,
+      storeHash,
       oldPlan: existingSub?.planTier,
       newPlan: subscription.planTier,
       status: subscription.planStatus,

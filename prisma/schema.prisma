@@ -32,9 +32,23 @@ model Session {
   @@index([storeHash])
 }
 
+model StoreUser {
+  id        String   @id @default(cuid())
+  storeHash String
+  bcUserId  BigInt
+  email     String
+  isOwner   Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([storeHash, bcUserId])
+  @@index([storeHash])
+}
+
 model Settings {
   id                      String   @id @default(cuid())
   storeHash               String   @unique
+  accountUuid             String?  // BigCommerce account UUID (Unified Billing)
   
   // Activation Tracking
   appEmbedActivated       Boolean  @default(false) // Tracks if app embed was enabled in theme editor
@@ -145,7 +159,6 @@ model Settings {
   // subscriptionStatus      String   @default("trial") // "trial" | "active" | "cancelled" | "expired"
   // trialEndsAt             DateTime? // When the 14-day trial ends
   // subscriptionStartedAt   DateTime? // When they first subscribed
-  // chargeId                String?  // Shopify charge ID for active subscription
   
   // Order Tracking & Limits (COMMENTED OUT - ACTIVATE AFTER DB MIGRATION)
   // monthlyOrderCount       Int      @default(0)
@@ -612,6 +625,10 @@ model Subscription {
   // Stripe Billing Info
   stripeCustomerId      String?   @unique // Stripe Customer ID
   stripeSubscriptionId  String?   @unique // Stripe Subscription ID
+
+  // BigCommerce Unified Billing Info
+  bcSubscriptionId      String?   @unique // BigCommerce subscription ID
+  bcProductLevel        String?   // Product level (starter/growth/pro)
   
   // Order Tracking
   monthlyOrderCount     Int       @default(0)

@@ -8,6 +8,17 @@ import {
 } from "@remix-run/react";
 import { useRouteError, isRouteErrorResponse } from "@remix-run/react";
 import { useEffect } from "react";
+import type { LinksFunction } from "@remix-run/node";
+import { GlobalStyles } from "@bigcommerce/big-design";
+
+export const links: LinksFunction = () => [
+  { rel: "preconnect", href: "https://fonts.googleapis.com" },
+  { rel: "preconnect", href: "https://fonts.gstatic.com", crossOrigin: "anonymous" },
+  {
+    rel: "stylesheet",
+    href: "https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@300;400;600;700&display=swap",
+  },
+];
 
 export default function App() {
   const location = useLocation();
@@ -57,6 +68,7 @@ export default function App() {
         <Links />
       </head>
       <body>
+        <GlobalStyles />
         <Outlet />
         <ScrollRestoration />
         <Scripts />
@@ -91,9 +103,10 @@ export function ErrorBoundary() {
           <Meta />
           <Links />
         </head>
-        <body>
-          <div className="error-page">
-            <h1 className="error-status">{error.status}</h1>
+      <body>
+        <GlobalStyles />
+        <div className="error-page">
+          <h1 className="error-status">{error.status}</h1>
             <p className="error-message">{error.statusText}</p>
             {error.data?.message && (
               <p className="error-details">{error.data.message}</p>
@@ -114,6 +127,7 @@ export function ErrorBoundary() {
         <Links />
       </head>
       <body>
+        <GlobalStyles />
         <div className="error-page">
           <h1 className="error-title">Oops! Something went wrong</h1>
           <p className="error-description">
