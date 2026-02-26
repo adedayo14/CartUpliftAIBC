@@ -12,18 +12,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const url = new URL(request.url);
   const shouldInstall = url.searchParams.get("install") === "1";
 
-  // List existing scripts
-  let existing: Array<{ uuid: string; name: string; src: string; enabled: boolean }> = [];
+  // List existing scripts (return ALL fields for debugging)
+  let existing: Array<Record<string, unknown>> = [];
   try {
     const listResponse = await bigcommerceApi(storeHash, "/content/scripts");
     if (listResponse.ok) {
       const listData = await listResponse.json();
-      existing = (listData?.data || []).map((s: Record<string, unknown>) => ({
-        uuid: s.uuid,
-        name: s.name,
-        src: s.src,
-        enabled: s.enabled,
-      }));
+      existing = (listData?.data || []) as Array<Record<string, unknown>>;
     } else {
       const errorData = await listResponse.json().catch(() => ({}));
       return json({
@@ -59,23 +54,20 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       const listResponse = await bigcommerceApi(storeHash, "/content/scripts");
       if (listResponse.ok) {
         const listData = await listResponse.json();
-        afterInstall = (listData?.data || []).map((s: Record<string, unknown>) => ({
-          uuid: s.uuid,
-          name: s.name,
-          src: s.src,
-          enabled: s.enabled,
-        }));
+        afterInstall = (listData?.data || []) as Array<Record<string, unknown>>;
       }
     } catch {
       // keep existing
     }
   }
 
+  const finalScripts = shouldInstall ? afterInstall : existing;
+
   return json({
     storeHash,
-    scripts: shouldInstall ? afterInstall : existing,
-    cartUpliftScripts: (shouldInstall ? afterInstall : existing).filter(
-      (s: { name: string }) => s.name.includes("CartUplift")
+    scripts: finalScripts,
+    cartUpliftScripts: finalScripts.filter(
+      (s) => String(s.name || "").includes("CartUplift")
     ),
     installResult,
   });
