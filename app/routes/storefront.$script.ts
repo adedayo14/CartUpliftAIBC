@@ -365,9 +365,13 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
     if (context === "cart") {
       return (
         document.querySelector("[data-cart-content]") ||
+        document.querySelector("[data-cart]") ||
+        document.querySelector(".cart-content") ||
         document.querySelector("#cart-content") ||
+        document.querySelector(".page-type-cart .page-content") ||
         document.querySelector(".page-type-cart main") ||
         document.querySelector(".cart") ||
+        document.querySelector(".page-content") ||
         document.querySelector("main")
       );
     }
@@ -581,17 +585,17 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
     var cartPage = isCartPage();
 
     Promise.all([
-      waitForValue(detectProductId, 9000, 350),
-      cartPage
-        ? fetchCartProductIds().then(function (apiIds) {
-            return apiIds.length > 0 ? apiIds : detectCartProductIds();
-          })
-        : waitForValue(detectCartProductIds, 1200, 350),
+      waitForValue(detectProductId, cartPage ? 2000 : 9000, 350),
+      fetchCartProductIds().then(function (apiIds) {
+        if (apiIds.length > 0) return apiIds;
+        var domIds = detectCartProductIds();
+        return domIds.length > 0 ? domIds : [];
+      }),
     ])
       .then(function (values) {
         var productId = values[0] || "";
         var cartIds = Array.isArray(values[1]) ? values[1] : [];
-        var context = productId ? "product" : cartPage ? "cart" : "";
+        var context = productId ? "product" : (cartPage || cartIds.length > 0) ? "cart" : "";
 
         if (!context) {
           log("No product/cart context found");
@@ -841,15 +845,16 @@ const CART_BUNDLES_SCRIPT = String.raw`(function () {
     var style = document.createElement("style");
     style.id = "cu-bundles-style";
     style.textContent =
-      ".cu-bundle-wrap{border:1px solid #d1d5db;padding:16px;margin-top:18px;background:#fff}" +
-      ".cu-bundle-title{margin:0 0 10px;font-size:18px;line-height:1.3;color:#111827}" +
-      ".cu-bundle-sub{margin:0 0 10px;font-size:13px;color:#4b5563}" +
-      ".cu-bundle-row{display:flex;gap:10px;overflow:auto;padding-bottom:4px}" +
-      ".cu-bundle-item{min-width:140px;max-width:180px;border:1px solid #e5e7eb;padding:8px;background:#fafafa;text-align:center}" +
-      ".cu-bundle-thumb{width:100%;height:120px;object-fit:contain;background:#fff;margin-bottom:6px}" +
-      ".cu-bundle-name{font-size:12px;line-height:1.3;color:#111827;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}" +
-      ".cu-bundle-price{font-size:12px;color:#4b5563;margin-top:4px}" +
-      ".cu-bundle-meta{margin-top:10px;font-size:13px;color:#111827;font-weight:600}";
+      ".cu-bundle-wrap{border:2px solid #2563eb;border-radius:8px;padding:16px 20px;margin-top:18px;background:#f0f6ff}" +
+      ".cu-bundle-header{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px}" +
+      ".cu-bundle-info{flex:1;min-width:0}" +
+      ".cu-bundle-title{margin:0 0 4px;font-size:16px;line-height:1.3;color:#111827;font-weight:700}" +
+      ".cu-bundle-savings{font-size:14px;color:#059669;font-weight:600}" +
+      ".cu-bundle-btn{display:inline-block;padding:10px 24px;background:#2563eb;color:#fff;font-size:14px;font-weight:600;border:none;border-radius:6px;cursor:pointer;white-space:nowrap;text-align:center;transition:background 0.15s}" +
+      ".cu-bundle-btn:hover{background:#1d4ed8}" +
+      ".cu-bundle-btn:disabled{background:#94a3b8;cursor:not-allowed}" +
+      ".cu-bundle-btn--success{background:#059669}" +
+      ".cu-bundle-btn--success:hover{background:#059669}";
     document.head.appendChild(style);
   }
 
@@ -860,6 +865,72 @@ const CART_BUNDLES_SCRIPT = String.raw`(function () {
       document.querySelector(".productView") ||
       document.querySelector("main")
     );
+  }
+
+  function addBundleToCart(products, btn) {
+    btn.disabled = true;
+    btn.textContent = "Adding...";
+
+    var lineItems = [];
+    for (var i = 0; i < products.length; i += 1) {
+      var p = products[i] || {};
+      var pid = Number(p.id || p.product_id || p.productId);
+      if (!pid) continue;
+      lineItems.push({ quantity: 1, productId: pid });
+    }
+
+    if (lineItems.length === 0) {
+      btn.textContent = "Error";
+      return;
+    }
+
+    // Try to get existing cart first
+    fetch("/api/storefront/carts", {
+      method: "GET",
+      credentials: "same-origin",
+      headers: { Accept: "application/json" },
+    })
+      .then(function (res) { return res.ok ? res.json() : []; })
+      .then(function (carts) {
+        var cartId = Array.isArray(carts) && carts.length > 0 ? carts[0].id : null;
+
+        if (cartId) {
+          // Add to existing cart
+          return fetch("/api/storefront/carts/" + cartId + "/items", {
+            method: "POST",
+            credentials: "same-origin",
+            headers: { "Content-Type": "application/json", Accept: "application/json" },
+            body: JSON.stringify({ lineItems: lineItems }),
+          });
+        } else {
+          // Create new cart
+          return fetch("/api/storefront/carts", {
+            method: "POST",
+            credentials: "same-origin",
+            headers: { "Content-Type": "application/json", Accept: "application/json" },
+            body: JSON.stringify({ lineItems: lineItems }),
+          });
+        }
+      })
+      .then(function (res) {
+        if (res.ok) {
+          btn.textContent = "Added to Cart!";
+          btn.className = "cu-bundle-btn cu-bundle-btn--success";
+          // Refresh the page after a short delay to update cart count
+          setTimeout(function () { window.location.reload(); }, 1500);
+        } else {
+          return res.json().then(function (err) {
+            warn("Add to cart failed", err);
+            btn.textContent = "Failed - Try Again";
+            btn.disabled = false;
+          });
+        }
+      })
+      .catch(function (err) {
+        warn("Add to cart error", err);
+        btn.textContent = "Failed - Try Again";
+        btn.disabled = false;
+      });
   }
 
   function renderBundle(data) {
@@ -881,56 +952,36 @@ const CART_BUNDLES_SCRIPT = String.raw`(function () {
     host.id = "cartuplift-bundles";
     host.className = "cu-bundle-wrap";
 
+    var header = document.createElement("div");
+    header.className = "cu-bundle-header";
+
+    var info = document.createElement("div");
+    info.className = "cu-bundle-info";
+
     var title = document.createElement("h3");
     title.className = "cu-bundle-title";
-    title.textContent = String(bundle.name || "Frequently Bought Together");
-    host.appendChild(title);
-
-    var sub = document.createElement("p");
-    sub.className = "cu-bundle-sub";
-    sub.textContent = "Suggested bundle from Cart Uplift";
-    host.appendChild(sub);
-
-    var row = document.createElement("div");
-    row.className = "cu-bundle-row";
-
-    for (var i = 0; i < products.length; i += 1) {
-      var item = products[i] || {};
-      var card = document.createElement("div");
-      card.className = "cu-bundle-item";
-
-      if (item.image || item.image_url) {
-        var img = document.createElement("img");
-        img.className = "cu-bundle-thumb";
-        img.src = item.image || item.image_url;
-        img.alt = String(item.title || "Product");
-        img.loading = "lazy";
-        card.appendChild(img);
-      }
-
-      var name = document.createElement("div");
-      name.className = "cu-bundle-name";
-      name.textContent = String(item.title || "Product");
-      card.appendChild(name);
-
-      var price = document.createElement("div");
-      price.className = "cu-bundle-price";
-      price.textContent = formatMoney(item.price);
-      card.appendChild(price);
-
-      row.appendChild(card);
-    }
-
-    host.appendChild(row);
+    title.textContent = "Frequently Bought Together";
+    info.appendChild(title);
 
     var savingsAmount = bundle.savings_amount || 0;
     if (savingsAmount > 0) {
-      var meta = document.createElement("div");
-      meta.className = "cu-bundle-meta";
-      meta.textContent = "Bundle savings: " + formatMoney(savingsAmount);
-      host.appendChild(meta);
+      var savings = document.createElement("div");
+      savings.className = "cu-bundle-savings";
+      savings.textContent = "Save " + formatMoney(savingsAmount) + " when you buy together";
+      info.appendChild(savings);
     }
 
+    header.appendChild(info);
+
+    var btn = document.createElement("button");
+    btn.className = "cu-bundle-btn";
+    btn.textContent = "Add Bundle to Cart (" + products.length + " items)";
+    btn.addEventListener("click", function () {
+      addBundleToCart(products, btn);
+    });
+    header.appendChild(btn);
+
+    host.appendChild(header);
     mount.appendChild(host);
     return true;
   }
