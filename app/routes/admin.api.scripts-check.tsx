@@ -12,6 +12,26 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const url = new URL(request.url);
   const shouldInstall = url.searchParams.get("install") === "1";
 
+  // Check store status via V2 API
+  let storeStatus: Record<string, unknown> = {};
+  try {
+    const storeResponse = await bigcommerceApi(storeHash, "/store", { version: "v2" });
+    if (storeResponse.ok) {
+      const storeData = await storeResponse.json();
+      storeStatus = {
+        name: storeData.name,
+        status: storeData.status,
+        domain: storeData.domain,
+        secure_url: storeData.secure_url,
+        plan_name: storeData.plan_name,
+        is_price_entered_with_tax: storeData.is_price_entered_with_tax,
+        stencil_enabled: storeData.features?.stencil_enabled,
+      };
+    }
+  } catch (error) {
+    storeStatus = { error: error instanceof Error ? error.message : String(error) };
+  }
+
   // List existing scripts (return ALL fields for debugging)
   let existing: Array<Record<string, unknown>> = [];
   try {
@@ -65,6 +85,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   return json({
     storeHash,
+    storeStatus,
     scripts: finalScripts,
     cartUpliftScripts: finalScripts.filter(
       (s) => String(s.name || "").includes("CartUplift")
