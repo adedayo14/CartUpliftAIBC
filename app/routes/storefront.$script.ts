@@ -419,7 +419,7 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
       ".cu-drawer-x{background:none;border:none;font-size:26px;cursor:pointer;color:#111;padding:0;line-height:1}" +
 
       /* Drawer body (scrollable) */
-      ".cu-drawer-bd{flex:1 1 0%;overflow-y:auto;min-height:0}" +
+      ".cu-drawer-bd{flex:1 1 0%;overflow-y:auto;min-height:0;display:flex;flex-direction:column}" +
 
       /* Cart items */
       ".cu-drawer-item{display:flex;align-items:flex-start;gap:12px;padding:16px 20px;border-bottom:1px solid #f3f4f6}" +
@@ -436,7 +436,7 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
       ".cu-drawer-item-del:hover{color:#ef4444}" +
 
       /* Drawer recs */
-      ".cu-drawer-recs{padding:16px 20px;border-top:1px solid #e5e7eb}" +
+      ".cu-drawer-recs{padding:16px 20px;border-top:1px solid #e5e7eb;margin-top:auto}" +
       ".cu-drawer-recs-hd{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}" +
       ".cu-drawer-recs-hd h3{margin:0;font-size:12px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:#111}" +
       ".cu-drawer-recs-scroll{display:flex;gap:12px;overflow-x:auto;padding-bottom:6px;scroll-snap-type:x mandatory;-webkit-overflow-scrolling:touch}" +
