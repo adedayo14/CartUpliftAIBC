@@ -581,9 +581,9 @@ function getStorefrontScripts(appUrl: string, storeHash?: string) {
       auto_uninstall: true,
       load_method: "default",
       location: "footer",
-      visibility: "storefront",
+      visibility: "all_pages",
       kind: "src",
-      consent_category: "functional",
+      consent_category: "essential",
     },
     {
       name: "CartUplift Bundles",
@@ -591,9 +591,9 @@ function getStorefrontScripts(appUrl: string, storeHash?: string) {
       auto_uninstall: true,
       load_method: "default",
       location: "footer",
-      visibility: "storefront",
+      visibility: "all_pages",
       kind: "src",
-      consent_category: "functional",
+      consent_category: "essential",
     },
   ];
 }
@@ -615,29 +615,21 @@ export async function ensureStorefrontScripts(storeHash: string): Promise<void> 
   const scripts = getStorefrontScripts(bcConfig.appUrl, storeHash);
 
   for (const script of scripts) {
+    // Remove ALL existing scripts with the same name to ensure config is up to date
     const sameName = existing.filter((item) => item.name === script.name);
-    const isCanonical = (item: { name?: string; src?: string }) =>
-      item.name === script.name && item.src === script.src;
-    const canonical = sameName.find(isCanonical);
-
-    for (const stale of sameName) {
-      if (isCanonical(stale)) continue;
-      const deleteResp = await bigcommerceApi(storeHash, `/content/scripts/${stale.id}`, {
+    for (const old of sameName) {
+      const deleteResp = await bigcommerceApi(storeHash, `/content/scripts/${old.id}`, {
         method: "DELETE",
       });
       if (deleteResp.ok) {
-        logger.info("Removed stale storefront script", { storeHash, name: stale.name, src: stale.src });
+        logger.info("Removed old storefront script", { storeHash, name: old.name });
       } else {
         const errorData = await deleteResp.json().catch(() => ({}));
-        logger.warn("Failed to remove stale storefront script", { storeHash, scriptId: stale.id, error: errorData });
+        logger.warn("Failed to remove old storefront script", { storeHash, scriptId: old.id, error: errorData });
       }
     }
 
-    if (canonical) {
-      logger.info("Storefront script already up to date", { storeHash, name: script.name });
-      continue;
-    }
-
+    // Create fresh script with current config
     const response = await bigcommerceApi(storeHash, "/content/scripts", {
       method: "POST",
       body: script,

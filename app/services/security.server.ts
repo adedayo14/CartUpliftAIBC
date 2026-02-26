@@ -247,8 +247,9 @@ export function validateUrl(url: string | null | undefined): string | null {
 }
 
 /**
- * Get allowed domains for a BigCommerce store
- * Returns the default mybigcommerce.com domain
+ * Get allowed domains for a BigCommerce store.
+ * Includes the default store-{hash} domain, the store's actual domain
+ * from the V2 API, and any *.mybigcommerce.com subdomain.
  */
 const domainCache = new Map<string, { domains: string[]; timestamp: number }>();
 const DOMAIN_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
@@ -256,20 +257,47 @@ const DOMAIN_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 export async function getStoreDomains(
   storeHash: string
 ): Promise<string[]> {
-  const bcDomain = `store-${storeHash}.mybigcommerce.com`;
-  const bcOrigin = `https://${bcDomain}`;
-
   // Check cache first
   const cached = domainCache.get(storeHash);
   if (cached && (Date.now() - cached.timestamp) < DOMAIN_CACHE_TTL) {
     return cached.domains;
   }
 
-  const domains = [bcOrigin];
+  const domains = new Set<string>();
+
+  // Always allow the default store-{hash} pattern
+  domains.add(`https://store-${storeHash}.mybigcommerce.com`);
+
+  // Fetch the store's actual domain(s) from the Settings table or V2 API
+  try {
+    const { default: prisma } = await import("../db.server");
+    const settings = await prisma.settings.findUnique({
+      where: { storeHash },
+      select: { currencyCode: true },
+    });
+
+    // Also try to get the real domain via the BigCommerce V2 store endpoint
+    const { bigcommerceApi } = await import("../bigcommerce.server");
+    const storeResponse = await bigcommerceApi(storeHash, "/store", { version: "v2" });
+    if (storeResponse.ok) {
+      const storeData = await storeResponse.json();
+      // secure_url is like "https://cartuplift.mybigcommerce.com" or a custom domain
+      if (storeData.secure_url) {
+        domains.add(storeData.secure_url.replace(/\/$/, ""));
+      }
+      if (storeData.domain) {
+        domains.add(`https://${storeData.domain}`);
+      }
+    }
+  } catch {
+    // If the API call fails, we still have the default domain
+  }
+
+  const result = Array.from(domains);
 
   // Cache the result
-  domainCache.set(storeHash, { domains, timestamp: Date.now() });
-  return domains;
+  domainCache.set(storeHash, { domains: result, timestamp: Date.now() });
+  return result;
 }
 
 /**
@@ -294,11 +322,23 @@ export async function validateCorsOrigin(
     }
   }
 
-  // Get allowed domains for this store
+  // Any *.mybigcommerce.com or *.bigcommerce.com HTTPS origin is safe for a valid store
+  try {
+    const originHost = new URL(origin).hostname;
+    if (
+      origin.startsWith('https://') &&
+      (originHost.endsWith('.mybigcommerce.com') || originHost.endsWith('.bigcommerce.com'))
+    ) {
+      return origin;
+    }
+  } catch {
+    // malformed origin — fall through to domain list check
+  }
+
+  // Get allowed domains for this store (includes custom domains)
   const allowedDomains = await getStoreDomains(storeHash);
 
   // Check if origin matches any allowed domain
-  // Must be exact match or subdomain match
   for (const domain of allowedDomains) {
     if (origin === domain) {
       return origin;
