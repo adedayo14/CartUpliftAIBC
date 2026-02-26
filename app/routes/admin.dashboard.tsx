@@ -1578,58 +1578,6 @@ export default function Dashboard() {
     downloadCSV(`CartUpliftAI_Analytics_${dateStr}_${timeStr}.csv`, csv);
   };
 
-  // Setup progress check
-  if (analytics.setupProgress < 100) {
-    return (
-      <Box padding="medium">
-        <H1>Getting Started</H1>
-
-        <Panel>
-          <Box padding="xSmall">
-            <Flex flexDirection="column" flexGap="1.25rem">
-              <H2>Your AI is Getting Ready</H2>
-              <Text color="secondary60">Setting up recommendations for your store</Text>
-
-              <Box padding="small" backgroundColor="secondary10">
-                <Flex flexDirection="column" flexGap="1rem">
-                  <ProgressBar percent={analytics.setupProgress} />
-
-                  <Flex flexDirection="column" flexGap="0.75rem">
-                    <Flex flexGap="0.5rem" alignItems="center">
-                      <Text>{analytics.recImpressions > 0 ? '✅' : '⏳'}</Text>
-                      <Text>Recommendations showing on your store</Text>
-                    </Flex>
-
-                    <Flex flexGap="0.5rem" alignItems="center">
-                      <Text>{analytics.recClicks > 0 ? '✅' : '⏳'}</Text>
-                      <Text>Customers clicking recommendations</Text>
-                    </Flex>
-
-                    <Flex flexGap="0.5rem" alignItems="center">
-                      <Text>{analytics.attributedOrders > 0 ? '✅' : '⏳'}</Text>
-                      <Text>Revenue tracking active</Text>
-                    </Flex>
-                  </Flex>
-                </Flex>
-              </Box>
-
-              <Message
-                type="info"
-                messages={[{ text: 'Your dashboard will activate once customers interact with recommendations. The AI learns from each sale to improve over time.' }]}
-              />
-
-              <Flex flexGap="0.75rem">
-                <a href={settingsHref}>
-                  <Button variant="primary">Configure Settings</Button>
-                </a>
-              </Flex>
-            </Flex>
-          </Box>
-        </Panel>
-      </Box>
-    );
-  }
-
   // Main dashboard
   return (
     <Box padding="medium">
@@ -1639,6 +1587,38 @@ export default function Dashboard() {
       </Flex>
 
       <Flex flexDirection="column" flexGap="1.25rem">
+        {/* Setup progress banner — shown until all milestones are reached */}
+        {analytics.setupProgress < 100 && (
+          <Panel>
+            <Box padding="xSmall">
+              <Flex flexDirection="column" flexGap="0.75rem">
+                <Flex justifyContent="space-between" alignItems="center">
+                  <H3>Setup Progress</H3>
+                  <Badge variant="secondary">{analytics.setupProgress}%</Badge>
+                </Flex>
+                <ProgressBar percent={analytics.setupProgress} />
+                <Flex flexGap="1.5rem" flexWrap="wrap">
+                  <Flex flexGap="0.35rem" alignItems="center">
+                    <Text>{analytics.recImpressions > 0 ? '\u2705' : '\u23F3'}</Text>
+                    <Small>Recommendations showing</Small>
+                  </Flex>
+                  <Flex flexGap="0.35rem" alignItems="center">
+                    <Text>{analytics.recClicks > 0 ? '\u2705' : '\u23F3'}</Text>
+                    <Small>Customers clicking</Small>
+                  </Flex>
+                  <Flex flexGap="0.35rem" alignItems="center">
+                    <Text>{analytics.attributedOrders > 0 ? '\u2705' : '\u23F3'}</Text>
+                    <Small>Revenue tracked</Small>
+                  </Flex>
+                </Flex>
+                <Small color="secondary60">
+                  Only orders driven by recommendations count toward your plan. The AI learns from each sale to improve over time.
+                </Small>
+              </Flex>
+            </Box>
+          </Panel>
+        )}
+
         {/* Date Filter */}
         <Panel>
           <Box padding="xSmall">
