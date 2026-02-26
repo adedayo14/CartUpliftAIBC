@@ -419,7 +419,7 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
       ".cu-drawer-x{background:none;border:none;font-size:26px;cursor:pointer;color:#111;padding:0;line-height:1}" +
 
       /* Drawer body (scrollable) */
-      ".cu-drawer-bd{flex:1;overflow-y:auto}" +
+      ".cu-drawer-bd{flex:1 1 0%;overflow-y:auto;min-height:0}" +
 
       /* Cart items */
       ".cu-drawer-item{display:flex;align-items:flex-start;gap:12px;padding:16px 20px;border-bottom:1px solid #f3f4f6}" +
@@ -798,8 +798,8 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
       updateHeaderCartCount(totalQty);
 
       /* Update subtotal */
-      if (_drawerSubtotalEl && cart) {
-        _drawerSubtotalEl.textContent = formatPrice(cart.cartAmount || 0);
+      if (_drawerSubtotalEl) {
+        _drawerSubtotalEl.textContent = cart ? formatPrice(cart.cartAmount || 0) : formatPrice(0);
       }
 
       /* Render body */
