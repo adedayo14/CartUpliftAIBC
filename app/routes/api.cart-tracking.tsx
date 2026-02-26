@@ -13,7 +13,7 @@ import { validateCorsOrigin, getCorsHeaders } from "../services/security.server"
 interface CartEvent {
   eventType: string;
   sessionId: string;
-  shop: string;
+  storeHash: string;
   productId?: string;
   productTitle?: string;
   revenue?: number;
@@ -27,7 +27,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   try {
     const formData = await request.formData();
-    const shopFromBody = (formData.get("shop") as string) || "";
+    const shopFromBody = (formData.get("storeHash") as string) || (formData.get("shop") as string) || "";
 
     // SECURITY: Validate CORS origin
     const origin = request.headers.get("origin") || "";
@@ -93,7 +93,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const cartEvent: CartEvent = {
       eventType,
       sessionId,
-      shop: shopFromBody,
+      storeHash: shopFromBody,
       productId: productId || undefined,
       productTitle: productTitle || undefined,
       revenue: revenue || undefined,
@@ -126,7 +126,7 @@ export const loader = async ({ request }: ActionFunctionArgs) => {
   if (request.method === 'OPTIONS') {
     // Try to get shop from query params for preflight validation
     const url = new URL(request.url);
-    const shop = url.searchParams.get('shop');
+    const shop = url.searchParams.get('storeHash') || url.searchParams.get('shop');
     const origin = request.headers.get('origin');
 
     let corsHeaders: Record<string, string>;

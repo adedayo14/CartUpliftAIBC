@@ -144,7 +144,7 @@ export interface RecommendationProduct {
 }
 
 export interface RecommendationRequest {
-  shop: string;
+  storeHash: string;
   productId?: string;
   cartItems?: string[];
   customerId?: string;
@@ -271,7 +271,7 @@ export type ExperimentType = "discount" | "bundle" | "shipping" | "upsell";
 
 // Session extended type
 export interface ExtendedSession {
-  shop: string;
+  storeHash: string;
   currency?: string;
   [key: string]: unknown;
 }

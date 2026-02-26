@@ -11,7 +11,7 @@ interface ProductStats {
 }
 
 interface ProductPerformanceUpdate {
-  shop: string;
+  storeHash: string;
   productId: string;
   impressions: number;
   clicks: number;
@@ -276,14 +276,14 @@ export async function runDailyLearningForAllShops() {
   try {
     // Get all unique shops from settings
     const shops = await db.settings?.findMany({
-      select: { shop: true },
-      distinct: ['shop']
+      select: { storeHash: true },
+      distinct: ['storeHash']
     }) || [];
-    
+
     logger.log(`Found ${shops.length} shops to process`);
 
     const results: DailyLearningResult[] = [];
-    for (const { shop } of shops) {
+    for (const { storeHash: shop } of shops) {
       const result = await runDailyLearning(shop);
       results.push({ shop, ...result });
     }

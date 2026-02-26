@@ -15,14 +15,14 @@ import { BUNDLE_TYPES, BUNDLE_STATUS, DISCOUNT_TYPES } from "~/constants/bundle"
 import styles from "./BundleTable.module.css";
 
 interface BundleTableProps {
-  shop: string;
+  storeHash: string;
   bundles: Bundle[];
   currencyCode: string;
   onEdit: (bundle: Bundle) => void;
   setToast: (toast: { content: string; error?: boolean }) => void;
 }
 
-export function BundleTable({ shop, bundles, currencyCode, onEdit, setToast }: BundleTableProps) {
+export function BundleTable({ storeHash, bundles, currencyCode, onEdit, setToast }: BundleTableProps) {
   const [loadingAction, setLoadingAction] = useState<{ bundleId: string; action: 'toggle' | 'delete' } | null>(null);
   const [optimisticBundles, setOptimisticBundles] = useState<Bundle[]>(bundles);
   const revalidator = useRevalidator();
@@ -64,7 +64,7 @@ export function BundleTable({ shop, bundles, currencyCode, onEdit, setToast }: B
         };
 
         xhr.onerror = () => reject(new Error('Network error'));
-        xhr.send(JSON.stringify({ action: 'toggle-status', shop, bundleId, status: newStatus }));
+        xhr.send(JSON.stringify({ action: 'toggle-status', storeHash, bundleId, status: newStatus }));
       });
 
       if (result.success) {
@@ -86,7 +86,7 @@ export function BundleTable({ shop, bundles, currencyCode, onEdit, setToast }: B
     } finally {
       setLoadingAction(null);
     }
-  }, [shop, bundles, setToast, revalidator]);
+  }, [storeHash, bundles, setToast, revalidator]);
 
   const handleDeleteBundle = useCallback(async (bundleId: string) => {
     setLoadingAction({ bundleId, action: 'delete' });
@@ -114,7 +114,7 @@ export function BundleTable({ shop, bundles, currencyCode, onEdit, setToast }: B
         };
 
         xhr.onerror = () => reject(new Error('Network error'));
-        xhr.send(JSON.stringify({ action: 'delete-bundle', shop, bundleId }));
+        xhr.send(JSON.stringify({ action: 'delete-bundle', storeHash, bundleId }));
       });
 
       if (result.success) {
@@ -132,7 +132,7 @@ export function BundleTable({ shop, bundles, currencyCode, onEdit, setToast }: B
     } finally {
       setLoadingAction(null);
     }
-  }, [shop, setToast, revalidator]);
+  }, [storeHash, setToast, revalidator]);
 
   const columns = [
     { header: 'FBT Name', hash: 'name' as const, render: ({ name, id }: Bundle) => <Text bold>{name}</Text> },

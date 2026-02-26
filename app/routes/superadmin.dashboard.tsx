@@ -74,7 +74,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         const storeName = settings.storeHash || 'Unknown';
 
         return {
-          shop: settings.storeHash,
+          storeHash: settings.storeHash,
           storeName,
           email: settings.ownerEmail || session?.email || "",
           ownerName: session?.firstName && session?.lastName
@@ -188,7 +188,7 @@ export default function SuperAdminDashboard() {
       installedAt: new Date(store.installedAt).toISOString(),
       daysSinceInstall: store.daysSinceInstall,
       mlEnabled: store.mlEnabled ? "yes" : "no",
-      shop: store.shop,
+      storeHash: store.storeHash,
     }));
     downloadCsv(rows, "cart-uplift-superadmin.csv");
   };
@@ -309,7 +309,7 @@ export default function SuperAdminDashboard() {
               </thead>
               <tbody>
                 {stores.map((store, index) => (
-                  <tr key={store.shop} style={{ borderBottom: `1px solid ${border}`, background: index % 2 === 0 ? surface : soft }}>
+                  <tr key={store.storeHash} style={{ borderBottom: `1px solid ${border}`, background: index % 2 === 0 ? surface : soft }}>
                     <td style={{ padding: "14px 16px" }}>
                       <div style={{ fontWeight: "600", marginBottom: "2px" }}>{store.storeName}</div>
                       {store.ownerName && (
@@ -363,8 +363,8 @@ export default function SuperAdminDashboard() {
                       </span>
                     </td>
                     <td style={{ padding: "14px 16px" }}>
-                      <a href={`https://${store.shop}/admin`} target="_blank" rel="noopener noreferrer" style={{ color: ink, textDecoration: "none", fontSize: "12px", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace" }}>
-                        {store.shop}
+                      <a href={`https://store-${store.storeHash}.mybigcommerce.com/manage`} target="_blank" rel="noopener noreferrer" style={{ color: ink, textDecoration: "none", fontSize: "12px", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace" }}>
+                        {store.storeHash}
                       </a>
                     </td>
                   </tr>

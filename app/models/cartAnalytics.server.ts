@@ -17,7 +17,7 @@ export type CartEventType =
  */
 export interface CartEvent {
   id?: string;
-  shop: string;
+  storeHash: string;
   sessionId: string;
   eventType: CartEventType;
   productId?: string;
@@ -43,7 +43,7 @@ export interface ProductAnalytics {
  */
 interface CartEventRow {
   id?: string;
-  shop: string;
+  storeHash: string;
   sessionId: string;
   eventType: string;
   productId?: string | null;
@@ -77,7 +77,7 @@ export async function trackCartEvent(event: CartEvent): Promise<void> {
     // Schema optionality varies between dev/prod, so we guard with try/catch
     await db.cartEvent.create({
       data: {
-        storeHash: event.shop,
+        storeHash: event.storeHash,
         sessionId: event.sessionId,
         eventType: event.eventType,
         productId: event.productId ?? null,
@@ -121,7 +121,7 @@ function parseCartEvent(row: CartEventRow, startDate: Date, endDate: Date): Cart
     if (timestamp >= startDate && timestamp <= endDate) {
       return {
         sessionId: row.sessionId,
-        shop: row.shop,
+        storeHash: row.storeHash,
         eventType: row.eventType,
         productId: row.productId ?? undefined,
         productTitle: row.productTitle ?? undefined,

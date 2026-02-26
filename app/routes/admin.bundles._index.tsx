@@ -14,11 +14,11 @@ import type { Bundle } from "./admin.bundles";
 export const links: LinksFunction = () => [{ rel: "stylesheet", href: adminBundlesStyles }];
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  let shop = 'unknown-shop';
+  let storeHashVal = 'unknown-shop';
 
   try {
     const { session, storeHash } = await authenticateAdmin(request);
-    shop = storeHash;
+    storeHashVal = storeHash;
 
     const rawBundles = await prisma.bundle.findMany({ where: { storeHash }, orderBy: { createdAt: 'desc' } });
 
@@ -90,22 +90,22 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       console.error('[admin.bundles._index] products query failed:', productsResult.reason);
     }
 
-    return json({ shop, bundles, currencyCode, products });
+    return json({ storeHash: storeHashVal, bundles, currencyCode, products });
   } catch (error) {
     console.error("[admin.bundles._index] Loader error:", error);
 
-    // If we can't get shop from session, try from the error or return generic fallback
-    let shopFallback = 'unknown-shop';
+    // If we can't get storeHash from session, try from query params
+    let storeHashFallback = 'unknown-shop';
     try {
       const url = new URL(request.url);
-      shopFallback = url.searchParams.get('shop') || shopFallback;
+      storeHashFallback = url.searchParams.get('storeHash') || url.searchParams.get('shop') || storeHashFallback;
     } catch (_e) {
       // Ignore URL parsing errors
     }
 
     // Return empty data instead of throwing to prevent error boundary flash
     return json({
-      shop: shopFallback,
+      storeHash: storeHashFallback,
       bundles: [],
       currencyCode: 'USD',
       products: [],
@@ -118,13 +118,13 @@ export default function BundlesIndex() {
   const isBrowser = typeof window !== 'undefined';
 
   const data = useLoaderData<typeof loader>();
-  const { shop, bundles, currencyCode, error } = data;
+  const { storeHash, bundles, currencyCode, error } = data;
   const navigation = useNavigation();
 
   const [toast, setToast] = useState<{ content: string; error?: boolean } | null>(null);
   const hasLoadedSuccessfully = useRef(false);
   const [stableBundles, setStableBundles] = useState<Bundle[]>(bundles);
-  const [stableShop, setStableShop] = useState(shop);
+  const [stableStoreHash, setStableStoreHash] = useState(storeHash);
   const [stableCurrencyCode, setStableCurrencyCode] = useState(currencyCode);
   const suppressErrorsUntil = useRef(0);
 
@@ -133,10 +133,10 @@ export default function BundlesIndex() {
     if (bundles && bundles.length >= 0 && !error) {
       hasLoadedSuccessfully.current = true;
       setStableBundles(bundles);
-      setStableShop(shop);
+      setStableStoreHash(storeHash);
       setStableCurrencyCode(currencyCode);
     }
-  }, [bundles, shop, currencyCode, error]);
+  }, [bundles, storeHash, currencyCode, error]);
 
   // Extended toast handler that also sets error suppression window
   const handleSetToast = useCallback((toastData: { content: string; error?: boolean } | null) => {
@@ -191,7 +191,7 @@ export default function BundlesIndex() {
 
   // Use stable cached data to prevent showing empty state during revalidation
   const displayBundles = hasLoadedSuccessfully.current ? stableBundles : bundles;
-  const displayShop = hasLoadedSuccessfully.current ? stableShop : shop;
+  const displayStoreHash = hasLoadedSuccessfully.current ? stableStoreHash : storeHash;
   const displayCurrencyCode = hasLoadedSuccessfully.current ? stableCurrencyCode : currencyCode;
 
   // Empty state when no bundles exist
@@ -231,7 +231,7 @@ export default function BundlesIndex() {
         <Panel>
           <BundleTable
             key={`bundle-table-${displayBundles.length}`}
-            shop={displayShop}
+            storeHash={displayStoreHash}
             bundles={displayBundles}
             currencyCode={displayCurrencyCode}
             onEdit={handleEditBundle}

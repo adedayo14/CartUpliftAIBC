@@ -56,6 +56,7 @@ interface ProductResponse {
 
 interface BundleActionBody {
   action?: string;
+  storeHash?: string;
   shop?: string;
   name?: string;
   description?: string;
@@ -284,7 +285,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     try {
       body = await request.json() as BundleActionBody;
       actionType = body.action || null;
-      shop = body.shop;
+      shop = body.storeHash || body.shop;
     } catch (e: unknown) {
       console.error('[Bundle API Action] JSON parse error:', e);
       return json({ success: false, error: 'Invalid JSON' }, { status: 400 });
@@ -292,7 +293,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   } else {
     const formData = await request.formData();
     actionType = formData.get('action')?.toString() || null;
-    shop = formData.get('shop')?.toString();
+    shop = formData.get('storeHash')?.toString() || formData.get('shop')?.toString();
     formData.forEach((v, k) => { body[k] = v; });
   }
 
