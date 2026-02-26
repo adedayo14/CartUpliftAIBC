@@ -299,6 +299,58 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
     .catch(function (err) { warn("addItemToCart error:", err); if (callback) callback(false); });
   }
 
+  /* ─── Analytics Tracking ─── */
+  var _cuSessionId = (function () {
+    try {
+      var key = "cu_sid";
+      var sid = sessionStorage.getItem(key);
+      if (sid) return sid;
+      sid = "cu_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+      sessionStorage.setItem(key, sid);
+      return sid;
+    } catch (_e) { return "cu_" + Date.now().toString(36); }
+  })();
+
+  function trackEvent(eventType, productId, productTitle, extra) {
+    if (!_scriptUrl || !_storeHash) return;
+    try {
+      var payload = {
+        event: eventType,
+        productId: String(productId || ""),
+        productTitle: String(productTitle || ""),
+        source: "cart_drawer",
+        sessionId: _cuSessionId,
+        storeHash: _storeHash
+      };
+      if (extra) {
+        for (var k in extra) {
+          if (extra.hasOwnProperty(k)) payload[k] = extra[k];
+        }
+      }
+      var url = _scriptUrl.origin +
+        "/apps/proxy/api/track?store_hash=" + encodeURIComponent(_storeHash);
+      fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        keepalive: true
+      }).catch(function () {});
+    } catch (_e) { /* best-effort */ }
+  }
+
+  var _trackedImpressions = {};
+  function trackImpressions(recs) {
+    if (!recs || !recs.length) return;
+    for (var i = 0; i < recs.length; i += 1) {
+      var r = recs[i] || {};
+      var pid = firstNumeric(r.id || r.product_id || r.productId);
+      if (pid && !_trackedImpressions[pid]) {
+        _trackedImpressions[pid] = true;
+        trackEvent("impression", pid, r.title, { position: i });
+      }
+    }
+  }
+
   function updateCartItemQty(cartId, itemId, productId, qty, callback) {
     fetch("/api/storefront/carts/" + cartId + "/items/" + itemId, {
       method: "PUT", credentials: "same-origin",
@@ -553,25 +605,30 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
         addBtn.className = "cu-rec-add";
         addBtn.textContent = "Add";
         addBtn.setAttribute("data-cu-product-id", recId);
-        (function (btn, pid) {
+        var inlineVid = rec.variant_id || rec.variantId || "";
+        var inlineTitle = String(rec.title || "Product");
+        (function (btn, pid, vid, pTitle) {
           btn.addEventListener("click", function (e) {
             e.preventDefault();
             e.stopPropagation();
             btn.disabled = true;
             btn.textContent = "Adding...";
-            addItemToCart([{ quantity: 1, productId: Number(pid) }], function (ok) {
+            trackEvent("click", pid, pTitle);
+            var item = { quantity: 1, productId: Number(pid) };
+            if (vid) item.variantId = Number(vid);
+            addItemToCart([item], function (ok) {
               if (ok) {
+                trackEvent("add_to_cart", pid, pTitle);
                 btn.textContent = "Added!";
                 setTimeout(function () { btn.textContent = "Add"; btn.disabled = false; }, 2000);
                 openDrawer();
               } else {
                 btn.textContent = "Add";
                 btn.disabled = false;
-                window.location.href = normalizeProductUrl(rec.handle);
               }
             });
           });
-        })(addBtn, recId);
+        })(addBtn, recId, inlineVid, inlineTitle);
         info.appendChild(addBtn);
       }
 
@@ -586,6 +643,8 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
     } else {
       mount.appendChild(host);
     }
+    /* Track inline recommendation impressions */
+    trackImpressions(recommendations);
     return true;
   }
 
@@ -1008,14 +1067,17 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
       addBtn.textContent = "Add";
       var productUrl = normalizeProductUrl(rec.handle);
       var recVariantId = rec.variant_id || rec.variantId || "";
-      (function (btn, pid, cardEl, pUrl, vid) {
+      var recTitle = String(rec.title || "Product");
+      (function (btn, pid, cardEl, pUrl, vid, title) {
         btn.addEventListener("click", function () {
           btn.disabled = true;
           btn.textContent = "Adding...";
+          trackEvent("click", pid, title);
           var lineItem = { quantity: 1, productId: Number(pid) };
           if (vid) lineItem.variantId = Number(vid);
 
-          function animateOut() {
+          function onAdded() {
+            trackEvent("add_to_cart", pid, title);
             cardEl.classList.add("cu-drawer-rc--out");
             setTimeout(function () {
               cardEl.classList.remove("cu-drawer-rc--out");
@@ -1026,14 +1088,14 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
             }, 320);
           }
 
-          function resetBtn() {
+          function onFailed() {
             btn.textContent = "Add";
             btn.disabled = false;
           }
 
           addItemToCart([lineItem], function (ok) {
             if (ok) {
-              animateOut();
+              onAdded();
             } else if (!vid && _scriptUrl && _storeHash) {
               /* No variantId — fetch product variant from proxy, then retry */
               var prodUrl = _scriptUrl.origin +
@@ -1047,18 +1109,18 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
                   var fetchedVid = firstVar ? Number(firstVar.id || firstVar.variant_id) : 0;
                   if (fetchedVid) {
                     addItemToCart([{ quantity: 1, productId: Number(pid), variantId: fetchedVid }], function (ok2) {
-                      if (ok2) { animateOut(); }
-                      else { resetBtn(); }
+                      if (ok2) { onAdded(); }
+                      else { onFailed(); }
                     });
-                  } else { resetBtn(); }
+                  } else { onFailed(); }
                 })
-                .catch(function () { resetBtn(); });
+                .catch(function () { onFailed(); });
             } else {
-              resetBtn();
+              onFailed();
             }
           });
         });
-      })(addBtn, recId, card, productUrl, recVariantId);
+      })(addBtn, recId, card, productUrl, recVariantId, recTitle);
       card.appendChild(addBtn);
     }
 
@@ -1109,6 +1171,8 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
         if (!builtCards[v].classList.contains("cu-drawer-rc--hidden")) builtVisible += 1;
       }
       section.style.display = builtVisible > 0 ? "" : "none";
+      /* Track impressions for visible recs (best-effort, deduplicated) */
+      if (builtVisible > 0) trackImpressions(allRecs);
       return;
     }
 

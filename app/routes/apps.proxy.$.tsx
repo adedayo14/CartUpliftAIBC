@@ -100,7 +100,8 @@ async function authenticateStorefront(request: Request): Promise<string> {
 function normalizeProduct(product: BCProduct): ProductWithMeta {
   const image = product.images?.[0]?.url_standard;
   const firstVariant = product.variants?.[0];
-  const price = firstVariant?.calculated_price ?? product.price ?? product.calculated_price ?? 0;
+  const priceDecimal = firstVariant?.calculated_price ?? product.price ?? product.calculated_price ?? 0;
+  const price = Math.round(priceDecimal * 100); // cents — matches getBCProductDetails format
   const inStock = product.availability !== 'disabled' && product.is_visible &&
     (firstVariant ? !firstVariant.purchasing_disabled : true);
   const handle = (product.custom_url?.url || '').replace(/^\/|\/$/g, '');
