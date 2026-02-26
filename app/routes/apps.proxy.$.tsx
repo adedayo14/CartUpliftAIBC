@@ -31,6 +31,7 @@ interface ProductWithMeta {
   image?: string;
   price: number;
   inStock: boolean;
+  variant_id?: string;
 }
 
 interface MLRecommendation {
@@ -110,6 +111,7 @@ function normalizeProduct(product: BCProduct): ProductWithMeta {
     image,
     price,
     inStock,
+    variant_id: firstVariant ? String(firstVariant.id) : undefined,
   };
 }
 
@@ -607,7 +609,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
         // Manual selection pre-fill (deduped, price-threshold aware)
         const needAmount = (typeof subtotal === 'number' && freeShippingThreshold > 0) ? Math.max(0, freeShippingThreshold - subtotal) : 0;
 
-        let manualResults: Array<{ id: string; title: string; handle: string; image?: string; price: number }> = [];
+        let manualResults: Array<{ id: string; title: string; handle: string; image?: string; price: number; variant_id?: string }> = [];
         if (manualEnabled && manualList.length) {
           const normalizedProducts = await normalizeIdsToProducts(shopStr, manualList);
           const seen = new Set<string>();
@@ -618,7 +620,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
             // Avoid recommending items already in context
             if (cartParam.split(',').includes(m.id) || (productId && m.id === productId)) continue;
             seen.add(m.id);
-            manualResults.push({ id: m.id, title: m.title, handle: m.handle, image: m.image, price: m.price });
+            manualResults.push({ id: m.id, title: m.title, handle: m.handle, image: m.image, price: m.price, variant_id: m.variant_id });
             if (manualResults.length >= limit) break;
           }
           if (manualEnabled && manualResults.length >= limit && (thresholdSuggestionMode === 'price' || (thresholdSuggestionMode === 'smart' && enableThresholdBasedSuggestions))) {
@@ -743,7 +745,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
         }
 
         // Fetch inventory/availability and price data for candidates
-        const availability: Record<string, { inStock: boolean; price: number; title: string; handle: string; img?: string; vendor?: string }> = {};
+        const availability: Record<string, { inStock: boolean; price: number; title: string; handle: string; img?: string; vendor?: string; variant_id?: string }> = {};
         for (const id of topIds) {
           try {
             const numId = parseInt(id, 10);
@@ -757,6 +759,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
               handle: normalized.handle,
               img: normalized.image,
               vendor: prod.brand_id ? String(prod.brand_id) : undefined,
+              variant_id: normalized.variant_id,
             };
           } catch {
             // skip products we can't fetch
@@ -764,7 +767,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
         }
 
         // Final ranking with guardrails (price-gap + diversity)
-        const results: Array<{ id: string; title: string; handle: string; image?: string; price: number }> = [];
+        const results: Array<{ id: string; title: string; handle: string; image?: string; price: number; variant_id?: string }> = [];
         const usedHandles = new Set<string>();
         const targetPrice = anchorMedian;
         // CTR-based re-ranking (best-effort)
@@ -819,11 +822,11 @@ export async function loader({ request }: LoaderFunctionArgs) {
           const h = (info.handle || meta.handle || '').split('-')[0];
           if (usedHandles.has(h)) continue; // diversity
           usedHandles.add(h);
-          results.push({ id: bid, title: info.title || assoc[bid]?.product?.title || '', handle: info.handle || assoc[bid]?.handle || '', image: info.img || assoc[bid]?.image, price: info.price });
+          results.push({ id: bid, title: info.title || assoc[bid]?.product?.title || '', handle: info.handle || assoc[bid]?.handle || '', image: info.img || assoc[bid]?.image, price: info.price, variant_id: info.variant_id });
         }
 
         // Combine manual and algorithmic with de-duplication
-        const combined: Array<{ id: string; title: string; handle: string; image?: string; price: number }> = [];
+        const combined: Array<{ id: string; title: string; handle: string; image?: string; price: number; variant_id?: string }> = [];
         const seenIds = new Set<string>();
         const pushUnique = (arr: typeof combined) => {
           for (const r of arr) {
@@ -1234,6 +1237,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
                   handle: normalized.handle,
                   price: normalized.price,
                   image: normalized.image,
+                  variant_id: normalized.variant_id,
                 };
               });
 

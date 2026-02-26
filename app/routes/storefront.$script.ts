@@ -629,6 +629,7 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
         handle: String(p.handle || p.url || "#"),
         image: p.image || p.image_url,
         price: Number(p.price || 0),
+        variant_id: p.variant_id || p.variantId || "",
       });
       if (out.length >= limit) break;
     }
@@ -1017,33 +1018,58 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
       addBtn.className = "cu-drawer-rc-add";
       addBtn.textContent = "Add";
       var productUrl = normalizeProductUrl(rec.handle);
-      (function (btn, pid, cardEl, pUrl) {
+      var recVariantId = rec.variant_id || rec.variantId || "";
+      (function (btn, pid, cardEl, pUrl, vid) {
         btn.addEventListener("click", function () {
           btn.disabled = true;
           btn.textContent = "Adding...";
-          addItemToCart([{ quantity: 1, productId: Number(pid) }], function (ok) {
+          var lineItem = { quantity: 1, productId: Number(pid) };
+          if (vid) lineItem.variantId = Number(vid);
+
+          function animateOut() {
+            cardEl.classList.add("cu-drawer-rc--out");
+            setTimeout(function () {
+              cardEl.classList.remove("cu-drawer-rc--out");
+              cardEl.classList.add("cu-drawer-rc--hidden");
+              btn.textContent = "Add";
+              btn.disabled = false;
+              refreshDrawer();
+            }, 320);
+          }
+
+          function resetBtn() {
+            btn.textContent = "Add";
+            btn.disabled = false;
+          }
+
+          addItemToCart([lineItem], function (ok) {
             if (ok) {
-              /* Animate card out, then refresh cart items + toggle rec visibility */
-              cardEl.classList.add("cu-drawer-rc--out");
-              setTimeout(function () {
-                cardEl.classList.remove("cu-drawer-rc--out");
-                cardEl.classList.add("cu-drawer-rc--hidden");
-                btn.textContent = "Add";
-                btn.disabled = false;
-                refreshDrawer();
-              }, 320);
+              animateOut();
+            } else if (!vid && _scriptUrl && _storeHash) {
+              /* No variantId — fetch product variant from proxy, then retry */
+              var prodUrl = _scriptUrl.origin +
+                "/apps/proxy/api/products?store_hash=" + encodeURIComponent(_storeHash) +
+                "&product_id=" + encodeURIComponent(pid);
+              fetchJson(prodUrl)
+                .then(function (pData) {
+                  var product = pData && pData.product ? pData.product : pData;
+                  var variants = product && Array.isArray(product.variants) ? product.variants : [];
+                  var firstVar = variants.length > 0 ? variants[0] : null;
+                  var fetchedVid = firstVar ? Number(firstVar.id || firstVar.variant_id) : 0;
+                  if (fetchedVid) {
+                    addItemToCart([{ quantity: 1, productId: Number(pid), variantId: fetchedVid }], function (ok2) {
+                      if (ok2) { animateOut(); }
+                      else { resetBtn(); }
+                    });
+                  } else { resetBtn(); }
+                })
+                .catch(function () { resetBtn(); });
             } else {
-              /* Product likely needs options — go to product page */
-              if (pUrl && pUrl !== "#") {
-                window.location.href = pUrl;
-              } else {
-                btn.textContent = "Add";
-                btn.disabled = false;
-              }
+              resetBtn();
             }
           });
         });
-      })(addBtn, recId, card, productUrl);
+      })(addBtn, recId, card, productUrl, recVariantId);
       card.appendChild(addBtn);
     }
 
@@ -1543,7 +1569,11 @@ const CART_BUNDLES_SCRIPT = String.raw`(function () {
       var p = products[i] || {};
       var pid = Number(p.id || p.product_id || p.productId);
       if (!pid) continue;
-      lineItems.push({ quantity: 1, productId: pid });
+      var item = { quantity: 1, productId: pid };
+      /* Include variantId when available — required for products with options */
+      var vid = Number(p.variant_id || p.variantId || p.variant_id);
+      if (vid) item.variantId = vid;
+      lineItems.push(item);
     }
 
     if (lineItems.length === 0) {
