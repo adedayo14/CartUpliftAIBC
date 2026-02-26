@@ -6,11 +6,13 @@ import { authenticateAdmin, bigcommerceApi, ensureStorefrontScripts } from "../b
  *
  * Lists currently installed storefront scripts and optionally re-installs
  * CartUplift scripts. Append ?install=1 to force reinstall.
+ * Append ?debug=1 to try a direct script creation and show raw response.
  */
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { storeHash } = await authenticateAdmin(request);
   const url = new URL(request.url);
   const shouldInstall = url.searchParams.get("install") === "1";
+  const debug = url.searchParams.get("debug") === "1";
 
   // Check store status via V2 API
   let storeStatus: Record<string, unknown> = {};
@@ -56,6 +58,42 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     });
   }
 
+  // Debug mode: try creating a script directly and return raw response
+  let debugResult: Record<string, unknown> | null = null;
+  if (debug) {
+    const appUrl = process.env.APP_URL || "https://cart-uplift-aibc.vercel.app";
+    const testScript = {
+      name: "CartUplift Cart Drawer",
+      src: `${appUrl}/storefront/cart-uplift.js?store_hash=${encodeURIComponent(storeHash)}`,
+      auto_uninstall: true,
+      load_method: "default",
+      location: "footer",
+      visibility: "storefront",
+      kind: "src",
+      consent_category: "essential",
+      enabled: true,
+    };
+
+    try {
+      const resp = await bigcommerceApi(storeHash, "/content/scripts", {
+        method: "POST",
+        body: testScript,
+      });
+      const respBody = await resp.json().catch(() => ({}));
+      debugResult = {
+        status: resp.status,
+        ok: resp.ok,
+        body: respBody,
+        scriptSent: testScript,
+      };
+    } catch (error) {
+      debugResult = {
+        error: error instanceof Error ? error.message : String(error),
+        scriptSent: testScript,
+      };
+    }
+  }
+
   // Optionally reinstall
   let installResult: string | null = null;
   if (shouldInstall) {
@@ -67,9 +105,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     }
   }
 
-  // Re-list after install
+  // Re-list after install or debug
   let afterInstall = existing;
-  if (shouldInstall) {
+  if (shouldInstall || debug) {
     try {
       const listResponse = await bigcommerceApi(storeHash, "/content/scripts");
       if (listResponse.ok) {
@@ -81,7 +119,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     }
   }
 
-  const finalScripts = shouldInstall ? afterInstall : existing;
+  const finalScripts = (shouldInstall || debug) ? afterInstall : existing;
 
   return json({
     storeHash,
@@ -91,5 +129,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       (s) => String(s.name || "").includes("CartUplift")
     ),
     installResult,
+    debugResult,
   });
 };
