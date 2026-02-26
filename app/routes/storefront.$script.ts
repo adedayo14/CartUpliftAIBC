@@ -204,6 +204,21 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
       ids.push(id);
     }
 
+    // Try BigCommerce cart data from global
+    var bcCart = window.BOLD && window.BOLD.cart;
+    if (!bcCart) {
+      var bcData = window.BCData || window.bcData || {};
+      bcCart = bcData.cart || bcData.cartData;
+    }
+    if (bcCart && Array.isArray(bcCart.items || bcCart.lineItems || bcCart.line_items)) {
+      var items = bcCart.items || bcCart.lineItems || bcCart.line_items;
+      for (var k = 0; k < items.length; k += 1) {
+        add(items[k].product_id || items[k].productId || items[k].id);
+      }
+      if (ids.length > 0) return ids;
+    }
+
+    // Try DOM selectors
     var selectors = [
       "[data-item-product-id]",
       "[data-cart-product-id]",
@@ -213,6 +228,8 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
       'input[name="product_id"]',
       'input[name^="item-"][name$="-product-id"]',
       'a[href*="product_id="]',
+      ".cart-item [data-product-id]",
+      "[data-item-row] [data-product-id]",
     ];
 
     for (var i = 0; i < selectors.length; i += 1) {
@@ -234,6 +251,51 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
     }
 
     return ids;
+  }
+
+  // Fetch cart product IDs from BigCommerce Storefront Cart API
+  function fetchCartProductIds() {
+    return fetch("/api/storefront/carts", {
+      method: "GET",
+      credentials: "same-origin",
+      headers: { Accept: "application/json" },
+    })
+      .then(function (res) {
+        if (!res.ok) return [];
+        return res.json();
+      })
+      .then(function (carts) {
+        var ids = [];
+        var seen = {};
+        if (!Array.isArray(carts) || carts.length === 0) return ids;
+
+        var cart = carts[0];
+        var lineTypes = ["lineItems", "line_items"];
+        var itemCategories = ["physicalItems", "digitalItems", "customItems", "physical_items", "digital_items"];
+
+        for (var t = 0; t < lineTypes.length; t += 1) {
+          var lineItems = cart[lineTypes[t]];
+          if (!lineItems) continue;
+
+          for (var c = 0; c < itemCategories.length; c += 1) {
+            var items = lineItems[itemCategories[c]];
+            if (!Array.isArray(items)) continue;
+
+            for (var i = 0; i < items.length; i += 1) {
+              var pid = String(items[i].productId || items[i].product_id || "");
+              if (pid && !seen[pid]) {
+                seen[pid] = true;
+                ids.push(pid);
+              }
+            }
+          }
+        }
+
+        return ids;
+      })
+      .catch(function () {
+        return [];
+      });
   }
 
   function isCartPage() {
@@ -269,25 +331,26 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
   }
 
   function getCurrencyCode() {
+    if (window.__cuCurrency) return String(window.__cuCurrency).toUpperCase();
     var bcData = window.BCData || window.bcData || {};
     var code =
       (bcData.currency && bcData.currency.code) ||
       (bcData.shopSettings && bcData.shopSettings.currency) ||
-      "USD";
-    return String(code || "USD").toUpperCase();
+      "GBP";
+    return String(code || "GBP").toUpperCase();
   }
 
-  function formatMoney(value, currencyCode) {
-    var amount = Number(value);
+  function formatMoney(valueInCents, currencyCode) {
+    var amount = Number(valueInCents) / 100;
     if (!isFinite(amount)) return "";
     try {
       return new Intl.NumberFormat(undefined, {
         style: "currency",
-        currency: currencyCode || "USD",
+        currency: currencyCode || getCurrencyCode(),
         maximumFractionDigits: 2,
       }).format(amount);
     } catch (_err) {
-      return "$" + amount.toFixed(2);
+      return currencyCode === "GBP" ? "\u00a3" + amount.toFixed(2) : "$" + amount.toFixed(2);
     }
   }
 
@@ -468,6 +531,7 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
     return fetchJson(recUrl)
       .then(function (data) {
         var recs = data && Array.isArray(data.recommendations) ? data.recommendations : [];
+        if (data && data.currency) window.__cuCurrency = data.currency;
         if (recs.length > 0) return recs;
 
         var fallbackProductId = productId || (cartIds && cartIds.length ? cartIds[0] : "");
@@ -482,6 +546,7 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
 
           return fetchJson(bundleUrl)
             .then(function (bundleData) {
+              if (bundleData && bundleData.currency) window.__cuCurrency = bundleData.currency;
               return mapBundlesToRecommendations(bundleData, fallbackProductId, limit);
             })
             .catch(function () {
@@ -517,7 +582,11 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
 
     Promise.all([
       waitForValue(detectProductId, 9000, 350),
-      waitForValue(detectCartProductIds, cartPage ? 9000 : 1200, 350),
+      cartPage
+        ? fetchCartProductIds().then(function (apiIds) {
+            return apiIds.length > 0 ? apiIds : detectCartProductIds();
+          })
+        : waitForValue(detectCartProductIds, 1200, 350),
     ])
       .then(function (values) {
         var productId = values[0] || "";
@@ -743,26 +812,27 @@ const CART_BUNDLES_SCRIPT = String.raw`(function () {
     });
   }
 
-  function normalizeMoney(value) {
-    var amount = Number(value);
-    if (!isFinite(amount)) return 0;
-    return amount > 999 ? amount / 100 : amount;
+  function getCurrencyCode() {
+    if (window.__cuCurrency) return String(window.__cuCurrency).toUpperCase();
+    var bcData = window.BCData || window.bcData || {};
+    var code =
+      (bcData.currency && bcData.currency.code) ||
+      (bcData.shopSettings && bcData.shopSettings.currency) ||
+      "GBP";
+    return String(code || "GBP").toUpperCase();
   }
 
-  function formatMoney(value) {
-    var amount = normalizeMoney(value);
+  function formatMoney(valueInCents) {
+    var amount = Number(valueInCents) / 100;
+    if (!isFinite(amount)) return "";
     try {
-      var code =
-        window.BCData && window.BCData.currency && window.BCData.currency.code
-          ? String(window.BCData.currency.code).toUpperCase()
-          : "USD";
       return new Intl.NumberFormat(undefined, {
         style: "currency",
-        currency: code,
+        currency: getCurrencyCode(),
         maximumFractionDigits: 2,
       }).format(amount);
     } catch (_err) {
-      return "$" + amount.toFixed(2);
+      return getCurrencyCode() === "GBP" ? "\u00a3" + amount.toFixed(2) : "$" + amount.toFixed(2);
     }
   }
 
@@ -775,7 +845,8 @@ const CART_BUNDLES_SCRIPT = String.raw`(function () {
       ".cu-bundle-title{margin:0 0 10px;font-size:18px;line-height:1.3;color:#111827}" +
       ".cu-bundle-sub{margin:0 0 10px;font-size:13px;color:#4b5563}" +
       ".cu-bundle-row{display:flex;gap:10px;overflow:auto;padding-bottom:4px}" +
-      ".cu-bundle-item{min-width:140px;border:1px solid #e5e7eb;padding:8px;background:#fafafa}" +
+      ".cu-bundle-item{min-width:140px;max-width:180px;border:1px solid #e5e7eb;padding:8px;background:#fafafa;text-align:center}" +
+      ".cu-bundle-thumb{width:100%;height:120px;object-fit:contain;background:#fff;margin-bottom:6px}" +
       ".cu-bundle-name{font-size:12px;line-height:1.3;color:#111827;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}" +
       ".cu-bundle-price{font-size:12px;color:#4b5563;margin-top:4px}" +
       ".cu-bundle-meta{margin-top:10px;font-size:13px;color:#111827;font-weight:600}";
@@ -828,6 +899,15 @@ const CART_BUNDLES_SCRIPT = String.raw`(function () {
       var card = document.createElement("div");
       card.className = "cu-bundle-item";
 
+      if (item.image || item.image_url) {
+        var img = document.createElement("img");
+        img.className = "cu-bundle-thumb";
+        img.src = item.image || item.image_url;
+        img.alt = String(item.title || "Product");
+        img.loading = "lazy";
+        card.appendChild(img);
+      }
+
       var name = document.createElement("div");
       name.className = "cu-bundle-name";
       name.textContent = String(item.title || "Product");
@@ -843,11 +923,11 @@ const CART_BUNDLES_SCRIPT = String.raw`(function () {
 
     host.appendChild(row);
 
-    var savings = normalizeMoney(bundle.savings_amount || 0);
-    if (savings > 0) {
+    var savingsAmount = bundle.savings_amount || 0;
+    if (savingsAmount > 0) {
       var meta = document.createElement("div");
       meta.className = "cu-bundle-meta";
-      meta.textContent = "Bundle savings: " + formatMoney(savings);
+      meta.textContent = "Bundle savings: " + formatMoney(savingsAmount);
       host.appendChild(meta);
     }
 
@@ -904,6 +984,7 @@ const CART_BUNDLES_SCRIPT = String.raw`(function () {
 
         return fetchJson(apiUrl)
           .then(function (data) {
+            if (data && data.currency) window.__cuCurrency = data.currency;
             var mounted = renderBundle(data);
             if (!mounted) {
               log("No bundles rendered for product", productId);
