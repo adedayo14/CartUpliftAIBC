@@ -611,21 +611,21 @@ export async function ensureStorefrontScripts(storeHash: string): Promise<void> 
   }
 
   const listData = await listResponse.json();
-  const existing = (listData?.data as Array<{ id: string | number; name?: string; src?: string }>) || [];
+  const existing = (listData?.data as Array<{ uuid: string; name?: string; src?: string }>) || [];
   const scripts = getStorefrontScripts(bcConfig.appUrl, storeHash);
 
   for (const script of scripts) {
     // Remove ALL existing scripts with the same name to ensure config is up to date
     const sameName = existing.filter((item) => item.name === script.name);
     for (const old of sameName) {
-      const deleteResp = await bigcommerceApi(storeHash, `/content/scripts/${old.id}`, {
+      const deleteResp = await bigcommerceApi(storeHash, `/content/scripts/${old.uuid}`, {
         method: "DELETE",
       });
       if (deleteResp.ok) {
-        logger.info("Removed old storefront script", { storeHash, name: old.name });
+        logger.info("Removed old storefront script", { storeHash, name: old.name, uuid: old.uuid });
       } else {
         const errorData = await deleteResp.json().catch(() => ({}));
-        logger.warn("Failed to remove old storefront script", { storeHash, scriptId: old.id, error: errorData });
+        logger.warn("Failed to remove old storefront script", { storeHash, uuid: old.uuid, error: errorData });
       }
     }
 
@@ -664,7 +664,7 @@ export async function cleanupStorefrontScripts(storeHash: string): Promise<void>
     }
 
     const listData = await listResponse.json();
-    const existing = (listData?.data as Array<{ id: string | number; name?: string; src?: string }>) || [];
+    const existing = (listData?.data as Array<{ uuid: string; name?: string; src?: string }>) || [];
     const targets = getStorefrontScripts(bcConfig.appUrl);
 
     const toRemove = existing.filter(script =>
@@ -672,14 +672,14 @@ export async function cleanupStorefrontScripts(storeHash: string): Promise<void>
     );
 
     for (const script of toRemove) {
-      const response = await bigcommerceApi(storeHash, `/content/scripts/${script.id}`, {
+      const response = await bigcommerceApi(storeHash, `/content/scripts/${script.uuid}`, {
         method: "DELETE",
       });
       if (response.ok) {
-        logger.info("Storefront script removed", { storeHash, scriptId: script.id, name: script.name });
+        logger.info("Storefront script removed", { storeHash, uuid: script.uuid, name: script.name });
       } else {
         const errorData = await response.json().catch(() => ({}));
-        logger.warn("Failed to remove storefront script", { storeHash, scriptId: script.id, error: errorData });
+        logger.warn("Failed to remove storefront script", { storeHash, uuid: script.uuid, error: errorData });
       }
     }
   } catch (error) {
