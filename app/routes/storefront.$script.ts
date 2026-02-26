@@ -444,6 +444,9 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
       ".cu-drawer-recs-scroll{display:flex;gap:12px;overflow-x:auto;padding-bottom:6px;scroll-snap-type:x mandatory;-webkit-overflow-scrolling:touch}" +
       ".cu-drawer-rc{flex:0 0 150px;scroll-snap-align:start;background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:10px;text-align:center;display:flex;flex-direction:column;align-items:center;transition:opacity .3s,transform .3s}" +
       ".cu-drawer-rc--out{opacity:0;transform:scale(.85);pointer-events:none}" +
+      ".cu-drawer-rc--hidden{display:none}" +
+      ".cu-drawer-rc--reveal{animation:cu-rec-reveal .35s ease}" +
+      "@keyframes cu-rec-reveal{from{opacity:0;transform:scale(.85)}to{opacity:1;transform:scale(1)}}" +
       ".cu-drawer-rc-img{width:100%;height:90px;object-fit:contain;margin-bottom:6px;border-radius:4px}" +
       ".cu-drawer-rc-name{font-size:11px;color:#111;font-weight:500;line-height:1.3;margin-bottom:3px;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;min-height:28px}" +
       ".cu-drawer-rc-price{font-size:12px;font-weight:600;color:#111;margin-bottom:8px}" +
@@ -686,6 +689,7 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
   var _drawerRecs = [];
   var _drawerRecsAll = [];       /* unfiltered master list */
   var _lastRecsFetchKey = "";    /* tracks when to re-fetch vs reuse cache */
+  var _recsBuiltKey = "";        /* tracks which recs the DOM was built for */
 
   function getCartItems(cart) {
     if (!cart || !cart.lineItems) return [];
@@ -800,17 +804,6 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
     return set;
   }
 
-  function filterRecsForCart(allRecs, cartPidSet) {
-    var out = [];
-    for (var i = 0; i < allRecs.length; i += 1) {
-      var rec = allRecs[i] || {};
-      var rid = String(firstNumeric(rec.id || rec.product_id || rec.productId) || "");
-      if (rid && cartPidSet[rid]) continue;
-      out.push(rec);
-    }
-    return out;
-  }
-
   function refreshDrawer() {
     log("Refreshing drawer...");
     fetchFullCart().then(function (cart) {
@@ -855,9 +848,8 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
           _drawerBody.appendChild(empty);
         }
         empty.textContent = "Your cart is empty";
-        /* Re-render recs from cache (all visible since cart is empty) */
-        var visibleRecs = _drawerRecsAll.length > 0 ? _drawerRecsAll : [];
-        renderDrawerRecs(visibleRecs);
+        /* Show all recs (nothing in cart to filter) */
+        renderDrawerRecs(_drawerRecsAll, {});
         return;
       }
 
@@ -873,40 +865,34 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
         }
       }
 
-      /* Determine if we need to re-fetch recs or reuse cache */
+      /* Toggle rec visibility from cache (instant, no flicker) */
+      if (_drawerRecsAll.length > 0) {
+        renderDrawerRecs(_drawerRecsAll, cartPidSet);
+      }
+
+      /* Fetch fresh recs in background if cart products changed */
       var productIds = [];
       var sortedPids = Object.keys(cartPidSet).sort();
       for (var j = 0; j < sortedPids.length; j += 1) productIds.push(sortedPids[j]);
       var fetchKey = productIds.join(",");
 
-      if (_drawerRecsAll.length > 0 && _lastRecsFetchKey === fetchKey) {
-        /* Same cart products — just re-filter from cache */
-        renderDrawerRecs(filterRecsForCart(_drawerRecsAll, cartPidSet));
-      } else if (_drawerRecsAll.length > 0) {
-        /* Cart changed but we have cache — show filtered cache immediately */
-        renderDrawerRecs(filterRecsForCart(_drawerRecsAll, cartPidSet));
-        /* Then fetch fresh recs in background for next time */
-        if (_scriptUrl && _storeHash) {
-          fetchRecommendationsWithFallback(
-            _scriptUrl, _storeHash, "", productIds, "cart", 10
-          ).then(function (recs) {
-            _drawerRecsAll = recs;
-            _lastRecsFetchKey = fetchKey;
-            _drawerRecs = filterRecsForCart(recs, cartPidSet);
-            renderDrawerRecs(_drawerRecs);
-          });
-        }
-      } else {
+      if (_lastRecsFetchKey !== fetchKey && _scriptUrl && _storeHash) {
+        fetchRecommendationsWithFallback(
+          _scriptUrl, _storeHash, "", productIds, "cart", 10
+        ).then(function (recs) {
+          _drawerRecsAll = recs;
+          _lastRecsFetchKey = fetchKey;
+          renderDrawerRecs(_drawerRecsAll, getCartProductIdSet(cart));
+        });
+      } else if (_drawerRecsAll.length === 0 && _scriptUrl && _storeHash) {
         /* First load — must fetch */
-        if (_scriptUrl && _storeHash) {
-          fetchRecommendationsWithFallback(
-            _scriptUrl, _storeHash, "", productIds, "cart", 10
-          ).then(function (recs) {
-            _drawerRecsAll = recs;
-            _lastRecsFetchKey = fetchKey;
-            _drawerRecs = filterRecsForCart(recs, cartPidSet);
-            renderDrawerRecs(_drawerRecs);
-          });
+        fetchRecommendationsWithFallback(
+          _scriptUrl, _storeHash, "", productIds, "cart", 10
+        ).then(function (recs) {
+          _drawerRecsAll = recs;
+          _lastRecsFetchKey = fetchKey;
+          renderDrawerRecs(_drawerRecsAll, getCartProductIdSet(cart));
+        });
         }
       }
     });
@@ -992,82 +978,147 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
     return row;
   }
 
-  function renderDrawerRecs(recs) {
-    if (!_drawerBody) return;
+  function recsKey(allRecs) {
+    var k = "";
+    for (var i = 0; i < allRecs.length; i += 1) {
+      var r = allRecs[i] || {};
+      k += (firstNumeric(r.id || r.product_id || r.productId) || "") + ",";
+    }
+    return k;
+  }
 
-    var existing = _drawerBody.querySelector(".cu-drawer-recs");
-    if (existing) existing.remove();
+  function buildRecCard(rec) {
+    var card = document.createElement("div");
+    card.className = "cu-drawer-rc";
 
-    if (!Array.isArray(recs) || recs.length === 0) return;
+    var recId = firstNumeric(rec.id || rec.product_id || rec.productId);
+    if (recId) card.setAttribute("data-cu-rec-pid", recId);
 
-    var section = document.createElement("div");
-    section.className = "cu-drawer-recs";
+    if (rec.image) {
+      var img = document.createElement("img");
+      img.className = "cu-drawer-rc-img";
+      img.src = rec.image;
+      img.alt = String(rec.title || "Product");
+      img.loading = "lazy";
+      card.appendChild(img);
+    }
 
-    var hd = document.createElement("div");
-    hd.className = "cu-drawer-recs-hd";
-    var h3 = document.createElement("h3");
-    h3.textContent = "CUSTOMERS ALSO BOUGHT";
-    hd.appendChild(h3);
-    section.appendChild(hd);
+    var name = document.createElement("div");
+    name.className = "cu-drawer-rc-name";
+    name.textContent = String(rec.title || "Product");
+    card.appendChild(name);
 
-    var scroll = document.createElement("div");
-    scroll.className = "cu-drawer-recs-scroll";
+    var price = document.createElement("div");
+    price.className = "cu-drawer-rc-price";
+    price.textContent = formatMoney(rec.price, getCurrencyCode());
+    card.appendChild(price);
 
-    var currency = getCurrencyCode();
-    for (var i = 0; i < recs.length; i += 1) {
-      var rec = recs[i] || {};
-      var card = document.createElement("div");
-      card.className = "cu-drawer-rc";
-
-      if (rec.image) {
-        var img = document.createElement("img");
-        img.className = "cu-drawer-rc-img";
-        img.src = rec.image;
-        img.alt = String(rec.title || "Product");
-        img.loading = "lazy";
-        card.appendChild(img);
-      }
-
-      var name = document.createElement("div");
-      name.className = "cu-drawer-rc-name";
-      name.textContent = String(rec.title || "Product");
-      card.appendChild(name);
-
-      var price = document.createElement("div");
-      price.className = "cu-drawer-rc-price";
-      price.textContent = formatMoney(rec.price, currency);
-      card.appendChild(price);
-
-      var recId = firstNumeric(rec.id || rec.product_id || rec.productId);
-      if (recId) {
-        card.setAttribute("data-cu-rec-pid", recId);
-        var addBtn = document.createElement("button");
-        addBtn.className = "cu-drawer-rc-add";
-        addBtn.textContent = "Add";
-        (function (btn, pid, cardEl) {
-          btn.addEventListener("click", function () {
-            btn.disabled = true;
-            btn.textContent = "Adding...";
-            addItemToCart([{ quantity: 1, productId: Number(pid) }], function (ok) {
-              if (ok) {
-                /* Animate the card out */
-                cardEl.classList.add("cu-drawer-rc--out");
-                setTimeout(function () { refreshDrawer(); }, 350);
+    if (recId) {
+      var addBtn = document.createElement("button");
+      addBtn.className = "cu-drawer-rc-add";
+      addBtn.textContent = "Add";
+      var productUrl = normalizeProductUrl(rec.handle);
+      (function (btn, pid, cardEl, pUrl) {
+        btn.addEventListener("click", function () {
+          btn.disabled = true;
+          btn.textContent = "Adding...";
+          addItemToCart([{ quantity: 1, productId: Number(pid) }], function (ok) {
+            if (ok) {
+              /* Animate card out, then refresh cart items + toggle rec visibility */
+              cardEl.classList.add("cu-drawer-rc--out");
+              setTimeout(function () {
+                cardEl.classList.remove("cu-drawer-rc--out");
+                cardEl.classList.add("cu-drawer-rc--hidden");
+                btn.textContent = "Add";
+                btn.disabled = false;
+                refreshDrawer();
+              }, 320);
+            } else {
+              /* Product likely needs options — go to product page */
+              if (pUrl && pUrl !== "#") {
+                window.location.href = pUrl;
               } else {
                 btn.textContent = "Add";
                 btn.disabled = false;
               }
-            });
+            }
           });
-        })(addBtn, recId, card);
-        card.appendChild(addBtn);
-      }
-
-      scroll.appendChild(card);
+        });
+      })(addBtn, recId, card, productUrl);
+      card.appendChild(addBtn);
     }
 
-    section.appendChild(scroll);
-    _drawerBody.appendChild(section);
+    return card;
+  }
+
+  function renderDrawerRecs(allRecs, cartPidSet) {
+    if (!_drawerBody) return;
+
+    var section = _drawerBody.querySelector(".cu-drawer-recs");
+    var key = recsKey(allRecs);
+
+    /* Build the section from scratch if it doesn't exist or recs changed */
+    if ((!section || _recsBuiltKey !== key) && allRecs.length > 0) {
+      if (section) section.remove();
+
+      section = document.createElement("div");
+      section.className = "cu-drawer-recs";
+
+      var hd = document.createElement("div");
+      hd.className = "cu-drawer-recs-hd";
+      var h3 = document.createElement("h3");
+      h3.textContent = "CUSTOMERS ALSO BOUGHT";
+      hd.appendChild(h3);
+      section.appendChild(hd);
+
+      var scroll = document.createElement("div");
+      scroll.className = "cu-drawer-recs-scroll";
+
+      for (var i = 0; i < allRecs.length; i += 1) {
+        var card = buildRecCard(allRecs[i]);
+        /* Pre-hide cards that are in the cart */
+        var cpid = card.getAttribute("data-cu-rec-pid");
+        if (cpid && cartPidSet && cartPidSet[cpid]) {
+          card.classList.add("cu-drawer-rc--hidden");
+        }
+        scroll.appendChild(card);
+      }
+
+      section.appendChild(scroll);
+      _drawerBody.appendChild(section);
+      _recsBuiltKey = key;
+      return;
+    }
+
+    if (!section) return;
+
+    /* Toggle visibility on existing cards */
+    var cards = section.querySelectorAll(".cu-drawer-rc[data-cu-rec-pid]");
+    var visibleCount = 0;
+
+    for (var j = 0; j < cards.length; j += 1) {
+      var pid = cards[j].getAttribute("data-cu-rec-pid");
+      var inCart = cartPidSet && cartPidSet[pid];
+      var wasHidden = cards[j].classList.contains("cu-drawer-rc--hidden");
+
+      if (inCart && !wasHidden) {
+        /* Item now in cart — hide the card */
+        cards[j].classList.add("cu-drawer-rc--hidden");
+        cards[j].classList.remove("cu-drawer-rc--out");
+        cards[j].classList.remove("cu-drawer-rc--reveal");
+      } else if (!inCart && wasHidden) {
+        /* Item removed from cart — reveal the card */
+        cards[j].classList.remove("cu-drawer-rc--hidden");
+        cards[j].classList.remove("cu-drawer-rc--out");
+        cards[j].classList.add("cu-drawer-rc--reveal");
+        visibleCount += 1;
+      } else if (!inCart) {
+        cards[j].classList.remove("cu-drawer-rc--out");
+        visibleCount += 1;
+      }
+    }
+
+    section.style.display = visibleCount > 0 ? "" : "none";
   }
 
   /* ─── Intercepts ─── */
