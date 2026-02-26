@@ -255,18 +255,21 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
 
   // Fetch cart product IDs from BigCommerce Storefront Cart API
   function fetchCartProductIds() {
+    log("Fetching cart from /api/storefront/carts...");
     return fetch("/api/storefront/carts", {
       method: "GET",
       credentials: "same-origin",
       headers: { Accept: "application/json" },
     })
       .then(function (res) {
+        log("Cart API response status:", res.status);
         if (!res.ok) return [];
         return res.json();
       })
       .then(function (carts) {
         var ids = [];
         var seen = {};
+        log("Cart API data:", Array.isArray(carts) ? carts.length + " carts" : typeof carts);
         if (!Array.isArray(carts) || carts.length === 0) return ids;
 
         var cart = carts[0];
@@ -291,9 +294,11 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
           }
         }
 
+        log("Cart product IDs found:", ids);
         return ids;
       })
-      .catch(function () {
+      .catch(function (err) {
+        log("Cart API error:", err);
         return [];
       });
   }
@@ -482,7 +487,7 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
     });
   }
 
-  function buildRecommendationsUrl(scriptUrl, storeHash, productId, cartIds, limit) {
+  function buildRecommendationsUrl(scriptUrl, storeHash, productId, cartIds, limit, context) {
     var apiUrl =
       scriptUrl.origin +
       "/apps/proxy/api/recommendations?store_hash=" +
@@ -496,6 +501,10 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
 
     if (cartIds && cartIds.length) {
       apiUrl += "&cart=" + encodeURIComponent(cartIds.join(","));
+    }
+
+    if (context) {
+      apiUrl += "&context=" + encodeURIComponent(context);
     }
 
     return apiUrl;
@@ -530,7 +539,7 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
   }
 
   function fetchRecommendationsWithFallback(scriptUrl, storeHash, productId, cartIds, context, limit) {
-    var recUrl = buildRecommendationsUrl(scriptUrl, storeHash, productId, cartIds, limit);
+    var recUrl = buildRecommendationsUrl(scriptUrl, storeHash, productId, cartIds, limit, context);
 
     return fetchJson(recUrl)
       .then(function (data) {
@@ -538,6 +547,7 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
         if (data && data.currency) window.__cuCurrency = data.currency;
         if (recs.length > 0) return recs;
 
+        // Fallback: use bundle products as recommendations
         var fallbackProductId = productId || (cartIds && cartIds.length ? cartIds[0] : "");
         if (fallbackProductId) {
           var bundleUrl =
@@ -552,6 +562,25 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
             .then(function (bundleData) {
               if (bundleData && bundleData.currency) window.__cuCurrency = bundleData.currency;
               return mapBundlesToRecommendations(bundleData, fallbackProductId, limit);
+            })
+            .catch(function () {
+              return [];
+            });
+        }
+
+        // Cart page with no specific product: try trending/popular
+        if (context === "cart") {
+          var trendingUrl =
+            scriptUrl.origin +
+            "/apps/proxy/api/recommendations?store_hash=" +
+            encodeURIComponent(storeHash) +
+            "&limit=" + String(limit) +
+            "&context=trending";
+
+          return fetchJson(trendingUrl)
+            .then(function (trendingData) {
+              if (trendingData && trendingData.currency) window.__cuCurrency = trendingData.currency;
+              return trendingData && Array.isArray(trendingData.recommendations) ? trendingData.recommendations : [];
             })
             .catch(function () {
               return [];
@@ -596,6 +625,8 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
         var productId = values[0] || "";
         var cartIds = Array.isArray(values[1]) ? values[1] : [];
         var context = productId ? "product" : (cartPage || cartIds.length > 0) ? "cart" : "";
+
+        log("Context:", context, "productId:", productId, "cartIds:", cartIds, "isCartPage:", cartPage);
 
         if (!context) {
           log("No product/cart context found");
@@ -846,9 +877,14 @@ const CART_BUNDLES_SCRIPT = String.raw`(function () {
     style.id = "cu-bundles-style";
     style.textContent =
       ".cu-bundle-wrap{border:2px solid #2563eb;border-radius:8px;padding:16px 20px;margin-top:18px;background:#f0f6ff}" +
-      ".cu-bundle-header{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px}" +
-      ".cu-bundle-info{flex:1;min-width:0}" +
-      ".cu-bundle-title{margin:0 0 4px;font-size:16px;line-height:1.3;color:#111827;font-weight:700}" +
+      ".cu-bundle-title{margin:0 0 12px;font-size:16px;line-height:1.3;color:#111827;font-weight:700}" +
+      ".cu-bundle-products{display:flex;align-items:center;gap:6px;overflow-x:auto;padding-bottom:8px;margin-bottom:12px}" +
+      ".cu-bundle-product{display:flex;flex-direction:column;align-items:center;min-width:90px;max-width:110px;text-align:center}" +
+      ".cu-bundle-thumb{width:80px;height:80px;object-fit:contain;background:#fff;border:1px solid #e5e7eb;border-radius:6px}" +
+      ".cu-bundle-name{font-size:11px;line-height:1.2;color:#374151;margin-top:4px;max-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
+      ".cu-bundle-price{font-size:11px;color:#6b7280;font-weight:600}" +
+      ".cu-bundle-plus{font-size:20px;color:#9ca3af;font-weight:700;flex-shrink:0;padding:0 2px}" +
+      ".cu-bundle-footer{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px}" +
       ".cu-bundle-savings{font-size:14px;color:#059669;font-weight:600}" +
       ".cu-bundle-btn{display:inline-block;padding:10px 24px;background:#2563eb;color:#fff;font-size:14px;font-weight:600;border:none;border-radius:6px;cursor:pointer;white-space:nowrap;text-align:center;transition:background 0.15s}" +
       ".cu-bundle-btn:hover{background:#1d4ed8}" +
@@ -952,36 +988,74 @@ const CART_BUNDLES_SCRIPT = String.raw`(function () {
     host.id = "cartuplift-bundles";
     host.className = "cu-bundle-wrap";
 
-    var header = document.createElement("div");
-    header.className = "cu-bundle-header";
-
-    var info = document.createElement("div");
-    info.className = "cu-bundle-info";
-
+    // Title
     var title = document.createElement("h3");
     title.className = "cu-bundle-title";
     title.textContent = "Frequently Bought Together";
-    info.appendChild(title);
+    host.appendChild(title);
+
+    // Product row with images + plus signs
+    var row = document.createElement("div");
+    row.className = "cu-bundle-products";
+
+    for (var i = 0; i < products.length; i += 1) {
+      if (i > 0) {
+        var plus = document.createElement("span");
+        plus.className = "cu-bundle-plus";
+        plus.textContent = "+";
+        row.appendChild(plus);
+      }
+
+      var item = products[i] || {};
+      var product = document.createElement("div");
+      product.className = "cu-bundle-product";
+
+      if (item.image || item.image_url) {
+        var img = document.createElement("img");
+        img.className = "cu-bundle-thumb";
+        img.src = item.image || item.image_url;
+        img.alt = String(item.title || "Product");
+        img.loading = "lazy";
+        product.appendChild(img);
+      }
+
+      var name = document.createElement("div");
+      name.className = "cu-bundle-name";
+      name.title = String(item.title || "Product");
+      name.textContent = String(item.title || "Product");
+      product.appendChild(name);
+
+      var price = document.createElement("div");
+      price.className = "cu-bundle-price";
+      price.textContent = formatMoney(item.price);
+      product.appendChild(price);
+
+      row.appendChild(product);
+    }
+
+    host.appendChild(row);
+
+    // Footer: savings + add to cart button
+    var footer = document.createElement("div");
+    footer.className = "cu-bundle-footer";
 
     var savingsAmount = bundle.savings_amount || 0;
     if (savingsAmount > 0) {
       var savings = document.createElement("div");
       savings.className = "cu-bundle-savings";
       savings.textContent = "Save " + formatMoney(savingsAmount) + " when you buy together";
-      info.appendChild(savings);
+      footer.appendChild(savings);
     }
-
-    header.appendChild(info);
 
     var btn = document.createElement("button");
     btn.className = "cu-bundle-btn";
-    btn.textContent = "Add Bundle to Cart (" + products.length + " items)";
+    btn.textContent = "Add All " + products.length + " to Cart";
     btn.addEventListener("click", function () {
       addBundleToCart(products, btn);
     });
-    header.appendChild(btn);
+    footer.appendChild(btn);
 
-    host.appendChild(header);
+    host.appendChild(footer);
     mount.appendChild(host);
     return true;
   }
