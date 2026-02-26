@@ -6,16 +6,18 @@ import { SessionStatus } from "../components/SessionStatus";
 import { ClientOnly } from "../components/ClientOnly";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  await authenticateAdmin(request);
-  return json({});
+  const { storeHash } = await authenticateAdmin(request);
+  return json({ storeHash });
 };
 
 export default function AppLayout() {
+  const { storeHash } = useLoaderData<typeof loader>();
+
   return (
     <ClientOnly fallback={null}>
       {() => (
         <>
-          <SessionStatus />
+          <SessionStatus storeHash={storeHash} />
           <Outlet />
         </>
       )}
@@ -37,6 +39,6 @@ export function ErrorBoundary() {
 
 export const headers: HeadersFunction = () => {
   const headers = new Headers();
-  headers.set("Content-Security-Policy", "frame-ancestors https://*.bigcommerce.com https://store-*.mybigcommerce.com");
+  headers.set("Content-Security-Policy", "frame-ancestors https://*.bigcommerce.com https://*.mybigcommerce.com");
   return headers;
 };

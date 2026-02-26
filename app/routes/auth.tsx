@@ -8,8 +8,15 @@ import { redirect } from "@remix-run/node";
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const url = new URL(request.url);
   const error = url.searchParams.get("error");
+  const context = url.searchParams.get("context");
+  const hasValidContext = !!(context && /^[a-z0-9]+$/i.test(context));
 
   if (error === "no_session") {
+    // If we have context, try cookie-less auth fallback route first.
+    if (hasValidContext) {
+      return redirect(`/admin?context=${context}`);
+    }
+
     // No valid session - show a message or redirect to BC
     return new Response(
       `<html>
@@ -29,5 +36,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   }
 
   // Default: redirect to admin dashboard if we somehow land here
+  if (hasValidContext) {
+    return redirect(`/admin?context=${context}`);
+  }
   return redirect("/admin");
 };

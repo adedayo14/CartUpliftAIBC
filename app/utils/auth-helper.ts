@@ -10,9 +10,31 @@ export function initializeAppBridge(): void {
   // BigCommerce apps run in an iframe with cookie-based auth
 }
 
-export function reauthorizeApp(): void {
-  // Redirect to auth/load to re-establish session
-  window.location.href = '/auth/load';
+function resolveStoreHash(fallbackStoreHash?: string): string | undefined {
+  if (typeof window === "undefined") return fallbackStoreHash;
+
+  const fromUrl = new URLSearchParams(window.location.search).get("context");
+  if (fromUrl) {
+    sessionStorage.setItem("bc_store_hash", fromUrl);
+    return fromUrl;
+  }
+
+  return fallbackStoreHash || sessionStorage.getItem("bc_store_hash") || undefined;
+}
+
+export function reauthorizeApp(fallbackStoreHash?: string): void {
+  const storeHash = resolveStoreHash(fallbackStoreHash);
+
+  if (storeHash) {
+    const path = window.location.pathname.startsWith("/admin")
+      ? window.location.pathname
+      : "/admin/dashboard";
+    window.location.href = `${path}?context=${encodeURIComponent(storeHash)}`;
+    return;
+  }
+
+  // We cannot self-call /auth/load; that endpoint requires a BC-signed JWT.
+  window.location.href = "/auth?error=no_session";
 }
 
 export function handleAuthError(error: unknown): void {
@@ -24,8 +46,7 @@ export function handleAuthError(error: unknown): void {
   if (error && typeof error === 'object' && 'status' in error) {
     const responseError = error as { status: number };
     if (responseError.status === 401) {
-      // Reload the page - BigCommerce will re-trigger the /auth/load callback
-      window.location.reload();
+      reauthorizeApp();
       return;
     }
   }

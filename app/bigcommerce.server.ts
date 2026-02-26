@@ -230,7 +230,12 @@ export async function saveStoreSession(data: {
   userId: number;
   email: string;
 }): Promise<void> {
-  const sessionId = `bc_${data.storeHash}`;
+  const storeHash = normalizeStoreHash(data.storeHash);
+  if (!storeHash) {
+    throw new Error("Invalid store hash while saving session");
+  }
+
+  const sessionId = `bc_${storeHash}`;
 
   await prisma.session.upsert({
     where: { id: sessionId },
@@ -239,11 +244,11 @@ export async function saveStoreSession(data: {
       scope: data.scope,
       userId: BigInt(data.userId),
       email: data.email,
-      storeHash: data.storeHash,
+      storeHash,
     },
     create: {
       id: sessionId,
-      storeHash: data.storeHash,
+      storeHash,
       state: "installed",
       isOnline: false,
       accessToken: data.accessToken,
@@ -258,8 +263,11 @@ export async function saveStoreSession(data: {
  * Get a stored session for a BigCommerce store.
  */
 export async function getStoreSession(storeHash: string): Promise<BigCommerceSession | null> {
+  const normalizedStoreHash = normalizeStoreHash(storeHash);
+  if (!normalizedStoreHash) return null;
+
   const session = await prisma.session.findFirst({
-    where: { storeHash },
+    where: { storeHash: normalizedStoreHash },
   });
 
   if (!session) return null;
@@ -278,8 +286,14 @@ export async function getStoreSession(storeHash: string): Promise<BigCommerceSes
  * Delete all sessions for a store (on uninstall).
  */
 export async function deleteStoreSessions(storeHash: string): Promise<void> {
+  const normalizedStoreHash = normalizeStoreHash(storeHash);
+  if (!normalizedStoreHash) {
+    logger.warn("Skipping session delete for invalid store hash", { storeHash });
+    return;
+  }
+
   await prisma.session.deleteMany({
-    where: { storeHash },
+    where: { storeHash: normalizedStoreHash },
   });
 }
 
@@ -294,10 +308,15 @@ export async function upsertStoreUser(data: {
   email: string;
   isOwner?: boolean;
 }): Promise<void> {
+  const storeHash = normalizeStoreHash(data.storeHash);
+  if (!storeHash) {
+    throw new Error("Invalid store hash while upserting store user");
+  }
+
   await prisma.storeUser.upsert({
     where: {
       storeHash_bcUserId: {
-        storeHash: data.storeHash,
+        storeHash,
         bcUserId: BigInt(data.userId),
       },
     },
@@ -306,7 +325,7 @@ export async function upsertStoreUser(data: {
       isOwner: data.isOwner ?? false,
     },
     create: {
-      storeHash: data.storeHash,
+      storeHash,
       bcUserId: BigInt(data.userId),
       email: data.email,
       isOwner: data.isOwner ?? false,
@@ -321,9 +340,15 @@ export async function deleteStoreUser(data: {
   storeHash: string;
   userId: number;
 }): Promise<void> {
+  const storeHash = normalizeStoreHash(data.storeHash);
+  if (!storeHash) {
+    logger.warn("Skipping store user delete for invalid store hash", { storeHash: data.storeHash, userId: data.userId });
+    return;
+  }
+
   await prisma.storeUser.deleteMany({
     where: {
-      storeHash: data.storeHash,
+      storeHash,
       bcUserId: BigInt(data.userId),
     },
   });
@@ -333,12 +358,76 @@ export async function deleteStoreUser(data: {
  * Remove all store users (called on uninstall).
  */
 export async function deleteStoreUsers(storeHash: string): Promise<void> {
+  const normalizedStoreHash = normalizeStoreHash(storeHash);
+  if (!normalizedStoreHash) {
+    logger.warn("Skipping store-user delete for invalid store hash", { storeHash });
+    return;
+  }
+
   await prisma.storeUser.deleteMany({
-    where: { storeHash },
+    where: { storeHash: normalizedStoreHash },
   });
 }
 
 // ─── Request Authentication ──────────────────────────────────────────────────
+
+const STORE_HASH_REGEX = /^[a-z0-9]+$/i;
+
+function normalizeStoreHash(value: string | null | undefined): string | undefined {
+  if (!value) return undefined;
+  const trimmed = value.trim();
+  return STORE_HASH_REGEX.test(trimmed) ? trimmed : undefined;
+}
+
+function isApiLikeRequest(request: Request): boolean {
+  const accept = request.headers.get("accept") || "";
+  const path = new URL(request.url).pathname;
+
+  return (
+    request.method.toUpperCase() !== "GET" ||
+    accept.includes("application/json") ||
+    request.headers.get("x-remix-request") === "true" ||
+    request.headers.get("x-remix-fetch") === "true" ||
+    request.headers.get("x-requested-with")?.toLowerCase() === "xmlhttprequest" ||
+    path.startsWith("/admin/api/") ||
+    path.startsWith("/api/")
+  );
+}
+
+function buildSessionExpiredResponse(): Response {
+  return new Response(
+    JSON.stringify({
+      error: "Session expired",
+      message: "Your session has expired. Please reload the app from BigCommerce.",
+      needsRefresh: true,
+    }),
+    { status: 401, headers: { "Content-Type": "application/json" } }
+  );
+}
+
+function resolveStoreHashFromRequest(request: Request): string | undefined {
+  const url = new URL(request.url);
+  const fromQuery = normalizeStoreHash(url.searchParams.get("context"));
+  if (fromQuery) return fromQuery;
+
+  const fromHeader = normalizeStoreHash(
+    request.headers.get("x-store-hash") || request.headers.get("x-bc-context")
+  );
+  if (fromHeader) return fromHeader;
+
+  const referer = request.headers.get("referer");
+  if (referer) {
+    try {
+      const refererUrl = new URL(referer);
+      const fromReferer = normalizeStoreHash(refererUrl.searchParams.get("context"));
+      if (fromReferer) return fromReferer;
+    } catch {
+      // Ignore malformed referrer values.
+    }
+  }
+
+  return undefined;
+}
 
 /**
  * Authenticate an admin request by reading the session cookie.
@@ -349,45 +438,34 @@ export async function authenticateAdmin(request: Request): Promise<{
   session: BigCommerceSession;
   storeHash: string;
 }> {
+  const isApiRequest = isApiLikeRequest(request);
+
   const cookieSession = await cookieSessionStorage.getSession(
     request.headers.get("Cookie")
   );
 
-  let storeHash = cookieSession.get("storeHash") as string | undefined;
+  let storeHash = normalizeStoreHash(cookieSession.get("storeHash") as string | undefined);
 
-  // Fallback: read storeHash from URL `context` param (for third-party cookie blocked browsers)
+  // Fallbacks for iframe contexts where third-party cookies may be blocked.
   if (!storeHash) {
-    const url = new URL(request.url);
-    const contextParam = url.searchParams.get("context");
-    if (contextParam && /^[a-z0-9]+$/i.test(contextParam)) {
-      storeHash = contextParam;
-    }
+    storeHash = resolveStoreHashFromRequest(request);
   }
 
   if (!storeHash) {
-    // Check if this is an API/fetcher request
-    const isApiRequest =
-      request.headers.get("accept")?.includes("application/json") ||
-      request.method === "POST";
-
     if (isApiRequest) {
-      throw new Response(
-        JSON.stringify({
-          error: "Session expired",
-          message: "Your session has expired. Please reload the app.",
-          needsRefresh: true,
-        }),
-        { status: 401, headers: { "Content-Type": "application/json" } }
-      );
+      throw buildSessionExpiredResponse();
     }
 
-    throw redirect("/auth/load?error=no_session");
+    throw redirect("/auth?error=no_session");
   }
 
   const session = await getStoreSession(storeHash);
 
   if (!session) {
-    throw redirect("/auth/load?error=no_session");
+    if (isApiRequest) {
+      throw buildSessionExpiredResponse();
+    }
+    throw redirect("/auth?error=no_session");
   }
 
   return { session, storeHash };
@@ -493,11 +571,13 @@ export async function bigcommerceApi(
   return response;
 }
 
-function getStorefrontScripts(appUrl: string) {
+function getStorefrontScripts(appUrl: string, storeHash?: string) {
+  const query = storeHash ? `?store_hash=${encodeURIComponent(storeHash)}` : "";
+
   return [
     {
       name: "CartUplift Cart Drawer",
-      src: `${appUrl}/storefront/cart-uplift.js`,
+      src: `${appUrl}/storefront/cart-uplift.js${query}`,
       auto_uninstall: true,
       load_method: "default",
       location: "footer",
@@ -507,7 +587,7 @@ function getStorefrontScripts(appUrl: string) {
     },
     {
       name: "CartUplift Bundles",
-      src: `${appUrl}/storefront/cart-bundles.js`,
+      src: `${appUrl}/storefront/cart-bundles.js${query}`,
       auto_uninstall: true,
       load_method: "default",
       location: "footer",
@@ -519,10 +599,71 @@ function getStorefrontScripts(appUrl: string) {
 }
 
 /**
+ * Ensure the expected storefront scripts exist with the current app URL/query params.
+ * Updates stale versions and keeps canonical scripts in place.
+ */
+export async function ensureStorefrontScripts(storeHash: string): Promise<void> {
+  const listResponse = await bigcommerceApi(storeHash, "/content/scripts");
+  if (!listResponse.ok) {
+    const errorData = await listResponse.json().catch(() => ({}));
+    logger.warn("Failed to list storefront scripts during sync", { storeHash, error: errorData });
+    return;
+  }
+
+  const listData = await listResponse.json();
+  const existing = (listData?.data as Array<{ id: string | number; name?: string; src?: string }>) || [];
+  const scripts = getStorefrontScripts(bcConfig.appUrl, storeHash);
+
+  for (const script of scripts) {
+    const sameName = existing.filter((item) => item.name === script.name);
+    const isCanonical = (item: { name?: string; src?: string }) =>
+      item.name === script.name && item.src === script.src;
+    const canonical = sameName.find(isCanonical);
+
+    for (const stale of sameName) {
+      if (isCanonical(stale)) continue;
+      const deleteResp = await bigcommerceApi(storeHash, `/content/scripts/${stale.id}`, {
+        method: "DELETE",
+      });
+      if (deleteResp.ok) {
+        logger.info("Removed stale storefront script", { storeHash, name: stale.name, src: stale.src });
+      } else {
+        const errorData = await deleteResp.json().catch(() => ({}));
+        logger.warn("Failed to remove stale storefront script", { storeHash, scriptId: stale.id, error: errorData });
+      }
+    }
+
+    if (canonical) {
+      logger.info("Storefront script already up to date", { storeHash, name: script.name });
+      continue;
+    }
+
+    const response = await bigcommerceApi(storeHash, "/content/scripts", {
+      method: "POST",
+      body: script,
+    });
+
+    if (response.ok) {
+      logger.info("Storefront script installed", { storeHash, name: script.name });
+      continue;
+    }
+
+    const errorData = await response.json().catch(() => ({}));
+    logger.error("Script installation failed", { storeHash, name: script.name, error: errorData });
+  }
+}
+
+/**
  * Remove storefront scripts installed by Cart Uplift.
  */
 export async function cleanupStorefrontScripts(storeHash: string): Promise<void> {
   try {
+    const session = await getStoreSession(storeHash);
+    if (!session) {
+      logger.info("Skipping storefront script cleanup; no active session", { storeHash });
+      return;
+    }
+
     const listResponse = await bigcommerceApi(storeHash, "/content/scripts");
     if (!listResponse.ok) {
       const errorData = await listResponse.json().catch(() => ({}));
@@ -550,7 +691,8 @@ export async function cleanupStorefrontScripts(storeHash: string): Promise<void>
       }
     }
   } catch (error) {
-    logger.warn("Storefront script cleanup failed", { storeHash, error });
+    const errMsg = error instanceof Error ? error.message : String(error);
+    logger.warn("Storefront script cleanup failed", { storeHash, message: errMsg });
   }
 }
 
@@ -620,8 +762,13 @@ export async function afterAuthSetup(storeHash: string, accountUuid?: string): P
         logger.info("Webhook registered", { storeHash, scope: webhook.scope });
       } else {
         const errorData = await response.json().catch(() => ({}));
-        // 409 = webhook already exists, that's fine
-        if (response.status === 409) {
+        const title = (errorData as { title?: string })?.title || "";
+        const alreadyExists =
+          response.status === 409
+          || (response.status === 422 && /already exists/i.test(title));
+
+        // 409/422 duplicate hook responses are non-fatal.
+        if (alreadyExists) {
           logger.info("Webhook already exists", { storeHash, scope: webhook.scope });
         } else {
           logger.error("Webhook registration failed", { storeHash, scope: webhook.scope, error: errorData });
@@ -669,20 +816,7 @@ export async function afterAuthSetup(storeHash: string, accountUuid?: string): P
 
   // 4. Install storefront scripts via Scripts API
   try {
-    const scripts = getStorefrontScripts(appUrl);
-
-    for (const script of scripts) {
-      const response = await bigcommerceApi(storeHash, "/content/scripts", {
-        method: "POST",
-        body: script,
-      });
-      if (response.ok) {
-        logger.info("Storefront script installed", { storeHash, name: script.name });
-      } else {
-        const errorData = await response.json().catch(() => ({}));
-        logger.error("Script installation failed", { storeHash, name: script.name, error: errorData });
-      }
-    }
+    await ensureStorefrontScripts(storeHash);
   } catch (error) {
     logger.error("Failed to install storefront scripts", { storeHash, error });
   }

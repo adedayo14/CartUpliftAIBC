@@ -261,7 +261,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       });
 
       // Redirect to bundles list after successful creation
-      return redirect('/admin/bundles');
+      return redirect(`/admin/bundles?context=${shop}`);
     }
 
     return json({ success: false, error: 'Invalid action' }, { status: 400 });

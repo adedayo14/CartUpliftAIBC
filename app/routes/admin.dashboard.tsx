@@ -18,7 +18,7 @@ import {
   ProgressBar,
   Message,
 } from "@bigcommerce/big-design";
-import { authenticateAdmin } from "../bigcommerce.server";
+import { authenticateAdmin, ensureStorefrontScripts } from "../bigcommerce.server";
 import { getSettings } from "../models/settings.server";
 import prisma from "../db.server";
 import { getShopCurrency } from "../services/currency.server";
@@ -170,6 +170,12 @@ interface TopUpsell {
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session, storeHash } = await authenticateAdmin(request);
+
+  try {
+    await ensureStorefrontScripts(storeHash);
+  } catch (error) {
+    console.warn("[Dashboard] Failed to sync storefront scripts", { storeHash, error });
+  }
 
   const url = new URL(request.url);
   const timeframe = url.searchParams.get("timeframe") || "30d";

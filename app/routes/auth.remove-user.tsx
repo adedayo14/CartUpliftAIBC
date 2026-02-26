@@ -1,5 +1,5 @@
 import type { LoaderFunctionArgs } from "@remix-run/node";
-import { verifySignedPayload, deleteStoreUser } from "../bigcommerce.server";
+import { verifySignedPayload, extractStoreHash, deleteStoreUser } from "../bigcommerce.server";
 import { logger } from "~/utils/logger.server";
 
 /**
@@ -19,20 +19,23 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   try {
     const payload = verifySignedPayload(signedPayload);
+    const storeHash = payload.store_hash
+      || extractStoreHash(payload.sub || payload.context || "");
 
     logger.info("User removed from store", {
-      storeHash: payload.store_hash,
+      storeHash,
       userId: payload.user.id,
     });
 
     await deleteStoreUser({
-      storeHash: payload.store_hash,
+      storeHash,
       userId: payload.user.id,
     });
 
     return new Response("OK", { status: 200 });
   } catch (error) {
-    logger.error("Remove user callback failed", { error });
+    const errMsg = error instanceof Error ? error.message : String(error);
+    logger.error("Remove user callback failed", { message: errMsg });
     return new Response("Failed", { status: 500 });
   }
 };

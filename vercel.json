@@ -24,7 +24,7 @@
       "headers": [
         {
           "key": "Content-Security-Policy",
-          "value": "frame-ancestors https://*.bigcommerce.com https://store-*.mybigcommerce.com"
+          "value": "frame-ancestors https://*.bigcommerce.com https://*.mybigcommerce.com"
         },
         {
           "key": "X-Frame-Options",
@@ -49,4 +49,3 @@
     }
   ]
 }
-

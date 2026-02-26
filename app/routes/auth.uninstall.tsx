@@ -1,5 +1,11 @@
 import type { LoaderFunctionArgs } from "@remix-run/node";
-import { verifySignedPayload, deleteStoreSessions, deleteStoreUsers, cleanupStorefrontScripts } from "../bigcommerce.server";
+import {
+  verifySignedPayload,
+  extractStoreHash,
+  deleteStoreSessions,
+  deleteStoreUsers,
+  cleanupStorefrontScripts,
+} from "../bigcommerce.server";
 import { logger } from "~/utils/logger.server";
 
 /**
@@ -19,7 +25,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   try {
     const payload = verifySignedPayload(signedPayload);
-    const storeHash = payload.store_hash;
+    const storeHash = payload.store_hash
+      || extractStoreHash(payload.sub || payload.context || "");
 
     logger.info("App uninstalled", { storeHash });
 

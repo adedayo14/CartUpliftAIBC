@@ -19,12 +19,16 @@ import { logger } from "~/utils/logger.server";
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const url = new URL(request.url);
   const signedPayload = url.searchParams.get("signed_payload_jwt");
+  const context = url.searchParams.get("context");
 
   if (!signedPayload) {
-    logger.warn("Missing signed_payload_jwt in load callback");
-    return new Response("Missing signed_payload_jwt parameter", {
-      status: 400,
+    logger.warn("Missing signed_payload_jwt in load callback", {
+      hasContext: !!context,
     });
+    if (context && /^[a-z0-9]+$/i.test(context)) {
+      return redirect(`/auth?error=no_session&context=${context}`);
+    }
+    return redirect("/auth?error=no_session");
   }
 
   try {
@@ -80,7 +84,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       },
     });
   } catch (error) {
-    logger.error("Load callback failed", { error });
+    const errMsg = error instanceof Error ? error.message : String(error);
+    logger.error("Load callback failed", { message: errMsg });
     return new Response("Failed to verify session. Please try again.", {
       status: 401,
     });

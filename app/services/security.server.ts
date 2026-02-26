@@ -12,7 +12,7 @@ export const SecurityHeaders = {
     "connect-src 'self' https://*.bigcommerce.com https://api.bigcommerce.com https://login.bigcommerce.com https://widget.replain.cc https://app.replain.cc https://ws.replain.cc wss://widget.replain.cc wss://app.replain.cc wss://ws.replain.cc",
     "media-src 'self' https://widget.replain.cc",
     "frame-src 'self' https://*.bigcommerce.com",
-    "frame-ancestors https://*.bigcommerce.com https://store-*.mybigcommerce.com",
+    "frame-ancestors https://*.bigcommerce.com https://*.mybigcommerce.com",
   ].join("; "),
   
   // Additional security headers

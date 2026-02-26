@@ -9,6 +9,7 @@ import { PlanBadge } from "../components/PlanBadge";
 import { AdminFallbackNav } from "../components/AdminFallbackNav";
 import { getOrCreateSubscription } from "../services/billing.server";
 import { json } from "@remix-run/node";
+import { reauthorizeApp } from "../utils/auth-helper";
 import styles from "../styles/admin.module.css";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -119,7 +120,7 @@ export default function App() {
       <ClientOnly fallback={<div>Loading...</div>}>
         {() => (
           <>
-            <SessionStatus />
+            <SessionStatus storeHash={storeHash} />
             {isLimitReached && (
               <div className={styles.limitWarning}>
                 <div className={styles.limitWarningContent}>
@@ -150,8 +151,7 @@ export function ErrorBoundary() {
     if (responseError.status === 401) {
       // For embedded apps, use App Bridge for re-authentication
       if (typeof window !== 'undefined') {
-        // Redirect to BigCommerce auth flow
-        window.location.href = '/auth/load';
+        reauthorizeApp();
       }
 
       return (
@@ -175,7 +175,7 @@ export const headers: HeadersFunction = () => {
   const headers = new Headers();
 
   // Allow embedding in BigCommerce admin
-  headers.set("Content-Security-Policy", "frame-ancestors https://*.bigcommerce.com https://store-*.mybigcommerce.com");
+  headers.set("Content-Security-Policy", "frame-ancestors https://*.bigcommerce.com https://*.mybigcommerce.com");
 
   return headers;
 };

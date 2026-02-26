@@ -381,21 +381,6 @@ export async function saveSettings(
 			"bundleSavingsFormat",
 			"showIndividualPricesInBundle",
 			"autoApplyBundleDiscounts",
-			// Enhanced Bundle Display Settings
-			"enableEnhancedBundles",
-			"showPurchaseCounts",
-			"showRecentlyViewed",
-			"showTestimonials",
-			"showTrustBadges",
-			"highlightHighValue",
-			"enhancedImages",
-			"animatedSavings",
-			"highValueThreshold",
-			"bundlePriority",
-			"badgeHighValueText",
-			"badgePopularText",
-			"badgeTrendingText",
-			"testimonialsList",
 		];
 
 		// Dev-only fields disabled in production schema to avoid missing columns

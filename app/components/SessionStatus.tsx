@@ -2,26 +2,57 @@ import { useEffect, useState } from "react";
 import { reauthorizeApp, initializeAppBridge } from "../utils/auth-helper";
 
 interface SessionStatusProps {
+  storeHash?: string;
   onSessionExpired?: () => void;
 }
 
-export function SessionStatus({ onSessionExpired }: SessionStatusProps) {
+function resolveStoreHash(providedStoreHash?: string): string | undefined {
+  if (typeof window === "undefined") return providedStoreHash;
+
+  const fromUrl = new URLSearchParams(window.location.search).get("context");
+  if (fromUrl) {
+    sessionStorage.setItem("bc_store_hash", fromUrl);
+    return fromUrl;
+  }
+
+  return providedStoreHash || sessionStorage.getItem("bc_store_hash") || undefined;
+}
+
+export function SessionStatus({ storeHash, onSessionExpired }: SessionStatusProps) {
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   useEffect(() => {
     // Initialize App Bridge on mount
     initializeAppBridge();
+
+    const getRequestConfig = (path: string) => {
+      const resolvedStoreHash = resolveStoreHash(storeHash);
+      if (!resolvedStoreHash) {
+        return { url: path, headers: undefined, storeHash: undefined };
+      }
+
+      const separator = path.includes("?") ? "&" : "?";
+      return {
+        url: `${path}${separator}context=${encodeURIComponent(resolvedStoreHash)}`,
+        headers: { "x-store-hash": resolvedStoreHash },
+        storeHash: resolvedStoreHash,
+      };
+    };
     
     const checkAndRefreshSession = async () => {
       if (isRefreshing) return; // Prevent multiple simultaneous checks
       
       try {
-        const response = await fetch('/admin/api/session-check');
+        const requestConfig = getRequestConfig('/admin/api/session-check');
+        const response = await fetch(requestConfig.url, {
+          headers: requestConfig.headers,
+        });
         
         if (response.status === 401) {
           // Session expired - use auth helper for re-authentication
+          onSessionExpired?.();
           console.log('Session expired, attempting re-authentication...');
-          reauthorizeApp();
+          reauthorizeApp(requestConfig.storeHash);
         }
       } catch (_error) {
         console.warn('Session check failed, likely network issue');
@@ -34,7 +65,11 @@ export function SessionStatus({ onSessionExpired }: SessionStatusProps) {
       
       setIsRefreshing(true);
       try {
-        await fetch('/admin/api/session-refresh', { method: 'POST' });
+        const requestConfig = getRequestConfig('/admin/api/session-refresh');
+        await fetch(requestConfig.url, {
+          method: 'POST',
+          headers: requestConfig.headers,
+        });
         console.log('Session refreshed automatically');
       } catch (_error) {
         console.warn('Session refresh failed');
@@ -65,7 +100,7 @@ export function SessionStatus({ onSessionExpired }: SessionStatusProps) {
     window.addEventListener('message', handleMessage);
 
     // Check for expired sessions every 2 minutes
-  const checkInterval = setInterval(checkAndRefreshSession, 2 * 60 * 1000);
+    const checkInterval = setInterval(checkAndRefreshSession, 2 * 60 * 1000);
     
     // Initial check
     checkAndRefreshSession();
@@ -77,7 +112,7 @@ export function SessionStatus({ onSessionExpired }: SessionStatusProps) {
       clearInterval(checkInterval);
       window.removeEventListener('message', handleMessage);
     };
-  }, [isRefreshing, onSessionExpired]);
+  }, [isRefreshing, onSessionExpired, storeHash]);
 
   // This component is invisible - it just works in the background
   return null;
