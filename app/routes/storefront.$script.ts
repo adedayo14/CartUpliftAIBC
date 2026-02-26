@@ -893,7 +893,6 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
           _lastRecsFetchKey = fetchKey;
           renderDrawerRecs(_drawerRecsAll, getCartProductIdSet(cart));
         });
-        }
       }
     });
   }
@@ -1552,51 +1551,77 @@ const CART_BUNDLES_SCRIPT = String.raw`(function () {
       return;
     }
 
-    fetch("/api/storefront/carts", {
-      method: "GET",
-      credentials: "same-origin",
-      headers: { Accept: "application/json" },
-    })
+    /* Helper: get or create cart, returns cartId */
+    function getOrCreateCartId() {
+      return fetch("/api/storefront/carts", {
+        method: "GET", credentials: "same-origin",
+        headers: { Accept: "application/json" },
+      })
       .then(function (res) { return res.ok ? res.json() : []; })
       .then(function (carts) {
-        var cartId = Array.isArray(carts) && carts.length > 0 ? carts[0].id : null;
+        return Array.isArray(carts) && carts.length > 0 ? carts[0].id : null;
+      });
+    }
 
-        if (cartId) {
-          return fetch("/api/storefront/carts/" + cartId + "/items", {
-            method: "POST",
-            credentials: "same-origin",
-            headers: { "Content-Type": "application/json", Accept: "application/json" },
-            body: JSON.stringify({ lineItems: lineItems }),
-          });
-        } else {
-          return fetch("/api/storefront/carts", {
-            method: "POST",
-            credentials: "same-origin",
-            headers: { "Content-Type": "application/json", Accept: "application/json" },
-            body: JSON.stringify({ lineItems: lineItems }),
-          });
-        }
+    /* Helper: add a batch of line items to existing or new cart */
+    function addItems(cartId, items) {
+      if (cartId) {
+        return fetch("/api/storefront/carts/" + cartId + "/items", {
+          method: "POST", credentials: "same-origin",
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          body: JSON.stringify({ lineItems: items }),
+        });
+      } else {
+        return fetch("/api/storefront/carts", {
+          method: "POST", credentials: "same-origin",
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          body: JSON.stringify({ lineItems: items }),
+        });
+      }
+    }
+
+    /* Try bulk add first, fall back to one-by-one */
+    getOrCreateCartId()
+      .then(function (cartId) {
+        return addItems(cartId, lineItems).then(function (res) {
+          if (res.ok) return { added: lineItems.length, total: lineItems.length };
+          /* Bulk failed — try one at a time (products with required options will fail) */
+          warn("Bulk add failed, trying individually...");
+          var added = 0;
+          var chain = Promise.resolve();
+          for (var k = 0; k < lineItems.length; k += 1) {
+            (function (item) {
+              chain = chain.then(function () {
+                return getOrCreateCartId().then(function (cId) {
+                  return addItems(cId, [item]).then(function (r) {
+                    if (r.ok) added += 1;
+                    else warn("Skipping product " + item.productId + " (requires options)");
+                  });
+                });
+              });
+            })(lineItems[k]);
+          }
+          return chain.then(function () { return { added: added, total: lineItems.length }; });
+        });
       })
-      .then(function (res) {
-        if (res.ok) {
-          btn.textContent = "Added to Cart!";
+      .then(function (result) {
+        if (result.added > 0) {
+          btn.textContent = result.added === result.total
+            ? "Added to Cart!"
+            : "Added " + result.added + " of " + result.total + "!";
           btn.className = "cu-bundle-btn cu-bundle-btn--success";
-          /* Open the cart drawer instead of reloading */
           if (window.__cartUpliftRecsBooted && typeof window.__cuOpenDrawer === "function") {
             setTimeout(function () { window.__cuOpenDrawer(); }, 300);
           } else {
             setTimeout(function () { window.location.reload(); }, 1500);
           }
         } else {
-          return res.json().then(function (err) {
-            warn("Add to cart failed", err);
-            btn.textContent = "Failed - Try Again";
-            btn.disabled = false;
-          });
+          btn.textContent = "Failed - Try Again";
+          btn.disabled = false;
         }
       })
       .catch(function (err) {
-        warn("Add to cart error", err);
+        warn("Add bundle to cart error", err);
         btn.textContent = "Failed - Try Again";
         btn.disabled = false;
       });
