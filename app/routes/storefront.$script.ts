@@ -422,7 +422,9 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
       ".cu-drawer-bd{flex:1 1 0%;overflow-y:auto;min-height:0;display:flex;flex-direction:column}" +
 
       /* Cart items */
-      ".cu-drawer-item{display:flex;align-items:flex-start;gap:12px;padding:16px 20px;border-bottom:1px solid #f3f4f6}" +
+      ".cu-drawer-item{display:flex;align-items:flex-start;gap:12px;padding:16px 20px;border-bottom:1px solid #f3f4f6;transition:opacity .3s,transform .3s;opacity:1}" +
+      ".cu-drawer-item--adding{animation:cu-slide-in .35s ease}" +
+      "@keyframes cu-slide-in{from{opacity:0;transform:translateX(30px)}to{opacity:1;transform:translateX(0)}}" +
       ".cu-drawer-item-img{width:72px;height:72px;object-fit:cover;background:#f9fafb;border:1px solid #e5e7eb;flex-shrink:0}" +
       ".cu-drawer-item-mid{flex:1;min-width:0}" +
       ".cu-drawer-item-name{font-size:12px;font-weight:700;color:#111;text-transform:uppercase;line-height:1.3;margin-bottom:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
@@ -440,7 +442,8 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
       ".cu-drawer-recs-hd{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}" +
       ".cu-drawer-recs-hd h3{margin:0;font-size:12px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:#111}" +
       ".cu-drawer-recs-scroll{display:flex;gap:12px;overflow-x:auto;padding-bottom:6px;scroll-snap-type:x mandatory;-webkit-overflow-scrolling:touch}" +
-      ".cu-drawer-rc{flex:0 0 150px;scroll-snap-align:start;background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:10px;text-align:center;display:flex;flex-direction:column;align-items:center}" +
+      ".cu-drawer-rc{flex:0 0 150px;scroll-snap-align:start;background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:10px;text-align:center;display:flex;flex-direction:column;align-items:center;transition:opacity .3s,transform .3s}" +
+      ".cu-drawer-rc--out{opacity:0;transform:scale(.85);pointer-events:none}" +
       ".cu-drawer-rc-img{width:100%;height:90px;object-fit:contain;margin-bottom:6px;border-radius:4px}" +
       ".cu-drawer-rc-name{font-size:11px;color:#111;font-weight:500;line-height:1.3;margin-bottom:3px;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;min-height:28px}" +
       ".cu-drawer-rc-price{font-size:12px;font-weight:600;color:#111;margin-bottom:8px}" +
@@ -681,6 +684,8 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
   var _scriptUrl = null;
   var _storeHash = "";
   var _drawerRecs = [];
+  var _drawerRecsAll = [];       /* unfiltered master list */
+  var _lastRecsFetchKey = "";    /* tracks when to re-fetch vs reuse cache */
 
   function getCartItems(cart) {
     if (!cart || !cart.lineItems) return [];
@@ -785,11 +790,33 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
     _drawer.classList.remove("cu-drawer--open");
   }
 
+  function getCartProductIdSet(cart) {
+    var set = {};
+    var items = getCartItems(cart);
+    for (var i = 0; i < items.length; i += 1) {
+      var pid = String(items[i].productId || "");
+      if (pid) set[pid] = true;
+    }
+    return set;
+  }
+
+  function filterRecsForCart(allRecs, cartPidSet) {
+    var out = [];
+    for (var i = 0; i < allRecs.length; i += 1) {
+      var rec = allRecs[i] || {};
+      var rid = String(firstNumeric(rec.id || rec.product_id || rec.productId) || "");
+      if (rid && cartPidSet[rid]) continue;
+      out.push(rec);
+    }
+    return out;
+  }
+
   function refreshDrawer() {
     log("Refreshing drawer...");
     fetchFullCart().then(function (cart) {
       var items = getCartItems(cart);
       var totalQty = getCartTotalQty(cart);
+      var cartPidSet = getCartProductIdSet(cart);
 
       /* Update header count */
       if (_drawerItemCount) {
@@ -804,45 +831,91 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
 
       /* Render body */
       if (!_drawerBody) return;
-      _drawerBody.innerHTML = "";
+
+      /* Track existing product IDs before clearing, to detect new items */
+      var prevPids = {};
+      var prevItemEls = _drawerBody.querySelectorAll(".cu-drawer-item[data-cu-pid]");
+      for (var p = 0; p < prevItemEls.length; p += 1) {
+        var ppid = prevItemEls[p].getAttribute("data-cu-pid");
+        if (ppid) prevPids[ppid] = true;
+      }
+
+      /* Remove only item rows (keep recs section if it exists) */
+      var existingItems = _drawerBody.querySelectorAll(".cu-drawer-item, .cu-drawer-empty");
+      for (var r = 0; r < existingItems.length; r += 1) existingItems[r].remove();
+
+      var recsSection = _drawerBody.querySelector(".cu-drawer-recs");
 
       if (!cart || items.length === 0) {
         var empty = document.createElement("div");
         empty.className = "cu-drawer-empty";
+        if (recsSection) {
+          _drawerBody.insertBefore(empty, recsSection);
+        } else {
+          _drawerBody.appendChild(empty);
+        }
         empty.textContent = "Your cart is empty";
-        _drawerBody.appendChild(empty);
-        renderDrawerRecs([]);
+        /* Re-render recs from cache (all visible since cart is empty) */
+        var visibleRecs = _drawerRecsAll.length > 0 ? _drawerRecsAll : [];
+        renderDrawerRecs(visibleRecs);
         return;
       }
 
-      /* Cart items */
+      /* Cart items — insert before recs section, animate new ones */
       var cartId = cart.id;
       for (var i = 0; i < items.length; i += 1) {
-        _drawerBody.appendChild(buildDrawerItem(items[i], cartId));
+        var isNew = !prevPids[String(items[i].productId || "")];
+        var row = buildDrawerItem(items[i], cartId, isNew);
+        if (recsSection) {
+          _drawerBody.insertBefore(row, recsSection);
+        } else {
+          _drawerBody.appendChild(row);
+        }
       }
 
-      /* Fetch and render recommendations */
+      /* Determine if we need to re-fetch recs or reuse cache */
       var productIds = [];
-      var seenPids = {};
-      for (var j = 0; j < items.length; j += 1) {
-        var pid = String(items[j].productId || "");
-        if (pid && !seenPids[pid]) { seenPids[pid] = true; productIds.push(pid); }
-      }
+      var sortedPids = Object.keys(cartPidSet).sort();
+      for (var j = 0; j < sortedPids.length; j += 1) productIds.push(sortedPids[j]);
+      var fetchKey = productIds.join(",");
 
-      if (_scriptUrl && _storeHash) {
-        fetchRecommendationsWithFallback(
-          _scriptUrl, _storeHash, "", productIds, "cart", 6
-        ).then(function (recs) {
-          _drawerRecs = recs;
-          renderDrawerRecs(recs);
-        });
+      if (_drawerRecsAll.length > 0 && _lastRecsFetchKey === fetchKey) {
+        /* Same cart products — just re-filter from cache */
+        renderDrawerRecs(filterRecsForCart(_drawerRecsAll, cartPidSet));
+      } else if (_drawerRecsAll.length > 0) {
+        /* Cart changed but we have cache — show filtered cache immediately */
+        renderDrawerRecs(filterRecsForCart(_drawerRecsAll, cartPidSet));
+        /* Then fetch fresh recs in background for next time */
+        if (_scriptUrl && _storeHash) {
+          fetchRecommendationsWithFallback(
+            _scriptUrl, _storeHash, "", productIds, "cart", 10
+          ).then(function (recs) {
+            _drawerRecsAll = recs;
+            _lastRecsFetchKey = fetchKey;
+            _drawerRecs = filterRecsForCart(recs, cartPidSet);
+            renderDrawerRecs(_drawerRecs);
+          });
+        }
+      } else {
+        /* First load — must fetch */
+        if (_scriptUrl && _storeHash) {
+          fetchRecommendationsWithFallback(
+            _scriptUrl, _storeHash, "", productIds, "cart", 10
+          ).then(function (recs) {
+            _drawerRecsAll = recs;
+            _lastRecsFetchKey = fetchKey;
+            _drawerRecs = filterRecsForCart(recs, cartPidSet);
+            renderDrawerRecs(_drawerRecs);
+          });
+        }
       }
     });
   }
 
-  function buildDrawerItem(item, cartId) {
+  function buildDrawerItem(item, cartId, animate) {
     var row = document.createElement("div");
-    row.className = "cu-drawer-item";
+    row.className = "cu-drawer-item" + (animate ? " cu-drawer-item--adding" : "");
+    row.setAttribute("data-cu-pid", String(item.productId || ""));
 
     /* Image */
     var img = document.createElement("img");
@@ -967,25 +1040,26 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
 
       var recId = firstNumeric(rec.id || rec.product_id || rec.productId);
       if (recId) {
+        card.setAttribute("data-cu-rec-pid", recId);
         var addBtn = document.createElement("button");
         addBtn.className = "cu-drawer-rc-add";
         addBtn.textContent = "Add";
-        (function (btn, pid) {
+        (function (btn, pid, cardEl) {
           btn.addEventListener("click", function () {
             btn.disabled = true;
             btn.textContent = "Adding...";
             addItemToCart([{ quantity: 1, productId: Number(pid) }], function (ok) {
               if (ok) {
-                btn.textContent = "Added!";
-                setTimeout(function () { btn.textContent = "Add"; btn.disabled = false; }, 1500);
-                refreshDrawer();
+                /* Animate the card out */
+                cardEl.classList.add("cu-drawer-rc--out");
+                setTimeout(function () { refreshDrawer(); }, 350);
               } else {
                 btn.textContent = "Add";
                 btn.disabled = false;
               }
             });
           });
-        })(addBtn, recId);
+        })(addBtn, recId, card);
         card.appendChild(addBtn);
       }
 
