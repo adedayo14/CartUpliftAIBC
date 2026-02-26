@@ -866,32 +866,21 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
         }
       }
 
-      /* Toggle rec visibility from cache (instant, no flicker) */
-      if (_drawerRecsAll.length > 0) {
-        renderDrawerRecs(_drawerRecsAll, cartPidSet);
-      }
-
-      /* Fetch fresh recs in background if cart products changed */
+      /* ─── Recommendations: fetch once, then just toggle visibility ─── */
       var productIds = [];
       var sortedPids = Object.keys(cartPidSet).sort();
       for (var j = 0; j < sortedPids.length; j += 1) productIds.push(sortedPids[j]);
-      var fetchKey = productIds.join(",");
 
-      if (_lastRecsFetchKey !== fetchKey && _scriptUrl && _storeHash) {
+      if (_drawerRecsAll.length > 0) {
+        /* Recs already cached — instant toggle, no re-fetch (prevents jitter) */
+        renderDrawerRecs(_drawerRecsAll, cartPidSet);
+      } else if (_scriptUrl && _storeHash) {
+        /* First load — fetch recommendations once */
         fetchRecommendationsWithFallback(
           _scriptUrl, _storeHash, "", productIds, "cart", 10
         ).then(function (recs) {
           _drawerRecsAll = recs;
-          _lastRecsFetchKey = fetchKey;
-          renderDrawerRecs(_drawerRecsAll, getCartProductIdSet(cart));
-        });
-      } else if (_drawerRecsAll.length === 0 && _scriptUrl && _storeHash) {
-        /* First load — must fetch */
-        fetchRecommendationsWithFallback(
-          _scriptUrl, _storeHash, "", productIds, "cart", 10
-        ).then(function (recs) {
-          _drawerRecsAll = recs;
-          _lastRecsFetchKey = fetchKey;
+          _lastRecsFetchKey = productIds.join(",");
           renderDrawerRecs(_drawerRecsAll, getCartProductIdSet(cart));
         });
       }
@@ -1112,6 +1101,14 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
       section.appendChild(scroll);
       _drawerBody.appendChild(section);
       _recsBuiltKey = key;
+
+      /* After build, check if any cards are actually visible */
+      var builtCards = scroll.querySelectorAll(".cu-drawer-rc[data-cu-rec-pid]");
+      var builtVisible = 0;
+      for (var v = 0; v < builtCards.length; v += 1) {
+        if (!builtCards[v].classList.contains("cu-drawer-rc--hidden")) builtVisible += 1;
+      }
+      section.style.display = builtVisible > 0 ? "" : "none";
       return;
     }
 

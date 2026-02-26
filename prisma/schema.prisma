@@ -99,7 +99,7 @@ model Settings {
   
   // Recommendation Settings
   recommendationLayout    String   @default("horizontal")
-  maxRecommendations      Int      @default(6)
+  maxRecommendations      Int      @default(3)
   maxRecommendationProducts Int    @default(4)
   complementDetectionMode String   @default("automatic")
   manualRecommendationProducts String @default("")

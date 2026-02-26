@@ -300,6 +300,21 @@ export default function AppSettings() {
                     <>
                       <HR />
 
+                      <Select
+                        label="Max recommendations in cart drawer"
+                        options={[
+                          { content: '2 products', value: '2' },
+                          { content: '3 products (Recommended)', value: '3' },
+                          { content: '4 products', value: '4' },
+                          { content: '6 products', value: '6' },
+                        ]}
+                        value={String(formSettings.maxRecommendations || 3)}
+                        onOptionChange={(value) => updateSetting("maxRecommendations", Number(value))}
+                        description="Section hides automatically when all are added to cart"
+                      />
+
+                      <HR />
+
                       <Checkbox
                         label="Use AI-powered recommendations"
                         checked={formSettings.enableMLRecommendations || false}
