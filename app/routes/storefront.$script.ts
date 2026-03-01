@@ -1001,7 +1001,7 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
       if (s.drawerRecsPosition === "side" || s.drawerRecsPosition === "bottom") _recsPosition = s.drawerRecsPosition;
       log("Settings loaded: shipping=" + _shipEnabled + " threshold=" + _shipThreshold + " recsPos=" + _recsPosition);
       /* Show/hide side panel based on position setting */
-      if (_sidePanel) _sidePanel.style.display = _recsPosition === "side" ? "" : "none";
+      if (_sidePanel) _sidePanel.style.display = _recsPosition === "side" ? "flex" : "none";
       /* Re-render shipping bar if drawer is open */
       if (_drawerShipEl && _drawerWrap && _drawerWrap.classList.contains("cu-drawer-wrap--open")) {
         updateShippingBar(0);
@@ -1345,7 +1345,7 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
       }
 
       _recsBuiltKey = key;
-      if (_sidePanel) _sidePanel.style.display = visCount > 0 ? "" : "none";
+      if (_sidePanel) _sidePanel.style.display = visCount > 0 ? "flex" : "none";
       if (visCount > 0) trackImpressions(allRecs);
       return;
     }
@@ -1374,7 +1374,7 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
       }
     }
 
-    if (_sidePanel) _sidePanel.style.display = visibleCount > 0 ? "" : "none";
+    if (_sidePanel) _sidePanel.style.display = visibleCount > 0 ? "flex" : "none";
   }
 
   /* ─── Bottom Recs (horizontal scroll inside cart body) ─── */
