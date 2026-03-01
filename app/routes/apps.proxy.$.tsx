@@ -997,6 +997,10 @@ export async function loader({ request }: LoaderFunctionArgs) {
 
             // ML PERSONALIZATION MODE ROUTING
             let mlRecommendations: MLRecommendation[] = [];
+            const excludedIdsForMl = new Set<string>([
+              ...Array.from(anchors),
+              ...(cartParam ? cartParam.split(',').map((id) => id.trim()).filter(Boolean) : []),
+            ]);
 
             if (effectivePersonalizationMode === 'ai_first' && hasGoodData) {
               // Get ML user profile (respecting privacy)
@@ -1016,8 +1020,9 @@ export async function loader({ request }: LoaderFunctionArgs) {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
+                      storeHash: shopStr,
                       product_ids: Array.from(anchors),
-                      exclude_ids: cartParam ? cartParam.split(',') : [],
+                      exclude_ids: Array.from(excludedIdsForMl),
                       customer_preferences: userProfile,
                       privacy_level: mlPrivacyLevel
                     })
@@ -1025,18 +1030,32 @@ export async function loader({ request }: LoaderFunctionArgs) {
                 );
               }
 
-              // 2. Collaborative filtering (if advanced personalization)
-              if (mlPrivacyLevel === 'advanced' && customerId) {
-                mlPromises.push(
-                  fetch(`${url.origin}/api/ml/collaborative-data`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                      privacy_level: mlPrivacyLevel,
-                      include_user_similarities: true
-                    })
-                  }).then(r => r.ok ? r.json() : null).catch(() => null)
-                );
+              // 2. Similarity-matrix boost for advanced mode.
+              // Uses precomputed MLProductSimilarity directly, avoiding admin-only route constraints.
+              if (mlPrivacyLevel === 'advanced' && (customerId || enableAdvancedPersonalization)) {
+                try {
+                  const similarityRows = await db.mLProductSimilarity?.findMany({
+                    where: {
+                      storeHash: shopStr,
+                      productId1: { in: Array.from(anchors) }
+                    },
+                    orderBy: { overallScore: 'desc' },
+                    take: Math.max(20, limit * 8),
+                    select: { productId2: true, overallScore: true }
+                  }) || [];
+
+                  for (const row of similarityRows) {
+                    const pid = String(row.productId2 || '');
+                    if (!pid || excludedIdsForMl.has(pid)) continue;
+                    mlRecommendations.push({
+                      product_id: pid,
+                      score: Number(row.overallScore || 0),
+                      source: 'similarity_matrix'
+                    });
+                  }
+                } catch {
+                  // best-effort
+                }
               }
 
               const mlResults = await Promise.all(mlPromises);
@@ -1049,8 +1068,17 @@ export async function loader({ request }: LoaderFunctionArgs) {
               });
 
               if (mlRecommendations.length > 0) {
+                const dedupedMlRecommendations = Array.from(
+                  new Map(
+                    mlRecommendations
+                      .filter((r) => r?.product_id && !excludedIdsForMl.has(String(r.product_id)))
+                      .sort((a, b) => Number(b.score || 0) - Number(a.score || 0))
+                      .map((r) => [String(r.product_id), r])
+                  ).values()
+                );
+
                 // Merge ML recommendations with existing ones
-                const mlProductIds = mlRecommendations.map((r) => r.product_id);
+                const mlProductIds = dedupedMlRecommendations.map((r) => String(r.product_id));
                 const mlProducts = await normalizeIdsToProducts(shopStr, mlProductIds);
 
                 // Prioritize ML recommendations
@@ -1067,7 +1095,8 @@ export async function loader({ request }: LoaderFunctionArgs) {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                  exclude_ids: cartParam ? cartParam.split(',').concat(Array.from(anchors)) : Array.from(anchors),
+                  storeHash: shopStr,
+                  exclude_ids: Array.from(excludedIdsForMl),
                   customer_preferences: mlPrivacyLevel !== 'basic' ? { sessionId, customerId, privacyLevel: mlPrivacyLevel } : null,
                   privacy_level: mlPrivacyLevel
                 })
@@ -1088,8 +1117,9 @@ export async function loader({ request }: LoaderFunctionArgs) {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({
+                    storeHash: shopStr,
                     product_ids: Array.from(anchors),
-                    exclude_ids: cartParam ? cartParam.split(',') : [],
+                    exclude_ids: Array.from(excludedIdsForMl),
                     privacy_level: mlPrivacyLevel
                   })
                 }).then(r => r.ok ? r.json() as Promise<MLRecommendationResponse> : null).catch(() => null);

@@ -4,7 +4,6 @@ import { getProducts } from "~/services/bigcommerce-api.server";
 import { rateLimitRequest } from "../utils/rateLimiter.server";
 import { validateCorsOrigin } from "../services/security.server";
 import prismaClient from "~/db.server";
-import type { TrackingEventModel } from "~/types/prisma";
 
 const prisma = prismaClient;
 
@@ -40,6 +39,11 @@ interface PopularRecommendation {
     cart_count: number;
     conversion_rate: number;
   };
+}
+
+interface TrackingEventRow {
+  productId: string | null;
+  event: string;
 }
 
 export async function action({ request }: ActionFunctionArgs) {
@@ -147,7 +151,7 @@ async function getPopularProducts(storeHash: string, excludeIds: string[]): Prom
       },
       select: {
         productId: true,
-        eventType: true
+        event: true
       }
     });
 
@@ -155,12 +159,12 @@ async function getPopularProducts(storeHash: string, excludeIds: string[]): Prom
 
     const productMetrics = new Map<string, { views: number; carts: number; purchases: number }>();
 
-    trackingEvents.forEach((event: TrackingEventModel) => {
+    trackingEvents.forEach((event: TrackingEventRow) => {
       if (!event.productId) return;
       const existing = productMetrics.get(event.productId) || { views: 0, carts: 0, purchases: 0 };
-      if (event.eventType === 'view') existing.views++;
-      if (event.eventType === 'add_to_cart') existing.carts++;
-      if (event.eventType === 'purchase') existing.purchases++;
+      if (event.event === 'impression' || event.event === 'product_view') existing.views++;
+      if (event.event === 'add_to_cart') existing.carts++;
+      if (event.event === 'purchase') existing.purchases++;
       productMetrics.set(event.productId, existing);
     });
 
