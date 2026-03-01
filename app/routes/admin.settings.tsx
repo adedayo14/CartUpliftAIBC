@@ -30,6 +30,10 @@ interface AppSettings {
   enableThresholdBasedSuggestions?: boolean;
   thresholdSuggestionMode?: string;
   hideRecommendationsAfterThreshold?: boolean;
+  enableFreeShipping?: boolean;
+  freeShippingThreshold?: number;
+  freeShippingText?: string;
+  freeShippingAchievedText?: string;
   discountLinkText?: string;
   notesLinkText?: string;
   giftPriceText?: string;
@@ -40,6 +44,8 @@ interface AppSettings {
   enableBehaviorTracking?: boolean;
   mlDataRetentionDays?: string;
   enableRecommendationTitleCaps?: boolean;
+  maxRecommendations?: number;
+  drawerRecsPosition?: string;
   [key: string]: unknown;
 }
 
@@ -313,6 +319,17 @@ export default function AppSettings() {
                         description="Section hides automatically when all are added to cart"
                       />
 
+                      <Select
+                        label="Recommendation display position"
+                        options={[
+                          { content: 'Bottom of cart (horizontal scroll)', value: 'bottom' },
+                          { content: 'Side panel (left column)', value: 'side' },
+                        ]}
+                        value={formSettings.drawerRecsPosition || "bottom"}
+                        onOptionChange={(value) => updateSetting("drawerRecsPosition", value)}
+                        description="Where to show product recommendations in the cart drawer"
+                      />
+
                       <HR />
 
                       <Checkbox
@@ -383,6 +400,52 @@ export default function AppSettings() {
               </Box>
             </Panel>
 
+            {/* Free Shipping Bar */}
+            <Panel>
+              <Box padding="medium">
+                <Flex flexDirection="column" flexGap="1rem">
+                  <H2>Free Shipping Bar</H2>
+
+                  <Checkbox
+                    label="Enable free shipping progress bar"
+                    checked={formSettings.enableFreeShipping || false}
+                    onChange={(e) => updateSetting("enableFreeShipping", e.target.checked)}
+                    description="Show a progress bar toward free shipping in the cart drawer"
+                  />
+
+                  {formSettings.enableFreeShipping && (
+                    <>
+                      <HR />
+
+                      <Input
+                        label="Free shipping threshold"
+                        type="number"
+                        value={String(formSettings.freeShippingThreshold || "")}
+                        onChange={(e) => updateSetting("freeShippingThreshold", Number(e.target.value) || 0)}
+                        description="Cart amount required for free shipping (in your store currency)"
+                        placeholder="50"
+                      />
+
+                      <Input
+                        label="Progress message"
+                        value={formSettings.freeShippingText || "You\u2019re {amount} away from free shipping!"}
+                        onChange={(e) => updateSetting("freeShippingText", e.target.value)}
+                        description="Use {amount} as a placeholder for the remaining amount"
+                        placeholder="You're {amount} away from free shipping!"
+                      />
+
+                      <Input
+                        label="Achieved message"
+                        value={formSettings.freeShippingAchievedText || "\u2713 Free shipping unlocked!"}
+                        onChange={(e) => updateSetting("freeShippingAchievedText", e.target.value)}
+                        description="Shown when threshold is reached"
+                        placeholder="\u2713 Free shipping unlocked!"
+                      />
+                    </>
+                  )}
+                </Flex>
+              </Box>
+            </Panel>
           </Flex>
 
           {/* Middle Column - Privacy & Data */}

@@ -248,10 +248,28 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
     .catch(function (err) { log("Cart API error:", err); return []; });
   }
 
+  var _pendingCart = null;  /* cart data from last addItemToCart (avoids extra GET) */
+
   function fetchFullCart() {
-    return fetch("/api/storefront/carts?include=lineItems.physicalItems.options,lineItems.digitalItems.options", {
+    /* Use cached cart from addItemToCart if available (most reliable) */
+    if (_pendingCart) {
+      var cached = _pendingCart;
+      _pendingCart = null;
+      /* Handle possible wrapper: { data: cart } or direct cart */
+      if (cached.data && cached.data.lineItems) cached = cached.data;
+      if (cached.currency && cached.currency.code) {
+        window.__cuCurrency = cached.currency.code;
+      }
+      if (cached.lineItems) {
+        log("Using cached cart from addItemToCart, id=" + cached.id);
+        return Promise.resolve(cached);
+      }
+      /* Cached data doesn't look like a cart — fall through to GET */
+      log("Cached cart invalid, falling back to GET");
+    }
+    return fetch("/api/storefront/carts?include=lineItems.physicalItems.options,lineItems.digitalItems.options&_t=" + Date.now(), {
       method: "GET", credentials: "same-origin",
-      headers: { Accept: "application/json" },
+      headers: { Accept: "application/json", "Cache-Control": "no-cache", Pragma: "no-cache" },
     })
     .then(function (res) { return res.ok ? res.json() : []; })
     .then(function (carts) {
@@ -266,7 +284,7 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
   }
 
   function addItemToCart(lineItems, callback) {
-    fetch("/api/storefront/carts", {
+    fetch("/api/storefront/carts?_t=" + Date.now(), {
       method: "GET", credentials: "same-origin",
       headers: { Accept: "application/json" },
     })
@@ -288,8 +306,18 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
       }
     })
     .then(function (res) {
-      if (res.ok) { if (callback) callback(true); }
-      else {
+      if (res.ok) {
+        /* Parse the response — it contains the updated cart, cache it for refreshDrawer */
+        return res.json().then(function (cartData) {
+          _pendingCart = cartData || null;
+          log("addItemToCart success, cached cart:", !!_pendingCart);
+          if (callback) callback(true);
+        }).catch(function () {
+          /* JSON parse failed but response was OK — item was added */
+          _pendingCart = null;
+          if (callback) callback(true);
+        });
+      } else {
         res.json().catch(function () { return {}; }).then(function (err) {
           warn("addItemToCart failed:", err);
           if (callback) callback(false);
@@ -460,64 +488,109 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
       "@media (max-width:700px){.cu-recs-grid{grid-template-columns:1fr 1fr}}" +
 
       /* ─── Cart Drawer ─── */
-      ".cu-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.4);z-index:99998;opacity:0;visibility:hidden;transition:opacity .3s,visibility .3s}" +
+      ".cu-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.45);z-index:99998;opacity:0;visibility:hidden;transition:opacity .3s,visibility .3s}" +
       ".cu-overlay--open{opacity:1;visibility:visible}" +
-      ".cu-drawer{position:fixed;top:0;right:0;bottom:0;width:420px;max-width:100vw;background:#fff;z-index:99999;transform:translateX(100%);transition:transform .3s ease;display:flex;flex-direction:column;box-shadow:-4px 0 20px rgba(0,0,0,.15)}" +
-      ".cu-drawer--open{transform:translateX(0)}" +
 
-      /* Drawer header */
-      ".cu-drawer-hd{display:flex;justify-content:space-between;align-items:center;padding:16px 20px;border-bottom:1px solid #e5e7eb;flex-shrink:0}" +
-      ".cu-drawer-hd h2{margin:0;font-size:15px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:#111}" +
-      ".cu-drawer-x{background:none;border:none;font-size:26px;cursor:pointer;color:#111;padding:0;line-height:1}" +
+      /* Wrapper — holds side panel + cart */
+      ".cu-drawer-wrap{position:fixed;top:0;right:0;bottom:0;z-index:99999;display:flex;transform:translateX(100%);transition:transform .3s cubic-bezier(.4,0,.2,1);box-shadow:-6px 0 24px rgba(0,0,0,.12)}" +
+      ".cu-drawer-wrap--open{transform:translateX(0)}" +
+      ".cu-drawer-wrap *{box-sizing:border-box;font-family:inherit}" +
 
-      /* Drawer body (scrollable) */
+      /* Side panel — recommendations (left of cart) */
+      ".cu-drawer-side{width:300px;background:#f7f7f5;display:none;flex-direction:column;overflow:hidden;border-right:1px solid #eee;order:-1}" +
+      ".cu-drawer-side-hd{padding:20px 18px 14px;flex-shrink:0}" +
+      ".cu-drawer-side-hd h3{margin:0;font-size:17px;font-weight:700;color:#111}" +
+      ".cu-drawer-side-bd{flex:1 1 0%;overflow-y:auto;padding:0 14px 14px;display:flex;flex-direction:column;gap:16px}" +
+      ".cu-drawer-side-empty{display:none}" +
+
+      /* Side rec cards — vertical layout */
+      ".cu-side-card{background:#fff;border-radius:10px;overflow:hidden;transition:opacity .35s,transform .35s;box-shadow:0 1px 4px rgba(0,0,0,.05)}" +
+      ".cu-side-card--hidden{display:none}" +
+      ".cu-side-card--out{opacity:0;transform:scale(.92);pointer-events:none}" +
+      ".cu-side-card--reveal{animation:cu-rec-reveal .35s ease}" +
+      ".cu-side-card-img-wrap{position:relative;background:#fafafa}" +
+      ".cu-side-card-img{width:100%;height:180px;object-fit:contain;display:block}" +
+      ".cu-side-card-add{position:absolute;bottom:10px;right:10px;width:38px;height:38px;border-radius:50%;background:#333;color:#fff;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:background .15s;box-shadow:0 2px 6px rgba(0,0,0,.2)}" +
+      ".cu-side-card-add:hover{background:#111}" +
+      ".cu-side-card-add:disabled{background:#94a3b8;cursor:not-allowed}" +
+      ".cu-side-card-add svg{width:18px;height:18px}" +
+      ".cu-side-card-info{padding:10px 12px 12px}" +
+      ".cu-side-card-price{font-size:13px;font-weight:700;color:#111;margin-bottom:2px}" +
+      ".cu-side-card-name{font-size:12px;color:#555;line-height:1.4;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}" +
+      "@keyframes cu-rec-reveal{from{opacity:0;transform:scale(.85)}to{opacity:1;transform:scale(1)}}" +
+
+      /* Cart panel (right) */
+      ".cu-drawer{width:420px;max-width:100vw;background:#fff;display:flex;flex-direction:column;flex-shrink:0}" +
+
+      /* Header */
+      ".cu-drawer-hd{display:flex;justify-content:space-between;align-items:center;padding:18px 20px;border-bottom:1px solid #eee;flex-shrink:0}" +
+      ".cu-drawer-hd h2{margin:0;font-size:17px;font-weight:700;color:#111;display:flex;align-items:center;gap:10px}" +
+      ".cu-drawer-cnt{display:inline-flex;align-items:center;justify-content:center;min-width:26px;height:26px;border-radius:50%;border:1.5px solid #111;font-size:12px;font-weight:700;color:#111;padding:0 4px}" +
+      ".cu-drawer-x{background:none;border:none;font-size:22px;cursor:pointer;color:#555;padding:4px;line-height:1;transition:color .15s}" +
+      ".cu-drawer-x:hover{color:#111}" +
+
+      /* Free-shipping bar */
+      ".cu-drawer-ship{padding:10px 20px;background:#f8f8f6;flex-shrink:0;display:none}" +
+      ".cu-drawer-ship--vis{display:block}" +
+      ".cu-drawer-ship-text{font-size:13px;color:#444;text-align:center;margin-bottom:6px;font-weight:500;line-height:1.4}" +
+      ".cu-drawer-ship-text b{color:#111;font-weight:700}" +
+      ".cu-drawer-ship-track{height:5px;background:#e5e5e2;border-radius:3px;overflow:hidden}" +
+      ".cu-drawer-ship-fill{height:100%;background:#111;border-radius:3px;transition:width .5s ease;width:0%}" +
+      ".cu-drawer-ship--done .cu-drawer-ship-fill{background:#22c55e}" +
+      ".cu-drawer-ship--done .cu-drawer-ship-text{color:#16a34a}" +
+
+      /* Body (scrollable) */
       ".cu-drawer-bd{flex:1 1 0%;overflow-y:auto;min-height:0;display:flex;flex-direction:column}" +
 
       /* Cart items */
-      ".cu-drawer-item{display:flex;align-items:flex-start;gap:12px;padding:16px 20px;border-bottom:1px solid #f3f4f6;transition:opacity .3s,transform .3s;opacity:1}" +
+      ".cu-drawer-item{display:flex;align-items:flex-start;gap:14px;padding:16px 20px;border-bottom:1px solid #f0f0f0;transition:opacity .3s,transform .3s;opacity:1}" +
       ".cu-drawer-item--adding{animation:cu-slide-in .35s ease}" +
       "@keyframes cu-slide-in{from{opacity:0;transform:translateX(30px)}to{opacity:1;transform:translateX(0)}}" +
-      ".cu-drawer-item-img{width:72px;height:72px;object-fit:cover;background:#f9fafb;border:1px solid #e5e7eb;flex-shrink:0}" +
-      ".cu-drawer-item-mid{flex:1;min-width:0}" +
-      ".cu-drawer-item-name{font-size:12px;font-weight:700;color:#111;text-transform:uppercase;line-height:1.3;margin-bottom:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
+      ".cu-drawer-item-img{width:80px;height:80px;object-fit:cover;background:#f9fafb;border-radius:8px;border:1px solid #eee;flex-shrink:0}" +
+      ".cu-drawer-item-mid{flex:1;min-width:0;padding-top:2px}" +
+      ".cu-drawer-item-name{font-size:13px;font-weight:600;color:#111;line-height:1.4;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}" +
+      ".cu-drawer-item-opts{font-size:11px;color:#777;margin-bottom:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
       ".cu-drawer-qty{display:inline-flex;align-items:center;border:1px solid #d1d5db;border-radius:20px;overflow:hidden}" +
-      ".cu-drawer-qty button{background:none;border:none;padding:4px 10px;font-size:14px;cursor:pointer;color:#374151;line-height:1}" +
+      ".cu-drawer-qty button{background:none;border:none;padding:5px 12px;font-size:14px;cursor:pointer;color:#374151;line-height:1;transition:background .1s}" +
       ".cu-drawer-qty button:hover{background:#f3f4f6}" +
-      ".cu-drawer-qty span{padding:2px 6px;font-size:13px;min-width:20px;text-align:center}" +
-      ".cu-drawer-item-rt{display:flex;flex-direction:column;align-items:flex-end;gap:12px;flex-shrink:0}" +
-      ".cu-drawer-item-price{font-size:14px;font-weight:600;color:#111}" +
-      ".cu-drawer-item-del{background:none;border:none;cursor:pointer;font-size:18px;color:#9ca3af;padding:2px;line-height:1}" +
+      ".cu-drawer-qty span{padding:2px 4px;font-size:13px;min-width:22px;text-align:center}" +
+      ".cu-drawer-item-rt{display:flex;flex-direction:column;align-items:flex-end;gap:8px;flex-shrink:0;padding-top:2px}" +
+      ".cu-drawer-item-price{font-size:14px;font-weight:700;color:#111}" +
+      ".cu-drawer-item-del{background:none;border:none;cursor:pointer;color:#bbb;padding:2px;line-height:1;transition:color .15s}" +
       ".cu-drawer-item-del:hover{color:#ef4444}" +
+      ".cu-drawer-item-del svg{width:16px;height:16px;display:block}" +
 
-      /* Drawer recs */
-      ".cu-drawer-recs{padding:16px 20px;border-top:1px solid #e5e7eb;margin-top:auto}" +
-      ".cu-drawer-recs-hd{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}" +
-      ".cu-drawer-recs-hd h3{margin:0;font-size:12px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:#111}" +
-      ".cu-drawer-recs-scroll{display:flex;gap:12px;overflow-x:auto;padding-bottom:6px;scroll-snap-type:x mandatory;-webkit-overflow-scrolling:touch}" +
-      ".cu-drawer-rc{flex:0 0 150px;scroll-snap-align:start;background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:10px;text-align:center;display:flex;flex-direction:column;align-items:center;transition:opacity .3s,transform .3s}" +
+      /* Bottom recs (horizontal scroll inside cart body) */
+      ".cu-drawer-recs{padding:18px 20px 14px;border-top:2px solid #f0f0f0;margin-top:auto;background:#fafaf8}" +
+      ".cu-drawer-recs-hd{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}" +
+      ".cu-drawer-recs-hd h3{margin:0;font-size:13px;font-weight:700;letter-spacing:.3px;text-transform:uppercase;color:#111}" +
+      ".cu-drawer-recs-scroll{display:flex;gap:12px;overflow-x:auto;padding-bottom:4px;scroll-snap-type:x mandatory;-webkit-overflow-scrolling:touch;scrollbar-width:none}" +
+      ".cu-drawer-recs-scroll::-webkit-scrollbar{display:none}" +
+      ".cu-drawer-rc{flex:0 0 160px;scroll-snap-align:start;background:#fff;border:1px solid #e8e8e5;border-radius:10px;padding:12px;text-align:center;display:flex;flex-direction:column;align-items:center;transition:opacity .3s,transform .3s;box-shadow:0 1px 4px rgba(0,0,0,.04)}" +
       ".cu-drawer-rc--out{opacity:0;transform:scale(.85);pointer-events:none}" +
       ".cu-drawer-rc--hidden{display:none}" +
-      ".cu-drawer-rc--reveal{animation:cu-rec-reveal .35s ease}" +
-      "@keyframes cu-rec-reveal{from{opacity:0;transform:scale(.85)}to{opacity:1;transform:scale(1)}}" +
-      ".cu-drawer-rc-img{width:100%;height:90px;object-fit:contain;margin-bottom:6px;border-radius:4px}" +
-      ".cu-drawer-rc-name{font-size:11px;color:#111;font-weight:500;line-height:1.3;margin-bottom:3px;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;min-height:28px}" +
-      ".cu-drawer-rc-price{font-size:12px;font-weight:600;color:#111;margin-bottom:8px}" +
-      ".cu-drawer-rc-add{display:inline-block;padding:6px 18px;background:#111;color:#fff;border:none;border-radius:4px;font-size:12px;font-weight:600;cursor:pointer;transition:background .15s}" +
+      ".cu-drawer-rc--reveal{animation:cu-rc-reveal .35s ease}" +
+      "@keyframes cu-rc-reveal{from{opacity:0;transform:scale(.85)}to{opacity:1;transform:scale(1)}}" +
+      ".cu-drawer-rc-img{width:100%;height:100px;object-fit:contain;margin-bottom:8px;border-radius:6px}" +
+      ".cu-drawer-rc-name{font-size:12px;color:#111;font-weight:600;line-height:1.35;margin-bottom:4px;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;min-height:30px}" +
+      ".cu-drawer-rc-price{font-size:13px;font-weight:700;color:#111;margin-bottom:10px}" +
+      ".cu-drawer-rc-add{display:block;width:100%;padding:8px 6px;background:#111;color:#fff;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;transition:background .15s}" +
       ".cu-drawer-rc-add:hover{background:#333}" +
       ".cu-drawer-rc-add:disabled{background:#94a3b8;cursor:not-allowed}" +
 
-      /* Drawer footer */
-      ".cu-drawer-ft{border-top:1px solid #e5e7eb;padding:16px 20px;flex-shrink:0;background:#fff}" +
-      ".cu-drawer-sub{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}" +
-      ".cu-drawer-sub span{font-size:16px;font-weight:700;color:#111}" +
-      ".cu-drawer-checkout{display:block;width:100%;padding:14px;text-align:center;background:#111;color:#fff;text-decoration:none;font-size:14px;font-weight:700;letter-spacing:.5px;border:none;border-radius:0;cursor:pointer;text-transform:uppercase;box-sizing:border-box}" +
+      /* Footer */
+      ".cu-drawer-ft{border-top:1px solid #eee;padding:16px 20px;flex-shrink:0;background:#fff}" +
+      ".cu-drawer-sub{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}" +
+      ".cu-drawer-sub span:first-child{font-size:15px;font-weight:600;color:#111}" +
+      ".cu-drawer-sub span:last-child{font-size:16px;font-weight:700;color:#111}" +
+      ".cu-drawer-checkout{display:block;width:100%;padding:15px;text-align:center;background:#111;color:#fff;text-decoration:none;font-size:14px;font-weight:700;letter-spacing:.3px;border:none;border-radius:8px;cursor:pointer;text-transform:uppercase;transition:background .15s}" +
       ".cu-drawer-checkout:hover{background:#333}" +
 
       /* Empty */
-      ".cu-drawer-empty{padding:40px 20px;text-align:center;color:#6b7280;font-size:14px}" +
+      ".cu-drawer-empty{padding:48px 20px;text-align:center;color:#999;font-size:14px}" +
 
-      /* Mobile */
-      "@media (max-width:480px){.cu-drawer{width:100vw}}";
+      /* Mobile: hide side panel, full-width cart */
+      "@media(max-width:768px){.cu-drawer-side{display:none}.cu-drawer{width:100vw}}";
     document.head.appendChild(style);
   }
 
@@ -740,16 +813,32 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
      ════════════════════════════════════════════════════════ */
 
   var _overlay = null;
+  var _drawerWrap = null;
   var _drawer = null;
   var _drawerBody = null;
   var _drawerItemCount = null;
+  var _drawerCountBadge = null;
   var _drawerSubtotalEl = null;
+  var _drawerShipEl = null;
+  var _drawerShipTextEl = null;
+  var _drawerShipFillEl = null;
+  var _sidePanel = null;
+  var _sideBody = null;
   var _scriptUrl = null;
   var _storeHash = "";
   var _drawerRecs = [];
   var _drawerRecsAll = [];       /* unfiltered master list */
   var _lastRecsFetchKey = "";    /* tracks when to re-fetch vs reuse cache */
   var _recsBuiltKey = "";        /* tracks which recs the DOM was built for */
+
+  /* Store settings (fetched from proxy) */
+  var _settingsFetched = false;
+  var _shipEnabled = false;
+  var _shipThreshold = 0;
+  var _shipText = "You\u2019re {amount} away from free shipping!";
+  var _shipDoneText = "\u2713 Free shipping unlocked!";
+  var _recsTitle = "CUSTOMERS ALSO BOUGHT";
+  var _recsPosition = "bottom";  /* "bottom" = horizontal scroll in cart, "side" = left panel */
 
   function getCartItems(cart) {
     if (!cart || !cart.lineItems) return [];
@@ -792,6 +881,25 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
     _overlay.className = "cu-overlay";
     _overlay.addEventListener("click", closeDrawer);
 
+    /* ── Outer wrapper (holds side panel + cart) ── */
+    _drawerWrap = document.createElement("div");
+    _drawerWrap.className = "cu-drawer-wrap";
+
+    /* ── Side panel — recommendations ── */
+    _sidePanel = document.createElement("div");
+    _sidePanel.className = "cu-drawer-side";
+    var sideHd = document.createElement("div");
+    sideHd.className = "cu-drawer-side-hd";
+    var sideH3 = document.createElement("h3");
+    sideH3.textContent = "Why not add\u2026";
+    sideHd.appendChild(sideH3);
+    _sidePanel.appendChild(sideHd);
+    _sideBody = document.createElement("div");
+    _sideBody.className = "cu-drawer-side-bd";
+    _sidePanel.appendChild(_sideBody);
+    _drawerWrap.appendChild(_sidePanel);
+
+    /* ── Cart panel ── */
     _drawer = document.createElement("div");
     _drawer.className = "cu-drawer";
 
@@ -800,7 +908,12 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
     hd.className = "cu-drawer-hd";
     var h2 = document.createElement("h2");
     _drawerItemCount = h2;
-    h2.textContent = "CART";
+    h2.textContent = "Your Cart ";
+    var countBadge = document.createElement("span");
+    countBadge.className = "cu-drawer-cnt";
+    countBadge.textContent = "0";
+    _drawerCountBadge = countBadge;
+    h2.appendChild(countBadge);
     hd.appendChild(h2);
     var xBtn = document.createElement("button");
     xBtn.className = "cu-drawer-x";
@@ -809,6 +922,23 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
     xBtn.addEventListener("click", closeDrawer);
     hd.appendChild(xBtn);
     _drawer.appendChild(hd);
+
+    /* Free-shipping bar */
+    var ship = document.createElement("div");
+    ship.className = "cu-drawer-ship";
+    var shipText = document.createElement("div");
+    shipText.className = "cu-drawer-ship-text";
+    ship.appendChild(shipText);
+    var shipTrack = document.createElement("div");
+    shipTrack.className = "cu-drawer-ship-track";
+    var shipFill = document.createElement("div");
+    shipFill.className = "cu-drawer-ship-fill";
+    shipTrack.appendChild(shipFill);
+    ship.appendChild(shipTrack);
+    _drawerShipEl = ship;
+    _drawerShipTextEl = shipText;
+    _drawerShipFillEl = shipFill;
+    _drawer.appendChild(ship);
 
     /* Body (scrollable) */
     _drawerBody = document.createElement("div");
@@ -835,15 +965,17 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
     ft.appendChild(coBtn);
     _drawer.appendChild(ft);
 
+    _drawerWrap.appendChild(_drawer);
+
     document.body.appendChild(_overlay);
-    document.body.appendChild(_drawer);
+    document.body.appendChild(_drawerWrap);
   }
 
   function openDrawer() {
     createDrawerShell();
     document.body.style.overflow = "hidden";
     _overlay.classList.add("cu-overlay--open");
-    _drawer.classList.add("cu-drawer--open");
+    _drawerWrap.classList.add("cu-drawer-wrap--open");
     refreshDrawer();
   }
 
@@ -851,7 +983,51 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
     if (!_overlay) return;
     document.body.style.overflow = "";
     _overlay.classList.remove("cu-overlay--open");
-    _drawer.classList.remove("cu-drawer--open");
+    _drawerWrap.classList.remove("cu-drawer-wrap--open");
+  }
+
+  function fetchStoreSettings() {
+    if (_settingsFetched || !_scriptUrl || !_storeHash) return;
+    _settingsFetched = true;
+    var url = _scriptUrl.origin +
+      "/apps/proxy/api/settings?store_hash=" + encodeURIComponent(_storeHash);
+    fetchJson(url).then(function (s) {
+      if (!s || s.error) return;
+      _shipEnabled = !!s.enableFreeShipping;
+      _shipThreshold = Number(s.freeShippingThreshold) || 0;
+      if (s.freeShippingText) _shipText = s.freeShippingText;
+      if (s.freeShippingAchievedText) _shipDoneText = s.freeShippingAchievedText;
+      if (s.recommendationsTitle) _recsTitle = String(s.recommendationsTitle).toUpperCase();
+      if (s.drawerRecsPosition === "side" || s.drawerRecsPosition === "bottom") _recsPosition = s.drawerRecsPosition;
+      log("Settings loaded: shipping=" + _shipEnabled + " threshold=" + _shipThreshold + " recsPos=" + _recsPosition);
+      /* Show/hide side panel based on position setting */
+      if (_sidePanel) _sidePanel.style.display = _recsPosition === "side" ? "" : "none";
+      /* Re-render shipping bar if drawer is open */
+      if (_drawerShipEl && _drawerWrap && _drawerWrap.classList.contains("cu-drawer-wrap--open")) {
+        updateShippingBar(0);
+      }
+    }).catch(function () { /* best-effort */ });
+  }
+
+  function updateShippingBar(cartAmount) {
+    if (!_drawerShipEl) return;
+    if (!_shipEnabled || _shipThreshold <= 0) {
+      _drawerShipEl.classList.remove("cu-drawer-ship--vis");
+      return;
+    }
+    _drawerShipEl.classList.add("cu-drawer-ship--vis");
+    var amount = Number(cartAmount) || 0;
+    var remaining = Math.max(0, _shipThreshold - amount);
+    var pct = Math.min(100, (amount / _shipThreshold) * 100);
+    if (remaining <= 0) {
+      _drawerShipEl.classList.add("cu-drawer-ship--done");
+      _drawerShipTextEl.innerHTML = _shipDoneText;
+    } else {
+      _drawerShipEl.classList.remove("cu-drawer-ship--done");
+      var formatted = formatPrice(remaining);
+      _drawerShipTextEl.innerHTML = _shipText.replace("{amount}", "<b>" + formatted + "</b>");
+    }
+    _drawerShipFillEl.style.width = pct + "%";
   }
 
   function getCartProductIdSet(cart) {
@@ -865,15 +1041,17 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
   }
 
   function refreshDrawer() {
-    log("Refreshing drawer...");
+    log("Refreshing drawer…");
     fetchFullCart().then(function (cart) {
+      log("Cart data:", cart ? "id=" + cart.id + " amount=" + cart.cartAmount : "null");
       var items = getCartItems(cart);
+      log("Cart items count:", items.length);
       var totalQty = getCartTotalQty(cart);
       var cartPidSet = getCartProductIdSet(cart);
 
-      /* Update header count */
-      if (_drawerItemCount) {
-        _drawerItemCount.textContent = "CART (" + totalQty + ")";
+      /* Update header count badge */
+      if (_drawerCountBadge) {
+        _drawerCountBadge.textContent = String(totalQty);
       }
       updateHeaderCartCount(totalQty);
 
@@ -881,6 +1059,9 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
       if (_drawerSubtotalEl) {
         _drawerSubtotalEl.textContent = cart ? formatPrice(cart.cartAmount || 0) : formatPrice(0);
       }
+
+      /* Update free-shipping bar */
+      updateShippingBar(cart ? cart.cartAmount || 0 : 0);
 
       /* Render body */
       if (!_drawerBody) return;
@@ -893,54 +1074,42 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
         if (ppid) prevPids[ppid] = true;
       }
 
-      /* Remove only item rows (keep recs section if it exists) */
+      /* Remove item rows */
       var existingItems = _drawerBody.querySelectorAll(".cu-drawer-item, .cu-drawer-empty");
       for (var r = 0; r < existingItems.length; r += 1) existingItems[r].remove();
-
-      var recsSection = _drawerBody.querySelector(".cu-drawer-recs");
 
       if (!cart || items.length === 0) {
         var empty = document.createElement("div");
         empty.className = "cu-drawer-empty";
-        if (recsSection) {
-          _drawerBody.insertBefore(empty, recsSection);
-        } else {
-          _drawerBody.appendChild(empty);
-        }
+        _drawerBody.appendChild(empty);
         empty.textContent = "Your cart is empty";
         /* Show all recs (nothing in cart to filter) */
-        renderDrawerRecs(_drawerRecsAll, {});
+        renderRecs(_drawerRecsAll, {});
         return;
       }
 
-      /* Cart items — insert before recs section, animate new ones */
+      /* Cart items */
       var cartId = cart.id;
       for (var i = 0; i < items.length; i += 1) {
         var isNew = !prevPids[String(items[i].productId || "")];
         var row = buildDrawerItem(items[i], cartId, isNew);
-        if (recsSection) {
-          _drawerBody.insertBefore(row, recsSection);
-        } else {
-          _drawerBody.appendChild(row);
-        }
+        _drawerBody.appendChild(row);
       }
 
-      /* ─── Recommendations: fetch once, then just toggle visibility ─── */
+      /* ─── Side panel recommendations: fetch once, then toggle ─── */
       var productIds = [];
       var sortedPids = Object.keys(cartPidSet).sort();
       for (var j = 0; j < sortedPids.length; j += 1) productIds.push(sortedPids[j]);
 
       if (_drawerRecsAll.length > 0) {
-        /* Recs already cached — instant toggle, no re-fetch (prevents jitter) */
-        renderDrawerRecs(_drawerRecsAll, cartPidSet);
+        renderRecs(_drawerRecsAll, cartPidSet);
       } else if (_scriptUrl && _storeHash) {
-        /* First load — fetch recommendations once */
         fetchRecommendationsWithFallback(
           _scriptUrl, _storeHash, "", productIds, "cart", 10
         ).then(function (recs) {
           _drawerRecsAll = recs;
           _lastRecsFetchKey = productIds.join(",");
-          renderDrawerRecs(_drawerRecsAll, getCartProductIdSet(cart));
+          renderRecs(_drawerRecsAll, getCartProductIdSet(cart));
         });
       }
     });
@@ -959,7 +1128,7 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
     img.loading = "lazy";
     row.appendChild(img);
 
-    /* Middle: name + qty */
+    /* Middle: name + options + qty */
     var mid = document.createElement("div");
     mid.className = "cu-drawer-item-mid";
 
@@ -968,6 +1137,21 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
     name.textContent = String(item.name || "Product");
     name.title = String(item.name || "Product");
     mid.appendChild(name);
+
+    /* Variant options (e.g. "Size: Medium / Color: Blue") */
+    if (Array.isArray(item.options) && item.options.length > 0) {
+      var optsText = [];
+      for (var oi = 0; oi < item.options.length; oi += 1) {
+        var opt = item.options[oi];
+        if (opt && opt.value) optsText.push(opt.nameId ? opt.value : (opt.name ? opt.name + ": " + opt.value : opt.value));
+      }
+      if (optsText.length > 0) {
+        var optsEl = document.createElement("div");
+        optsEl.className = "cu-drawer-item-opts";
+        optsEl.textContent = optsText.join(" / ");
+        mid.appendChild(optsEl);
+      }
+    }
 
     var qtyWrap = document.createElement("div");
     qtyWrap.className = "cu-drawer-qty";
@@ -998,8 +1182,7 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
 
     var delBtn = document.createElement("button");
     delBtn.className = "cu-drawer-item-del";
-    delBtn.innerHTML = "&#x1D5E8;";
-    delBtn.textContent = "\u2715";
+    delBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6h14M10 11v6M14 11v6"/></svg>';
     delBtn.setAttribute("aria-label", "Remove item");
     rt.appendChild(delBtn);
     row.appendChild(rt);
@@ -1026,6 +1209,8 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
     return row;
   }
 
+  /* ─── Side Panel Recommendations ─── */
+
   function recsKey(allRecs) {
     var k = "";
     for (var i = 0; i < allRecs.length; i += 1) {
@@ -1035,10 +1220,168 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
     return k;
   }
 
+  var _addBagSvg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 01-8 0"/></svg>';
+
+  function buildSideCard(rec) {
+    var card = document.createElement("div");
+    card.className = "cu-side-card";
+
+    var recId = firstNumeric(rec.id || rec.product_id || rec.productId);
+    if (recId) card.setAttribute("data-cu-rec-pid", recId);
+
+    /* Image wrapper with overlay add button */
+    var imgWrap = document.createElement("div");
+    imgWrap.className = "cu-side-card-img-wrap";
+
+    if (rec.image) {
+      var imgLink = document.createElement("a");
+      imgLink.href = normalizeProductUrl(rec.handle);
+      var img = document.createElement("img");
+      img.className = "cu-side-card-img";
+      img.src = rec.image;
+      img.alt = String(rec.title || "Product");
+      img.loading = "lazy";
+      imgLink.appendChild(img);
+      imgWrap.appendChild(imgLink);
+    }
+
+    if (recId) {
+      var addBtn = document.createElement("button");
+      addBtn.className = "cu-side-card-add";
+      addBtn.innerHTML = _addBagSvg;
+      addBtn.setAttribute("aria-label", "Add to cart");
+      var recVariantId = rec.variant_id || rec.variantId || "";
+      var recTitle = String(rec.title || "Product");
+
+      (function (btn, pid, cardEl, vid, title) {
+        btn.addEventListener("click", function (e) {
+          e.preventDefault();
+          e.stopPropagation();
+          btn.disabled = true;
+          trackEvent("click", pid, title);
+          var lineItem = { quantity: 1, productId: Number(pid) };
+          if (vid) lineItem.variantId = Number(vid);
+
+          function onAdded() {
+            trackEvent("add_to_cart", pid, title);
+            cardEl.classList.add("cu-side-card--out");
+            setTimeout(function () {
+              cardEl.classList.remove("cu-side-card--out");
+              cardEl.classList.add("cu-side-card--hidden");
+              btn.disabled = false;
+              refreshDrawer();
+            }, 320);
+          }
+
+          function onFailed() {
+            btn.disabled = false;
+          }
+
+          addItemToCart([lineItem], function (ok) {
+            if (ok) {
+              onAdded();
+            } else if (!vid && _scriptUrl && _storeHash) {
+              var prodUrl = _scriptUrl.origin +
+                "/apps/proxy/api/products?store_hash=" + encodeURIComponent(_storeHash) +
+                "&product_id=" + encodeURIComponent(pid);
+              fetchJson(prodUrl)
+                .then(function (pData) {
+                  var product = pData && pData.product ? pData.product : pData;
+                  var variants = product && Array.isArray(product.variants) ? product.variants : [];
+                  var firstVar = variants.length > 0 ? variants[0] : null;
+                  var fetchedVid = firstVar ? Number(firstVar.id || firstVar.variant_id) : 0;
+                  if (fetchedVid) {
+                    addItemToCart([{ quantity: 1, productId: Number(pid), variantId: fetchedVid }], function (ok2) {
+                      if (ok2) { onAdded(); } else { onFailed(); }
+                    });
+                  } else { onFailed(); }
+                })
+                .catch(function () { onFailed(); });
+            } else {
+              onFailed();
+            }
+          });
+        });
+      })(addBtn, recId, card, recVariantId, recTitle);
+      imgWrap.appendChild(addBtn);
+    }
+
+    card.appendChild(imgWrap);
+
+    /* Info: price + name */
+    var info = document.createElement("div");
+    info.className = "cu-side-card-info";
+    var price = document.createElement("div");
+    price.className = "cu-side-card-price";
+    price.textContent = formatMoney(rec.price, getCurrencyCode());
+    info.appendChild(price);
+    var name = document.createElement("div");
+    name.className = "cu-side-card-name";
+    name.textContent = String(rec.title || "Product");
+    info.appendChild(name);
+    card.appendChild(info);
+
+    return card;
+  }
+
+  function renderSideRecs(allRecs, cartPidSet) {
+    if (!_sideBody) return;
+    var key = recsKey(allRecs);
+
+    /* Rebuild if recs changed */
+    if (_recsBuiltKey !== key && allRecs.length > 0) {
+      _sideBody.innerHTML = "";
+
+      var visCount = 0;
+      for (var i = 0; i < allRecs.length; i += 1) {
+        var card = buildSideCard(allRecs[i]);
+        var cpid = card.getAttribute("data-cu-rec-pid");
+        if (cpid && cartPidSet && cartPidSet[cpid]) {
+          card.classList.add("cu-side-card--hidden");
+        } else {
+          visCount += 1;
+        }
+        _sideBody.appendChild(card);
+      }
+
+      _recsBuiltKey = key;
+      if (_sidePanel) _sidePanel.style.display = visCount > 0 ? "" : "none";
+      if (visCount > 0) trackImpressions(allRecs);
+      return;
+    }
+
+    /* Toggle visibility on existing cards */
+    var cards = _sideBody.querySelectorAll(".cu-side-card[data-cu-rec-pid]");
+    var visibleCount = 0;
+
+    for (var j = 0; j < cards.length; j += 1) {
+      var pid = cards[j].getAttribute("data-cu-rec-pid");
+      var inCart = cartPidSet && cartPidSet[pid];
+      var wasHidden = cards[j].classList.contains("cu-side-card--hidden");
+
+      if (inCart && !wasHidden) {
+        cards[j].classList.add("cu-side-card--hidden");
+        cards[j].classList.remove("cu-side-card--out");
+        cards[j].classList.remove("cu-side-card--reveal");
+      } else if (!inCart && wasHidden) {
+        cards[j].classList.remove("cu-side-card--hidden");
+        cards[j].classList.remove("cu-side-card--out");
+        cards[j].classList.add("cu-side-card--reveal");
+        visibleCount += 1;
+      } else if (!inCart) {
+        cards[j].classList.remove("cu-side-card--out");
+        visibleCount += 1;
+      }
+    }
+
+    if (_sidePanel) _sidePanel.style.display = visibleCount > 0 ? "" : "none";
+  }
+
+  /* ─── Bottom Recs (horizontal scroll inside cart body) ─── */
+
   function buildRecCard(rec) {
     var card = document.createElement("div");
     card.className = "cu-drawer-rc";
-
     var recId = firstNumeric(rec.id || rec.product_id || rec.productId);
     if (recId) card.setAttribute("data-cu-rec-pid", recId);
 
@@ -1065,13 +1408,12 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
       var addBtn = document.createElement("button");
       addBtn.className = "cu-drawer-rc-add";
       addBtn.textContent = "Add";
-      var productUrl = normalizeProductUrl(rec.handle);
       var recVariantId = rec.variant_id || rec.variantId || "";
       var recTitle = String(rec.title || "Product");
-      (function (btn, pid, cardEl, pUrl, vid, title) {
+      (function (btn, pid, cardEl, vid, title) {
         btn.addEventListener("click", function () {
           btn.disabled = true;
-          btn.textContent = "Adding...";
+          btn.textContent = "Adding\u2026";
           trackEvent("click", pid, title);
           var lineItem = { quantity: 1, productId: Number(pid) };
           if (vid) lineItem.variantId = Number(vid);
@@ -1087,124 +1429,104 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
               refreshDrawer();
             }, 320);
           }
-
-          function onFailed() {
-            btn.textContent = "Add";
-            btn.disabled = false;
-          }
+          function onFailed() { btn.textContent = "Add"; btn.disabled = false; }
 
           addItemToCart([lineItem], function (ok) {
-            if (ok) {
-              onAdded();
-            } else if (!vid && _scriptUrl && _storeHash) {
-              /* No variantId — fetch product variant from proxy, then retry */
+            if (ok) { onAdded(); }
+            else if (!vid && _scriptUrl && _storeHash) {
               var prodUrl = _scriptUrl.origin +
                 "/apps/proxy/api/products?store_hash=" + encodeURIComponent(_storeHash) +
                 "&product_id=" + encodeURIComponent(pid);
-              fetchJson(prodUrl)
-                .then(function (pData) {
-                  var product = pData && pData.product ? pData.product : pData;
-                  var variants = product && Array.isArray(product.variants) ? product.variants : [];
-                  var firstVar = variants.length > 0 ? variants[0] : null;
-                  var fetchedVid = firstVar ? Number(firstVar.id || firstVar.variant_id) : 0;
-                  if (fetchedVid) {
-                    addItemToCart([{ quantity: 1, productId: Number(pid), variantId: fetchedVid }], function (ok2) {
-                      if (ok2) { onAdded(); }
-                      else { onFailed(); }
-                    });
-                  } else { onFailed(); }
-                })
-                .catch(function () { onFailed(); });
-            } else {
-              onFailed();
-            }
+              fetchJson(prodUrl).then(function (pData) {
+                var product = pData && pData.product ? pData.product : pData;
+                var variants = product && Array.isArray(product.variants) ? product.variants : [];
+                var firstVar = variants.length > 0 ? variants[0] : null;
+                var fetchedVid = firstVar ? Number(firstVar.id || firstVar.variant_id) : 0;
+                if (fetchedVid) {
+                  addItemToCart([{ quantity: 1, productId: Number(pid), variantId: fetchedVid }], function (ok2) {
+                    if (ok2) { onAdded(); } else { onFailed(); }
+                  });
+                } else { onFailed(); }
+              }).catch(function () { onFailed(); });
+            } else { onFailed(); }
           });
         });
-      })(addBtn, recId, card, productUrl, recVariantId, recTitle);
+      })(addBtn, recId, card, recVariantId, recTitle);
       card.appendChild(addBtn);
     }
-
     return card;
   }
 
+  var _bottomRecsKey = "";
+
   function renderDrawerRecs(allRecs, cartPidSet) {
     if (!_drawerBody) return;
-
     var section = _drawerBody.querySelector(".cu-drawer-recs");
     var key = recsKey(allRecs);
 
-    /* Build the section from scratch if it doesn't exist or recs changed */
-    if ((!section || _recsBuiltKey !== key) && allRecs.length > 0) {
+    if ((_bottomRecsKey !== key || !section) && allRecs.length > 0) {
       if (section) section.remove();
-
       section = document.createElement("div");
       section.className = "cu-drawer-recs";
 
       var hd = document.createElement("div");
       hd.className = "cu-drawer-recs-hd";
       var h3 = document.createElement("h3");
-      h3.textContent = "CUSTOMERS ALSO BOUGHT";
+      h3.textContent = _recsTitle;
       hd.appendChild(h3);
       section.appendChild(hd);
 
       var scroll = document.createElement("div");
       scroll.className = "cu-drawer-recs-scroll";
-
+      var visCards = 0;
       for (var i = 0; i < allRecs.length; i += 1) {
         var card = buildRecCard(allRecs[i]);
-        /* Pre-hide cards that are in the cart */
         var cpid = card.getAttribute("data-cu-rec-pid");
         if (cpid && cartPidSet && cartPidSet[cpid]) {
           card.classList.add("cu-drawer-rc--hidden");
-        }
+        } else { visCards += 1; }
         scroll.appendChild(card);
       }
-
       section.appendChild(scroll);
       _drawerBody.appendChild(section);
-      _recsBuiltKey = key;
-
-      /* After build, check if any cards are actually visible */
-      var builtCards = scroll.querySelectorAll(".cu-drawer-rc[data-cu-rec-pid]");
-      var builtVisible = 0;
-      for (var v = 0; v < builtCards.length; v += 1) {
-        if (!builtCards[v].classList.contains("cu-drawer-rc--hidden")) builtVisible += 1;
-      }
-      section.style.display = builtVisible > 0 ? "" : "none";
-      /* Track impressions for visible recs (best-effort, deduplicated) */
-      if (builtVisible > 0) trackImpressions(allRecs);
+      _bottomRecsKey = key;
+      section.style.display = visCards > 0 ? "" : "none";
+      if (visCards > 0) trackImpressions(allRecs);
       return;
     }
 
     if (!section) return;
-
-    /* Toggle visibility on existing cards */
     var cards = section.querySelectorAll(".cu-drawer-rc[data-cu-rec-pid]");
     var visibleCount = 0;
-
     for (var j = 0; j < cards.length; j += 1) {
       var pid = cards[j].getAttribute("data-cu-rec-pid");
       var inCart = cartPidSet && cartPidSet[pid];
       var wasHidden = cards[j].classList.contains("cu-drawer-rc--hidden");
-
       if (inCart && !wasHidden) {
-        /* Item now in cart — hide the card */
         cards[j].classList.add("cu-drawer-rc--hidden");
         cards[j].classList.remove("cu-drawer-rc--out");
-        cards[j].classList.remove("cu-drawer-rc--reveal");
       } else if (!inCart && wasHidden) {
-        /* Item removed from cart — reveal the card */
         cards[j].classList.remove("cu-drawer-rc--hidden");
-        cards[j].classList.remove("cu-drawer-rc--out");
         cards[j].classList.add("cu-drawer-rc--reveal");
         visibleCount += 1;
-      } else if (!inCart) {
-        cards[j].classList.remove("cu-drawer-rc--out");
-        visibleCount += 1;
-      }
+      } else if (!inCart) { visibleCount += 1; }
     }
-
     section.style.display = visibleCount > 0 ? "" : "none";
+  }
+
+  /* Router — delegates to the correct render based on settings */
+  function renderRecs(allRecs, cartPidSet) {
+    if (_recsPosition === "side") {
+      if (_sidePanel) _sidePanel.style.display = "flex";
+      renderSideRecs(allRecs, cartPidSet);
+      /* Clear any bottom recs */
+      var oldBottom = _drawerBody && _drawerBody.querySelector(".cu-drawer-recs");
+      if (oldBottom) oldBottom.remove();
+    } else {
+      renderDrawerRecs(allRecs, cartPidSet);
+      /* Hide side panel */
+      if (_sidePanel) _sidePanel.style.display = "none";
+    }
   }
 
   /* ─── Intercepts ─── */
@@ -1326,6 +1648,9 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
       isRendering = false;
       return;
     }
+
+    /* Fetch store settings (once) for shipping bar, recs title, etc. */
+    fetchStoreSettings();
 
     var cartPage = isCartPage();
 

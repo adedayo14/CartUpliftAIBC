@@ -99,6 +99,7 @@ model Settings {
   
   // Recommendation Settings
   recommendationLayout    String   @default("horizontal")
+  drawerRecsPosition      String   @default("bottom")  // "bottom" or "side"
   maxRecommendations      Int      @default(3)
   maxRecommendationProducts Int    @default(4)
   complementDetectionMode String   @default("automatic")

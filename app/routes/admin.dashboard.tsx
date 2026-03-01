@@ -1377,6 +1377,9 @@ export default function Dashboard() {
   const { analytics, insights, search, lifetimeMetrics } = useLoaderData<typeof loader>();
   const [selectedOrderProducts, setSelectedOrderProducts] = useState<{orderNumber: string; products: string[]; totalValue: number; attributedValue: number; upliftPercentage: number} | null>(null);
   const [insightsExpanded, setInsightsExpanded] = useState(false);
+  const [webhookIssue, setWebhookIssue] = useState<{ inactive: number; total: number } | null>(null);
+  const [webhookFixing, setWebhookFixing] = useState(false);
+  const [webhookFixed, setWebhookFixed] = useState(false);
 
   const settingsHref = `/app/settings${search ?? ""}`;
 
@@ -1389,6 +1392,21 @@ export default function Dashboard() {
       }
     }
   }, []);
+
+  // Check webhook health on mount
+  useEffect(() => {
+    fetch(`/api/webhooks-manage${search ?? ""}`)
+      .then(r => r.json())
+      .then(data => {
+        if (data.hooks) {
+          const inactive = data.hooks.filter((h: { is_active: boolean }) => !h.is_active).length;
+          if (inactive > 0) {
+            setWebhookIssue({ inactive, total: data.hooks.length });
+          }
+        }
+      })
+      .catch(() => { /* silently ignore */ });
+  }, [search]);
 
   // Toggle insights expansion and save preference
   const toggleInsights = () => {
@@ -1617,6 +1635,43 @@ export default function Dashboard() {
               </Flex>
             </Box>
           </Panel>
+        )}
+
+        {/* Webhook Warning */}
+        {webhookIssue && !webhookFixed && (
+          <Message
+            type="warning"
+            header={`${webhookIssue.inactive} webhook${webhookIssue.inactive > 1 ? 's' : ''} deactivated`}
+            messages={[{ text: "BigCommerce deactivated webhook(s) because your server was unreachable. Order tracking and analytics won't work until reactivated." }]}
+            actions={[{
+              text: webhookFixing ? "Reactivating..." : "Reactivate Now",
+              variant: "primary" as const,
+              onClick: () => {
+                setWebhookFixing(true);
+                fetch(`/api/webhooks-manage${search ?? ""}`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ action: "reactivate_all" }),
+                })
+                  .then(r => r.json())
+                  .then(data => {
+                    if (data.success) {
+                      setWebhookFixed(true);
+                      setWebhookIssue(null);
+                    }
+                  })
+                  .catch(() => {})
+                  .finally(() => setWebhookFixing(false));
+              },
+            }]}
+          />
+        )}
+        {webhookFixed && (
+          <Message
+            type="success"
+            header="Webhooks reactivated"
+            messages={[{ text: "All webhooks are now active. Order tracking will resume." }]}
+          />
         )}
 
         {/* Date Filter */}
