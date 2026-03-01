@@ -286,7 +286,7 @@ export default function AppSettings() {
         </Grid>
 
         {/* Main Settings */}
-        <Grid gridColumns="repeat(3, 1fr)" gridGap="1rem">
+        <Grid gridColumns="repeat(2, 1fr)" gridGap="1rem">
           {/* Left Column */}
           <Flex flexDirection="column" flexGap="1rem">
             {/* Recommendations */}
@@ -448,8 +448,70 @@ export default function AppSettings() {
             </Panel>
           </Flex>
 
-          {/* Middle Column - Privacy & Data */}
+          {/* Right Column - Customization & AI */}
           <Flex flexDirection="column" flexGap="1rem">
+            <Panel>
+              <Box padding="medium">
+                <Flex flexDirection="column" flexGap="1rem">
+                  <H2>Text Customization</H2>
+
+                  <Flex flexDirection="column" flexGap="1rem">
+                    <H3>Cart Links</H3>
+
+                    <Input
+                      label="Promo code link"
+                      value={formSettings.discountLinkText || "+ Got a promotion code?"}
+                      onChange={(e) => updateSetting("discountLinkText", e.target.value)}
+                      description="Text for discount code link"
+                      placeholder="+ Got a promotion code?"
+                    />
+
+                    <Input
+                      label="Order note link"
+                      value={formSettings.notesLinkText || "+ Add order notes"}
+                      onChange={(e) => updateSetting("notesLinkText", e.target.value)}
+                      description="Text for order notes link"
+                      placeholder="+ Add order notes"
+                    />
+
+                    <HR />
+
+                    <H3>Gift Settings</H3>
+
+                    <Input
+                      label="Free gift price label"
+                      value={formSettings.giftPriceText || "FREE"}
+                      onChange={(e) => updateSetting("giftPriceText", e.target.value)}
+                      description="Text shown instead of price for free gifts"
+                      placeholder="FREE"
+                    />
+
+                    <HR />
+
+                    <H3>Button Labels</H3>
+
+                    <Input
+                      label="Checkout button"
+                      value={formSettings.checkoutButtonText || "CHECKOUT"}
+                      onChange={(e) => updateSetting("checkoutButtonText", e.target.value)}
+                    />
+
+                    <Input
+                      label="Add button"
+                      value={formSettings.addButtonText || "Add"}
+                      onChange={(e) => updateSetting("addButtonText", e.target.value)}
+                    />
+
+                    <Input
+                      label="Apply button"
+                      value={formSettings.applyButtonText || "Apply"}
+                      onChange={(e) => updateSetting("applyButtonText", e.target.value)}
+                    />
+                  </Flex>
+                </Flex>
+              </Box>
+            </Panel>
+
             {formSettings.enableMLRecommendations && (
               <Panel>
                 <Box padding="medium">
@@ -530,71 +592,6 @@ export default function AppSettings() {
                 </Box>
               </Panel>
             )}
-          </Flex>
-
-          {/* Right Column - Text Customization */}
-          <Flex flexDirection="column" flexGap="1rem">
-            <Panel>
-              <Box padding="medium">
-                <Flex flexDirection="column" flexGap="1rem">
-                  <H2>Text Customization</H2>
-
-                  <Flex flexDirection="column" flexGap="1rem">
-                    <H3>Cart Links</H3>
-
-                    <Input
-                      label="Promo code link"
-                      value={formSettings.discountLinkText || "+ Got a promotion code?"}
-                      onChange={(e) => updateSetting("discountLinkText", e.target.value)}
-                      description="Text for discount code link"
-                      placeholder="+ Got a promotion code?"
-                    />
-
-                    <Input
-                      label="Order note link"
-                      value={formSettings.notesLinkText || "+ Add order notes"}
-                      onChange={(e) => updateSetting("notesLinkText", e.target.value)}
-                      description="Text for order notes link"
-                      placeholder="+ Add order notes"
-                    />
-
-                    <HR />
-
-                    <H3>Gift Settings</H3>
-
-                    <Input
-                      label="Free gift price label"
-                      value={formSettings.giftPriceText || "FREE"}
-                      onChange={(e) => updateSetting("giftPriceText", e.target.value)}
-                      description="Text shown instead of price for free gifts"
-                      placeholder="FREE"
-                    />
-
-                    <HR />
-
-                    <H3>Button Labels</H3>
-
-                    <Input
-                      label="Checkout button"
-                      value={formSettings.checkoutButtonText || "CHECKOUT"}
-                      onChange={(e) => updateSetting("checkoutButtonText", e.target.value)}
-                    />
-
-                    <Input
-                      label="Add button"
-                      value={formSettings.addButtonText || "Add"}
-                      onChange={(e) => updateSetting("addButtonText", e.target.value)}
-                    />
-
-                    <Input
-                      label="Apply button"
-                      value={formSettings.applyButtonText || "Apply"}
-                      onChange={(e) => updateSetting("applyButtonText", e.target.value)}
-                    />
-                  </Flex>
-                </Flex>
-              </Box>
-            </Panel>
           </Flex>
         </Grid>
       </Flex>
