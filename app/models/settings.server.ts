@@ -125,6 +125,7 @@ export interface SettingsData {
 
 	// Cart Drawer Settings
 	drawerRecsPosition: string;
+	drawerSideRecsTitle: string;
 
 	// Theme embed status (updated by storefront heartbeat)
 	themeEmbedEnabled?: boolean;
@@ -283,6 +284,9 @@ export async function getSettings(storeHash: string): Promise<SettingsData> {
 
 			// Cart Drawer Settings
 			drawerRecsPosition: typedSettings.drawerRecsPosition ?? "bottom",
+			drawerSideRecsTitle:
+				(typedSettings as Record<string, unknown>).drawerSideRecsTitle as string ??
+				"Why not add...",
 		};
 	} catch (error: unknown) {
 		logger.error(`Error getting settings: ${error instanceof Error ? error.message : String(error)}`);
@@ -389,6 +393,7 @@ export async function saveSettings(
 			"autoApplyBundleDiscounts",
 			// Cart Drawer Settings
 			"drawerRecsPosition",
+			"drawerSideRecsTitle",
 		];
 
 		// Dev-only fields disabled in production schema to avoid missing columns
@@ -468,6 +473,7 @@ export async function saveSettings(
 				"enableRecommendationTitleCaps",
 				"discountLinkText",
 				"notesLinkText",
+				"drawerSideRecsTitle",
 				// ML/Privacy Settings - CRITICAL: Include these or they get stripped on fallback!
 				"mlPersonalizationMode",
 				"enableMLRecommendations",
@@ -692,6 +698,9 @@ export async function saveSettings(
 
 			// Cart Drawer Settings
 			drawerRecsPosition: settings.drawerRecsPosition ?? "bottom",
+			drawerSideRecsTitle:
+				(settings as Record<string, unknown>).drawerSideRecsTitle as string ??
+				"Why not add...",
 		};
 	} catch (error) {
 		throw new Error(`Failed to save settings: ${(error as Error).message}`);
@@ -807,6 +816,7 @@ export function getDefaultSettings(): SettingsData {
 
 		// Cart Drawer Settings
 		drawerRecsPosition: "bottom",
+		drawerSideRecsTitle: "Why not add...",
 
 		themeEmbedEnabled: false,
 		themeEmbedLastSeen: undefined,

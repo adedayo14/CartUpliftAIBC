@@ -226,8 +226,17 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
     .then(function (carts) {
       var ids = [];
       var seen = {};
-      if (!Array.isArray(carts) || carts.length === 0) return ids;
-      var cart = carts[0];
+      var cart = null;
+      if (Array.isArray(carts)) {
+        cart = carts.length > 0 ? carts[0] : null;
+      } else if (carts && Array.isArray(carts.data)) {
+        cart = carts.data.length > 0 ? carts.data[0] : null;
+      } else if (carts && carts.data && typeof carts.data === "object") {
+        cart = carts.data;
+      } else if (carts && typeof carts === "object") {
+        cart = carts;
+      }
+      if (!cart) return ids;
       var lineTypes = ["lineItems", "line_items"];
       var itemCats = ["physicalItems", "digitalItems", "customItems", "physical_items", "digital_items"];
       for (var t = 0; t < lineTypes.length; t += 1) {
@@ -256,27 +265,36 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
       var cached = _pendingCart;
       _pendingCart = null;
       /* Handle possible wrapper: { data: cart } or direct cart */
-      if (cached.data && cached.data.lineItems) cached = cached.data;
-      if (cached.currency && cached.currency.code) {
-        window.__cuCurrency = cached.currency.code;
+      if (cached.data && (cached.data.lineItems || cached.data.line_items)) cached = cached.data;
+      if (cached.currency && (cached.currency.code || cached.currency.iso_code)) {
+        window.__cuCurrency = cached.currency.code || cached.currency.iso_code;
       }
-      if (cached.lineItems) {
+      if (cached.lineItems || cached.line_items) {
         log("Using cached cart from addItemToCart, id=" + cached.id);
         return Promise.resolve(cached);
       }
       /* Cached data doesn't look like a cart — fall through to GET */
       log("Cached cart invalid, falling back to GET");
     }
-    return fetch("/api/storefront/carts?include=lineItems.physicalItems.options,lineItems.digitalItems.options&_t=" + Date.now(), {
+    return fetch("/api/storefront/carts?_t=" + Date.now(), {
       method: "GET", credentials: "same-origin",
       headers: { Accept: "application/json", "Cache-Control": "no-cache", Pragma: "no-cache" },
     })
-    .then(function (res) { return res.ok ? res.json() : []; })
-    .then(function (carts) {
-      if (!Array.isArray(carts) || carts.length === 0) return null;
-      var cart = carts[0];
-      if (cart && cart.currency && cart.currency.code) {
-        window.__cuCurrency = cart.currency.code;
+    .then(function (res) { return res.ok ? res.json() : null; })
+    .then(function (payload) {
+      if (!payload) return null;
+      var cart = null;
+      if (Array.isArray(payload)) {
+        cart = payload.length > 0 ? payload[0] : null;
+      } else if (payload.data && Array.isArray(payload.data)) {
+        cart = payload.data.length > 0 ? payload.data[0] : null;
+      } else if (payload.data && typeof payload.data === "object") {
+        cart = payload.data;
+      } else if (typeof payload === "object") {
+        cart = payload;
+      }
+      if (cart && cart.currency && (cart.currency.code || cart.currency.iso_code)) {
+        window.__cuCurrency = cart.currency.code || cart.currency.iso_code;
       }
       return cart;
     })
@@ -290,7 +308,17 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
     })
     .then(function (res) { return res.ok ? res.json() : []; })
     .then(function (carts) {
-      var cartId = Array.isArray(carts) && carts.length > 0 ? carts[0].id : null;
+      var existingCart = null;
+      if (Array.isArray(carts)) {
+        existingCart = carts.length > 0 ? carts[0] : null;
+      } else if (carts && Array.isArray(carts.data)) {
+        existingCart = carts.data.length > 0 ? carts.data[0] : null;
+      } else if (carts && carts.data && typeof carts.data === "object") {
+        existingCart = carts.data;
+      } else if (carts && typeof carts === "object") {
+        existingCart = carts;
+      }
+      var cartId = existingCart && existingCart.id ? existingCart.id : null;
       if (cartId) {
         return fetch("/api/storefront/carts/" + cartId + "/items", {
           method: "POST", credentials: "same-origin",
@@ -845,16 +873,32 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
   var _recsPosition = "bottom";  /* "bottom" = horizontal scroll in cart, "side" = left panel */
 
   function getCartItems(cart) {
-    if (!cart || !cart.lineItems) return [];
+    if (!cart) return [];
+    var lineItems = cart.lineItems || cart.line_items || (cart.data && (cart.data.lineItems || cart.data.line_items));
+    if (!lineItems) return [];
+
     var out = [];
-    var cats = ["physicalItems", "digitalItems", "customItems"];
+    var cats = ["physicalItems", "digitalItems", "customItems", "physical_items", "digital_items", "custom_items"];
     for (var c = 0; c < cats.length; c += 1) {
-      var items = cart.lineItems[cats[c]];
+      var items = lineItems[cats[c]];
       if (Array.isArray(items)) {
         for (var i = 0; i < items.length; i += 1) out.push(items[i]);
       }
     }
     return out;
+  }
+
+  function getCartAmount(cart) {
+    if (!cart) return 0;
+    var amount =
+      cart.cartAmount ||
+      cart.cart_amount ||
+      cart.baseAmount ||
+      cart.base_amount ||
+      (cart.data && (cart.data.cartAmount || cart.data.cart_amount || cart.data.baseAmount || cart.data.base_amount)) ||
+      0;
+    var n = Number(amount);
+    return isFinite(n) ? n : 0;
   }
 
   function getCartTotalQty(cart) {
@@ -1038,7 +1082,7 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
     var set = {};
     var items = getCartItems(cart);
     for (var i = 0; i < items.length; i += 1) {
-      var pid = String(items[i].productId || "");
+      var pid = String(items[i].productId || items[i].product_id || items[i].id || "");
       if (pid) set[pid] = true;
     }
     return set;
@@ -1047,7 +1091,7 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
   function refreshDrawer() {
     log("Refreshing drawer…");
     fetchFullCart().then(function (cart) {
-      log("Cart data:", cart ? "id=" + cart.id + " amount=" + cart.cartAmount : "null");
+      log("Cart data:", cart ? "id=" + cart.id + " amount=" + getCartAmount(cart) : "null");
       var items = getCartItems(cart);
       log("Cart items count:", items.length);
       var totalQty = getCartTotalQty(cart);
@@ -1061,11 +1105,11 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
 
       /* Update subtotal */
       if (_drawerSubtotalEl) {
-        _drawerSubtotalEl.textContent = cart ? formatPrice(cart.cartAmount || 0) : formatPrice(0);
+        _drawerSubtotalEl.textContent = cart ? formatPrice(getCartAmount(cart)) : formatPrice(0);
       }
 
       /* Update free-shipping bar */
-      updateShippingBar(cart ? cart.cartAmount || 0 : 0);
+      updateShippingBar(getCartAmount(cart));
 
       /* Render body */
       if (!_drawerBody) return;
@@ -1093,9 +1137,10 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
       }
 
       /* Cart items */
-      var cartId = cart.id;
+      var cartId = cart.id || cart.cartId || cart.cart_id || (cart.data && (cart.data.id || cart.data.cartId || cart.data.cart_id));
       for (var i = 0; i < items.length; i += 1) {
-        var isNew = !prevPids[String(items[i].productId || "")];
+        var rowPid = String(items[i].productId || items[i].product_id || items[i].id || "");
+        var isNew = !prevPids[rowPid];
         var row = buildDrawerItem(items[i], cartId, isNew);
         _drawerBody.appendChild(row);
       }
@@ -1120,15 +1165,22 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
   }
 
   function buildDrawerItem(item, cartId, animate) {
+    var itemProductId = item.productId || item.product_id || 0;
+    var itemId = item.id || item.itemId || item.item_id || 0;
+    var itemName = String(item.name || item.title || "Product");
+    var itemImage = item.imageUrl || item.image_url || "";
+    var itemOptions = item.options || item.optionSelections || item.option_selections || [];
+    var itemPrice = item.extendedSalePrice || item.extended_sale_price || item.salePrice || item.sale_price || item.listPrice || item.list_price || 0;
+
     var row = document.createElement("div");
     row.className = "cu-drawer-item" + (animate ? " cu-drawer-item--adding" : "");
-    row.setAttribute("data-cu-pid", String(item.productId || ""));
+    row.setAttribute("data-cu-pid", String(itemProductId || ""));
 
     /* Image */
     var img = document.createElement("img");
     img.className = "cu-drawer-item-img";
-    img.src = item.imageUrl || "";
-    img.alt = item.name || "Product";
+    img.src = itemImage;
+    img.alt = itemName;
     img.loading = "lazy";
     row.appendChild(img);
 
@@ -1138,16 +1190,18 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
 
     var name = document.createElement("div");
     name.className = "cu-drawer-item-name";
-    name.textContent = String(item.name || "Product");
-    name.title = String(item.name || "Product");
+    name.textContent = itemName;
+    name.title = itemName;
     mid.appendChild(name);
 
     /* Variant options (e.g. "Size: Medium / Color: Blue") */
-    if (Array.isArray(item.options) && item.options.length > 0) {
+    if (Array.isArray(itemOptions) && itemOptions.length > 0) {
       var optsText = [];
-      for (var oi = 0; oi < item.options.length; oi += 1) {
-        var opt = item.options[oi];
-        if (opt && opt.value) optsText.push(opt.nameId ? opt.value : (opt.name ? opt.name + ": " + opt.value : opt.value));
+      for (var oi = 0; oi < itemOptions.length; oi += 1) {
+        var opt = itemOptions[oi];
+        var optName = opt && (opt.name || opt.display_name || "");
+        var optValue = opt && (opt.value || opt.label || opt.value_name || "");
+        if (optValue) optsText.push(optName ? optName + ": " + optValue : optValue);
       }
       if (optsText.length > 0) {
         var optsEl = document.createElement("div");
@@ -1181,7 +1235,7 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
 
     var price = document.createElement("div");
     price.className = "cu-drawer-item-price";
-    price.textContent = formatPrice(item.extendedSalePrice || item.salePrice || item.listPrice || 0);
+    price.textContent = formatPrice(itemPrice);
     rt.appendChild(price);
 
     var delBtn = document.createElement("button");
@@ -1196,17 +1250,29 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
       mBtn.addEventListener("click", function () {
         var newQty = (itemObj.quantity || 1) - 1;
         if (newQty < 1) {
-          removeCartItem(cId, itemObj.id, function () { refreshDrawer(); });
+          removeCartItem(cId, itemObj.id || itemObj.itemId || itemObj.item_id, function () { refreshDrawer(); });
         } else {
-          updateCartItemQty(cId, itemObj.id, itemObj.productId, newQty, function () { refreshDrawer(); });
+          updateCartItemQty(
+            cId,
+            itemObj.id || itemObj.itemId || itemObj.item_id,
+            itemObj.productId || itemObj.product_id,
+            newQty,
+            function () { refreshDrawer(); }
+          );
         }
       });
       pBtn.addEventListener("click", function () {
         var newQty = (itemObj.quantity || 1) + 1;
-        updateCartItemQty(cId, itemObj.id, itemObj.productId, newQty, function () { refreshDrawer(); });
+        updateCartItemQty(
+          cId,
+          itemObj.id || itemObj.itemId || itemObj.item_id,
+          itemObj.productId || itemObj.product_id,
+          newQty,
+          function () { refreshDrawer(); }
+        );
       });
       dBtn.addEventListener("click", function () {
-        removeCartItem(cId, itemObj.id, function () { refreshDrawer(); });
+        removeCartItem(cId, itemObj.id || itemObj.itemId || itemObj.item_id, function () { refreshDrawer(); });
       });
     })(item, cartId, minusBtn, plusBtn, delBtn);
 
