@@ -1967,7 +1967,11 @@ export async function loader({ request }: LoaderFunctionArgs) {
           upgradeUrl: '/manage'
         }, {
           status: 402, // 402 Payment Required
-          headers: corsHeaders,
+          headers: {
+            'Access-Control-Allow-Origin': allowedOrigin || '*',
+            'Vary': 'Origin',
+            ...corsHeaders,
+          },
         });
       }
 
@@ -1992,12 +1996,14 @@ export async function loader({ request }: LoaderFunctionArgs) {
 
       return json(normalized, {
         headers: {
+          'Access-Control-Allow-Origin': allowedOrigin || '*',
+          'Vary': 'Origin',
           ...corsHeaders,
         },
       });
     } catch (error) {
       // Unauthorized or invalid signature
-      return json({ error: 'Unauthorized' }, { status: 401 });
+      return json({ error: 'Unauthorized' }, { status: 401, headers: { 'Access-Control-Allow-Origin': '*' } });
     }
   }
 

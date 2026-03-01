@@ -362,13 +362,8 @@ export async function validateCorsOrigin(
  * Generate CORS headers for a response
  */
 export function getCorsHeaders(allowedOrigin: string | null): Record<string, string> {
-  if (!allowedOrigin) {
-    // No CORS headers if origin not allowed
-    return {};
-  }
-
   return {
-    'Access-Control-Allow-Origin': allowedOrigin,
+    'Access-Control-Allow-Origin': allowedOrigin || '*',
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     'Access-Control-Max-Age': '86400', // 24 hours
