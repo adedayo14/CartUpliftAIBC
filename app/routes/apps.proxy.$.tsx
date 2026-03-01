@@ -741,6 +741,29 @@ export async function loader({ request }: LoaderFunctionArgs) {
           .slice(0, 24)
           .map(([id]) => id);
 
+        if (topIds.length === 0 && manualResults.length === 0) {
+          // No co-purchase data and no manual recs — fall back to catalog products
+          try {
+            const { products: catalogProducts } = await getProducts(shopStr, { limit: limit + anchors.size, include: "images,variants", is_visible: true });
+            const catalogRecs: Array<{ id: string; title: string; handle: string; image?: string; price: number; variant_id?: string }> = [];
+            for (const prod of catalogProducts) {
+              const pid = String(prod.id);
+              if (anchors.has(pid)) continue; // skip items already in cart/context
+              const normalized = normalizeProduct(prod);
+              if (!normalized.inStock) continue;
+              catalogRecs.push({ id: pid, title: normalized.title, handle: normalized.handle, image: normalized.image, price: normalized.price, variant_id: normalized.variant_id });
+              if (catalogRecs.length >= limit) break;
+            }
+            if (catalogRecs.length > 0) {
+              const payload = { recommendations: catalogRecs, source: 'catalog_fallback', currency: shopCurrency };
+              setRecsCache(cacheKey, payload);
+              return json(payload, { headers: { 'Access-Control-Allow-Origin': allowedOrigin || '*', 'Vary': 'Origin', 'Cache-Control': 'public, max-age=60' } });
+            }
+          } catch {
+            // skip catalog fetch failure
+          }
+          return json({ recommendations: [], source: 'no_data' }, { headers: { 'Access-Control-Allow-Origin': allowedOrigin || '*', 'Vary': 'Origin' } });
+        }
         if (topIds.length === 0) {
           return json({ recommendations: manualResults.slice(0, limit) }, { headers: { 'Access-Control-Allow-Origin': allowedOrigin || '*', 'Vary': 'Origin' } });
         }

@@ -775,22 +775,9 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
         var recs = data && Array.isArray(data.recommendations) ? data.recommendations : [];
         if (data && data.currency) window.__cuCurrency = data.currency;
         if (recs.length > 0) return recs;
+        /* Fallback: try bundles, then trending catalog products */
         var fallbackProductId = productId || (cartIds && cartIds.length ? cartIds[0] : "");
-        if (fallbackProductId) {
-          var bundleUrl =
-            scriptUrl.origin +
-            "/apps/proxy/api/bundles?store_hash=" +
-            encodeURIComponent(storeHash) +
-            "&product_id=" + encodeURIComponent(fallbackProductId) +
-            "&context=product";
-          return fetchJson(bundleUrl)
-            .then(function (bundleData) {
-              if (bundleData && bundleData.currency) window.__cuCurrency = bundleData.currency;
-              return mapBundlesToRecommendations(bundleData, fallbackProductId, limit);
-            })
-            .catch(function () { return []; });
-        }
-        if (context === "cart") {
+        var tryTrending = function () {
           var trendingUrl =
             scriptUrl.origin +
             "/apps/proxy/api/recommendations?store_hash=" +
@@ -802,8 +789,25 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
               return td && Array.isArray(td.recommendations) ? td.recommendations : [];
             })
             .catch(function () { return []; });
+        };
+        if (fallbackProductId) {
+          var bundleUrl =
+            scriptUrl.origin +
+            "/apps/proxy/api/bundles?store_hash=" +
+            encodeURIComponent(storeHash) +
+            "&product_id=" + encodeURIComponent(fallbackProductId) +
+            "&context=product";
+          return fetchJson(bundleUrl)
+            .then(function (bundleData) {
+              if (bundleData && bundleData.currency) window.__cuCurrency = bundleData.currency;
+              var bundleRecs = mapBundlesToRecommendations(bundleData, fallbackProductId, limit);
+              if (bundleRecs.length > 0) return bundleRecs;
+              /* Bundles also empty — try trending/catalog products */
+              return tryTrending();
+            })
+            .catch(function () { return tryTrending(); });
         }
-        return recs;
+        return tryTrending();
       })
       .catch(function (err) { warn("Recommendations failed", err); return []; });
   }
