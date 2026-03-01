@@ -2296,7 +2296,7 @@ export async function action({ request }: ActionFunctionArgs) {
         if (!event) {
           return json({ success: false, error: 'Missing event type' }, { status: 400 });
         }
-        if (!['impression', 'click', 'add_to_cart', 'purchase', 'ml_recommendation_served'].includes(event)) {
+        if (!['impression', 'click', 'add_to_cart', 'purchase', 'ml_recommendation_served', 'product_view'].includes(event)) {
           return json({ success: true, ignored: true, reason: 'unknown_event' });
         }
 

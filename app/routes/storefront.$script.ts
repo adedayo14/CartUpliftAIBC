@@ -395,6 +395,7 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
   }
 
   var _trackedImpressions = {};
+  var _trackedViews = {};
   function trackImpressions(recs) {
     if (!recs || !recs.length) return;
     for (var i = 0; i < recs.length; i += 1) {
@@ -591,7 +592,7 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
       /* Bottom recs (horizontal scroll inside cart body) */
       ".cu-drawer-recs{padding:18px 20px 14px;border-top:2px solid #f0f0f0;margin-top:auto;background:#fafaf8}" +
       ".cu-drawer-recs-hd{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}" +
-      ".cu-drawer-recs-hd h3{margin:0;font-size:13px;font-weight:700;letter-spacing:.3px;text-transform:uppercase;color:#111}" +
+      ".cu-drawer-recs-hd h3{margin:0;font-size:13px;font-weight:700;letter-spacing:.3px;color:#111}" +
       ".cu-drawer-recs-scroll{display:flex;gap:12px;overflow-x:auto;padding-bottom:4px;scroll-snap-type:x mandatory;-webkit-overflow-scrolling:touch;scrollbar-width:none}" +
       ".cu-drawer-recs-scroll::-webkit-scrollbar{display:none}" +
       ".cu-drawer-rc{flex:0 0 160px;scroll-snap-align:start;background:#fff;border:1px solid #e8e8e5;border-radius:10px;padding:12px;text-align:center;display:flex;flex-direction:column;align-items:center;transition:opacity .3s,transform .3s;box-shadow:0 1px 4px rgba(0,0,0,.04)}" +
@@ -856,6 +857,7 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
   var _drawerShipFillEl = null;
   var _sidePanel = null;
   var _sideBody = null;
+  var _sideTitleEl = null;
   var _scriptUrl = null;
   var _storeHash = "";
   var _drawerRecs = [];
@@ -869,7 +871,7 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
   var _shipThreshold = 0;
   var _shipText = "You\u2019re {amount} away from free shipping!";
   var _shipDoneText = "\u2713 Free shipping unlocked!";
-  var _recsTitle = "CUSTOMERS ALSO BOUGHT";
+  var _recsTitle = "Hand picked for you";
   var _recsPosition = "bottom";  /* "bottom" = horizontal scroll in cart, "side" = left panel */
 
   function getCartItems(cart) {
@@ -939,7 +941,8 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
     var sideHd = document.createElement("div");
     sideHd.className = "cu-drawer-side-hd";
     var sideH3 = document.createElement("h3");
-    sideH3.textContent = "Why not add\u2026";
+    sideH3.textContent = _recsTitle;
+    _sideTitleEl = sideH3;
     sideHd.appendChild(sideH3);
     _sidePanel.appendChild(sideHd);
     _sideBody = document.createElement("div");
@@ -1045,9 +1048,17 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
       _shipThreshold = Number(s.freeShippingThreshold) || 0;
       if (s.freeShippingText) _shipText = s.freeShippingText;
       if (s.freeShippingAchievedText) _shipDoneText = s.freeShippingAchievedText;
-      if (s.recommendationsTitle) _recsTitle = String(s.recommendationsTitle).toUpperCase();
+      if (typeof s.recommendationsTitle === "string" && s.recommendationsTitle.trim()) {
+        _recsTitle = s.recommendationsTitle;
+      } else if (typeof s.drawerSideRecsTitle === "string" && s.drawerSideRecsTitle.trim()) {
+        /* Backward-compat: use old side title if the unified title is not set yet. */
+        _recsTitle = s.drawerSideRecsTitle;
+      }
       if (s.drawerRecsPosition === "side" || s.drawerRecsPosition === "bottom") _recsPosition = s.drawerRecsPosition;
       log("Settings loaded: shipping=" + _shipEnabled + " threshold=" + _shipThreshold + " recsPos=" + _recsPosition);
+      if (_sideTitleEl) _sideTitleEl.textContent = _recsTitle;
+      var drawerTitle = _drawerBody ? _drawerBody.querySelector(".cu-drawer-recs-hd h3") : null;
+      if (drawerTitle) drawerTitle.textContent = _recsTitle;
       /* Show/hide side panel based on position setting */
       if (_sidePanel) _sidePanel.style.display = _recsPosition === "side" ? "flex" : "none";
       /* Re-render shipping bar if drawer is open */
@@ -1747,6 +1758,12 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
       var key = [storeHash, context, productId, cartIds.join(",")].join("|");
       if (key === lastKey) return;
       lastKey = key;
+
+      /* ─── Co-view tracking: fire product_view once per product per session ─── */
+      if (context === "product" && productId && !_trackedViews[productId]) {
+        _trackedViews[productId] = true;
+        trackEvent("product_view", productId, "", { source: "product_page" });
+      }
 
       var limit = context === "cart" ? 6 : 4;
 

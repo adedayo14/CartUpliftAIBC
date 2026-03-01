@@ -130,6 +130,10 @@ export interface SettingsData {
 	// Theme embed status (updated by storefront heartbeat)
 	themeEmbedEnabled?: boolean;
 	themeEmbedLastSeen?: string; // ISO string
+
+	// Multi-Storefront
+	activeChannelId?: number | null;
+	channelIds?: string | null; // JSON array of channel IDs
 }
 
 export async function getSettings(storeHash: string): Promise<SettingsData> {
@@ -394,6 +398,9 @@ export async function saveSettings(
 			// Cart Drawer Settings
 			"drawerRecsPosition",
 			"drawerSideRecsTitle",
+			// Multi-Storefront
+			"activeChannelId",
+			"channelIds",
 		];
 
 		// Dev-only fields disabled in production schema to avoid missing columns

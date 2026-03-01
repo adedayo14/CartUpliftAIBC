@@ -155,6 +155,8 @@ model Settings {
   currencyCode            String?  // Store's currency (fetched from BigCommerce)
   moneyFormat             String?  // Store's money format pattern
   ownerEmail              String?  // Store owner's email (for admin dashboard)
+  activeChannelId         Int?     // Multi-storefront: active BigCommerce channel ID
+  channelIds              String?  // Multi-storefront: JSON array of all channel IDs
   
   // Subscription & Billing (COMMENTED OUT - ACTIVATE AFTER DB MIGRATION)
   // subscriptionPlan        String?  // "starter" | "growth" | "pro"

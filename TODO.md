@@ -15,9 +15,3 @@
 - [ ] Set `BC_ACCOUNT_API_TOKEN` in Vercel (from Partner Portal)
 - [ ] Set `BC_APPLICATION_ID` in Vercel (from Dev Tools)
 - [ ] Test Unified Billing subscription flow end-to-end
-
-## Post-Launch
-- [ ] Add BigCommerce multi-storefront support
-- [ ] Add `categoryScore` to similarity computation (use `getCategories()` from BC API)
-- [ ] Add `priceScore` to similarity computation (use product price data from BC API)
-- [ ] Add co-view tracking from frontend events for `coViewScore`

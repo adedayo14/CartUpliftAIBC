@@ -368,3 +368,73 @@ export async function getScripts(storeHash: string): Promise<unknown[]> {
   const result = await apiRequest<BCApiResponse<unknown[]>>(storeHash, "/content/scripts");
   return result.data || [];
 }
+
+// ─── Channels (Multi-Storefront) ────────────────────────────────────────────
+
+export interface BCChannel {
+  id: number;
+  name: string;
+  type: string;
+  platform: string;
+  status: string;
+  is_listable_from_ui: boolean;
+  is_visible: boolean;
+  date_created: string;
+  date_modified: string;
+  external_id?: string;
+}
+
+export interface BCSite {
+  id: number;
+  channel_id: number;
+  url: string;
+  urls: { primary: string; canonical?: string; checkout?: string };
+}
+
+export async function getChannels(storeHash: string): Promise<BCChannel[]> {
+  const result = await apiRequest<BCApiResponse<BCChannel[]>>(storeHash, "/channels");
+  return result.data || [];
+}
+
+export async function getSites(storeHash: string, channelId: number): Promise<BCSite[]> {
+  const result = await apiRequest<BCApiResponse<BCSite[]>>(
+    storeHash,
+    `/channels/${channelId}/site`
+  );
+  return Array.isArray(result.data) ? result.data : result.data ? [result.data] : [];
+}
+
+/**
+ * Fetch all products with categories and prices in pages.
+ * Returns a map of productId -> { categories, price }.
+ */
+export async function getAllProductCategoryAndPriceMap(
+  storeHash: string
+): Promise<Map<string, { categories: number[]; price: number }>> {
+  const map = new Map<string, { categories: number[]; price: number }>();
+  let page = 1;
+  let hasNext = true;
+
+  while (hasNext) {
+    const { products, hasNextPage } = await getProducts(storeHash, {
+      limit: 250,
+      page,
+      is_visible: true,
+    });
+
+    for (const p of products) {
+      map.set(String(p.id), {
+        categories: p.categories || [],
+        price: p.calculated_price || p.price || 0,
+      });
+    }
+
+    hasNext = hasNextPage;
+    page++;
+
+    // Safety: max 20 pages (5000 products) to avoid runaway API calls
+    if (page > 20) break;
+  }
+
+  return map;
+}

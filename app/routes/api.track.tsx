@@ -55,7 +55,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }
 
     // Handle recommendation/product tracking (for ML analytics)
-    if (eventType === "impression" || eventType === "click" || eventType === "add_to_cart") {
+    if (eventType === "impression" || eventType === "click" || eventType === "add_to_cart" || eventType === "product_view") {
       const rawProductId = formData.get("productId") as string;
       const rawVariantId = formData.get("variantId") as string | null;
       const rawParentProductId = formData.get("parentProductId") as string | null;
@@ -78,7 +78,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
       // 🛡️ DEDUPLICATION: Check if this exact event already exists for this session
       // Only allow 1 impression and 1 click per product per session
-      if (eventType === "impression" || eventType === "click") {
+      if (eventType === "impression" || eventType === "click" || eventType === "product_view") {
         const existingEvent = await db.trackingEvent.findFirst({
           where: {
             storeHash: shop,

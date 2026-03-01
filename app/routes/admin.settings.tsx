@@ -46,6 +46,7 @@ interface AppSettings {
   enableRecommendationTitleCaps?: boolean;
   maxRecommendations?: number;
   drawerRecsPosition?: string;
+  recommendationsTitle?: string;
   [key: string]: unknown;
 }
 
@@ -328,6 +329,14 @@ export default function AppSettings() {
                         value={formSettings.drawerRecsPosition || "bottom"}
                         onOptionChange={(value) => updateSetting("drawerRecsPosition", value)}
                         description="Where to show product recommendations in the cart drawer"
+                      />
+
+                      <Input
+                        label="Recommendations title"
+                        value={formSettings.recommendationsTitle || "Hand picked for you"}
+                        onChange={(e) => updateSetting("recommendationsTitle", e.target.value)}
+                        description="Heading shown in recommendations (both bottom and side layouts)"
+                        placeholder="Hand picked for you"
                       />
 
                       <HR />
