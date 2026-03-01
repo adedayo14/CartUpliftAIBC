@@ -258,7 +258,7 @@ export default function Index() {
       completed: onboarding.steps.preview,
       action: {
         label: "View store",
-        url: `https://${shop}`,
+        url: `https://store-${shop}.mybigcommerce.com`,
         external: true,
       },
       completeAction: {
