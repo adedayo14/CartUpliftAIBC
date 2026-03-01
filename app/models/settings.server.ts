@@ -123,6 +123,9 @@ export interface SettingsData {
 	badgeTrendingText: string;
 	testimonialsList: string;
 
+	// Cart Drawer Settings
+	drawerRecsPosition: string;
+
 	// Theme embed status (updated by storefront heartbeat)
 	themeEmbedEnabled?: boolean;
 	themeEmbedLastSeen?: string; // ISO string
@@ -222,7 +225,7 @@ export async function getSettings(storeHash: string): Promise<SettingsData> {
 			// ML/Privacy Settings
 			mlPersonalizationMode: typedSettings.mlPersonalizationMode ?? "basic",
 			enableMLRecommendations:
-				typedSettings.enableMLRecommendations ?? false,
+				typedSettings.enableMLRecommendations ?? true,
 			mlPrivacyLevel: typedSettings.mlPrivacyLevel ?? "basic",
 			enableAdvancedPersonalization:
 				typedSettings.enableAdvancedPersonalization ?? false,
@@ -277,6 +280,9 @@ export async function getSettings(storeHash: string): Promise<SettingsData> {
 			themeEmbedLastSeen: typedSettings.themeEmbedLastSeen
 				? new Date(typedSettings.themeEmbedLastSeen).toISOString()
 				: undefined,
+
+			// Cart Drawer Settings
+			drawerRecsPosition: typedSettings.drawerRecsPosition ?? "bottom",
 		};
 	} catch (error: unknown) {
 		logger.error(`Error getting settings: ${error instanceof Error ? error.message : String(error)}`);
@@ -381,6 +387,8 @@ export async function saveSettings(
 			"bundleSavingsFormat",
 			"showIndividualPricesInBundle",
 			"autoApplyBundleDiscounts",
+			// Cart Drawer Settings
+			"drawerRecsPosition",
 		];
 
 		// Dev-only fields disabled in production schema to avoid missing columns
@@ -626,7 +634,7 @@ export async function saveSettings(
 			// ML/Privacy Settings
 			mlPersonalizationMode: settings.mlPersonalizationMode ?? "basic",
 			enableMLRecommendations:
-				settings.enableMLRecommendations ?? false,
+				settings.enableMLRecommendations ?? true,
 			mlPrivacyLevel: settings.mlPrivacyLevel ?? "basic",
 			enableAdvancedPersonalization:
 				settings.enableAdvancedPersonalization ?? false,
@@ -681,6 +689,9 @@ export async function saveSettings(
 			themeEmbedLastSeen: settings.themeEmbedLastSeen
 				? new Date(settings.themeEmbedLastSeen).toISOString()
 				: undefined,
+
+			// Cart Drawer Settings
+			drawerRecsPosition: settings.drawerRecsPosition ?? "bottom",
 		};
 	} catch (error) {
 		throw new Error(`Failed to save settings: ${(error as Error).message}`);
@@ -753,7 +764,7 @@ export function getDefaultSettings(): SettingsData {
 
 		// ML/Privacy Settings
 		mlPersonalizationMode: "basic",
-		enableMLRecommendations: false,
+		enableMLRecommendations: true,
 		mlPrivacyLevel: "basic",
 		enableAdvancedPersonalization: false,
 		enableBehaviorTracking: false,
@@ -793,6 +804,9 @@ export function getDefaultSettings(): SettingsData {
 			{ text: "Highly recommend", author: "Lisa P." },
 			{ text: "Amazing quality", author: "James W." },
 		]),
+
+		// Cart Drawer Settings
+		drawerRecsPosition: "bottom",
 
 		themeEmbedEnabled: false,
 		themeEmbedLastSeen: undefined,
