@@ -622,9 +622,9 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
 
       /* Mobile: hide side panel, full-width cart, horizontal scroll recs */
       "@media(max-width:768px){" +
-        ".cu-drawer-wrap{left:0;width:100vw}" +
+        ".cu-drawer-wrap{left:0;width:100vw;height:100vh;height:100dvh}" +
         ".cu-drawer-side{display:none!important}" +
-        ".cu-drawer{width:100vw}" +
+        ".cu-drawer{width:100vw;height:100%;max-height:100vh;max-height:100dvh}" +
         ".cu-drawer-recs .cu-rcard{flex:0 0 46%}" +
         ".cu-drawer-recs .cu-rcard-img{height:120px}" +
         ".cu-drawer-recs .cu-rcard-price{font-size:13px}" +
