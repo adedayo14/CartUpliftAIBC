@@ -191,6 +191,16 @@ async function getPersonalizedContentRecommendations(
     }
   }
 
+  // Fetch learned weights for re-scoring (if available)
+  let learnedWeights: { coPurchaseWeight: number; categoryWeight: number; priceWeight: number; coViewWeight: number; isFallback: boolean } | null = null;
+  try {
+    learnedWeights = await prisma.mLLearnedWeights.findUnique({
+      where: { storeHash },
+    });
+  } catch {
+    // fallback to overallScore
+  }
+
   // Check for cached similarity data
   for (const productId of productIds) {
     try {
@@ -200,15 +210,32 @@ async function getPersonalizedContentRecommendations(
           productId1: productId
         },
         orderBy: { overallScore: 'desc' },
-        take: 10
+        take: 10,
+        select: {
+          productId2: true,
+          overallScore: true,
+          coPurchaseScore: true,
+          categoryScore: true,
+          priceScore: true,
+          coViewScore: true,
+        }
       });
 
       if (cached.length > 0) {
         cached.forEach((sim) => {
           if (!excludeIds.includes(sim.productId2) && !productIds.includes(sim.productId2)) {
+            // Re-score using learned weights if available
+            let score = sim.overallScore;
+            if (learnedWeights && !learnedWeights.isFallback) {
+              score =
+                sim.coPurchaseScore * learnedWeights.coPurchaseWeight +
+                sim.categoryScore * learnedWeights.categoryWeight +
+                sim.priceScore * learnedWeights.priceWeight +
+                sim.coViewScore * learnedWeights.coViewWeight;
+            }
             recommendations.push({
               product_id: sim.productId2,
-              score: sim.overallScore,
+              score,
               reason: 'Frequently viewed together',
               strategy: 'content_personalized'
             });

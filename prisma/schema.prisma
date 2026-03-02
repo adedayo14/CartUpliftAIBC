@@ -571,6 +571,36 @@ model MLProductPerformance {
   @@map("ml_product_performance")
 }
 
+// ML Learned Weights - Per-store weights from logistic regression
+model MLLearnedWeights {
+  id                String   @id @default(cuid())
+  storeHash         String   @unique
+
+  // Learned weights (sum to ~1.0)
+  coPurchaseWeight  Float    @default(0.4)
+  categoryWeight    Float    @default(0.2)
+  priceWeight       Float    @default(0.1)
+  coViewWeight      Float    @default(0.3)
+
+  // Training metadata
+  trainingSize      Int      @default(0)
+  accuracy          Float    @default(0)
+  logLoss           Float    @default(0)
+  iterations        Int      @default(0)
+  learningRate      Float    @default(0.01)
+
+  // Fallback indicator
+  isFallback        Boolean  @default(true)
+
+  // Timestamps
+  trainedAt         DateTime @default(now())
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([storeHash])
+  @@map("ml_learned_weights")
+}
+
 // ML System Health - Monitor job performance for dashboard
 model MLSystemHealth {
   id                String   @id @default(cuid())

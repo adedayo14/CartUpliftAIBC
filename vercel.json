@@ -10,6 +10,10 @@
       "schedule": "0 2 * * *"
     },
     {
+      "path": "/api/cron/learn-weights",
+      "schedule": "15 2 * * *"
+    },
+    {
       "path": "/api/cron/update-profiles",
       "schedule": "30 2 * * *"
     },

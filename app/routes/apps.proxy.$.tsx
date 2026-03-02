@@ -1201,6 +1201,90 @@ export async function loader({ request }: LoaderFunctionArgs) {
           }
         }
 
+        // USER EMBEDDING PERSONALIZATION RE-RANKING
+        if (mlPrivacyLevel !== 'basic') {
+          try {
+            const sessionId = url.searchParams.get('session_id') || url.searchParams.get('sid') || 'anonymous';
+            if (sessionId !== 'anonymous') {
+              const userProfile = await db.mLUserProfile?.findUnique({
+                where: { storeHash_sessionId: { storeHash: shopStr, sessionId } },
+                select: { featureVector: true },
+              });
+
+              if (userProfile?.featureVector && Array.isArray(userProfile.featureVector)) {
+                const userEmb = userProfile.featureVector as number[];
+
+                // Get product similarity vectors for candidate products
+                const candidateIds = finalRecommendations.map(r => r.id);
+                const candidateSims = await db.mLProductSimilarity?.findMany({
+                  where: {
+                    storeHash: shopStr,
+                    productId1: { in: candidateIds },
+                  },
+                  select: {
+                    productId1: true,
+                    coPurchaseScore: true,
+                    categoryScore: true,
+                    priceScore: true,
+                    coViewScore: true,
+                    overallScore: true,
+                  },
+                }) || [];
+
+                // Build average embedding per candidate product
+                const productEmbeddings = new Map<string, number[]>();
+                const productCounts = new Map<string, number>();
+
+                for (const row of candidateSims) {
+                  const pid = row.productId1;
+                  if (!productEmbeddings.has(pid)) {
+                    productEmbeddings.set(pid, [0, 0, 0, 0, 0]);
+                    productCounts.set(pid, 0);
+                  }
+                  const emb = productEmbeddings.get(pid)!;
+                  emb[0] += row.coPurchaseScore;
+                  emb[1] += row.categoryScore;
+                  emb[2] += row.priceScore;
+                  emb[3] += row.coViewScore;
+                  emb[4] += row.overallScore;
+                  productCounts.set(pid, (productCounts.get(pid) || 0) + 1);
+                }
+
+                // Normalize embeddings
+                for (const [pid, emb] of productEmbeddings.entries()) {
+                  const count = productCounts.get(pid) || 1;
+                  for (let i = 0; i < emb.length; i++) emb[i] /= count;
+                }
+
+                // Cosine similarity between user embedding and product embeddings
+                const PERSONALIZATION_WEIGHT = 0.3;
+                const scoredRecs = finalRecommendations.map(rec => {
+                  const prodEmb = productEmbeddings.get(rec.id);
+                  let personalScore = 0;
+                  if (prodEmb && userEmb.length === prodEmb.length) {
+                    let dot = 0, normA = 0, normB = 0;
+                    for (let i = 0; i < userEmb.length; i++) {
+                      dot += userEmb[i] * prodEmb[i];
+                      normA += userEmb[i] * userEmb[i];
+                      normB += prodEmb[i] * prodEmb[i];
+                    }
+                    const denom = Math.sqrt(normA) * Math.sqrt(normB);
+                    personalScore = denom > 0 ? dot / denom : 0;
+                  }
+                  const originalScore = (rec as RecommendationWithScore).score || 0.5;
+                  return { ...rec, score: (1 - PERSONALIZATION_WEIGHT) * originalScore + PERSONALIZATION_WEIGHT * personalScore };
+                });
+
+                scoredRecs.sort((a, b) => (b.score || 0) - (a.score || 0));
+                finalRecommendations = scoredRecs;
+                dataMetrics.mlEnhanced = true;
+              }
+            }
+          } catch {
+            // best-effort — personalization is additive
+          }
+        }
+
         // APPLY DAILY LEARNING - Filter bad products, boost good ones
         try {
           const candidateIds = finalRecommendations.map(r => r.id);

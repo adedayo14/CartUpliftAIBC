@@ -16,7 +16,12 @@
  * - coViewScore: How often products are viewed in the same session
  * - overallScore: Weighted combination of all scores
  *
- * WEIGHTS: coPurchase 0.4, category 0.2, price 0.1, coView 0.3
+ * WEIGHTS: Learned per-store via logistic regression (fallback: coPurchase 0.4, category 0.2, price 0.1, coView 0.3)
+ *
+ * ML FEATURES:
+ * - Temporal decay: 60-day half-life exponential weighting on events
+ * - Popularity debiasing: Lift normalization rewards unexpected co-occurrences
+ * - Learned weights: Per-store weights from logistic regression on click/purchase feedback
  */
 
 import prisma from "~/db.server";
@@ -28,11 +33,13 @@ interface ProductPair {
   productId1: string;
   productId2: string;
   coPurchaseCount: number;
+  weightedCoPurchaseCount: number; // decay-weighted count
   sharedCustomers: Set<string>;
 }
 
 interface CoViewPair {
   count: number;
+  weightedCount: number; // decay-weighted count
   sharedSessions: Set<string>;
 }
 
@@ -42,13 +49,43 @@ interface ProductMetadata {
   customers: Set<string>;
 }
 
-// Score weights for the overall similarity calculation
-const WEIGHTS = {
+// Default weights (used when no learned weights available)
+const DEFAULT_WEIGHTS = {
   coPurchase: 0.4,
   category: 0.2,
   price: 0.1,
   coView: 0.3,
 };
+
+// Temporal decay: 60-day half-life (matches proxy serving route)
+const HALF_LIFE_DAYS = 60;
+const LN2_OVER_HL = Math.log(2) / HALF_LIFE_DAYS;
+
+// Lift cap to prevent niche product explosions
+const LIFT_CAP = 5.0;
+
+/**
+ * Fetch learned weights for a shop, falling back to defaults.
+ */
+async function getWeightsForShop(shop: string): Promise<typeof DEFAULT_WEIGHTS> {
+  try {
+    const learned = await prisma.mLLearnedWeights.findUnique({
+      where: { storeHash: shop },
+    });
+
+    if (learned && !learned.isFallback && learned.trainingSize >= 100) {
+      return {
+        coPurchase: learned.coPurchaseWeight,
+        category: learned.categoryWeight,
+        price: learned.priceWeight,
+        coView: learned.coViewWeight,
+      };
+    }
+  } catch {
+    // fallback silently
+  }
+  return DEFAULT_WEIGHTS;
+}
 
 /**
  * Calculate category similarity using Jaccard index on category arrays.
@@ -90,6 +127,11 @@ export async function runSimilarityComputation(shop: string) {
   healthLogger.log(`[SIMILARITY] Starting computation for shop: ${shop}`);
 
   try {
+    // Fetch learned weights (or defaults)
+    const WEIGHTS = await getWeightsForShop(shop);
+    healthLogger.log(`[SIMILARITY] Weights: coPurchase=${WEIGHTS.coPurchase.toFixed(3)}, category=${WEIGHTS.category.toFixed(3)}, price=${WEIGHTS.price.toFixed(3)}, coView=${WEIGHTS.coView.toFixed(3)}`);
+
+    const now = Date.now();
     const ninetyDaysAgo = new Date();
     ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
 
@@ -104,7 +146,8 @@ export async function runSimilarityComputation(shop: string) {
       select: {
         orderId: true,
         productId: true,
-        sessionId: true
+        sessionId: true,
+        createdAt: true,
       }
     });
 
@@ -118,7 +161,8 @@ export async function runSimilarityComputation(shop: string) {
       },
       select: {
         productId: true,
-        sessionId: true
+        sessionId: true,
+        createdAt: true,
       }
     });
 
@@ -138,8 +182,9 @@ export async function runSimilarityComputation(shop: string) {
       healthLogger.log(`[SIMILARITY] Could not fetch catalog data, proceeding without category/price scores`);
     }
 
-    // ── Step 4: Build co-purchase matrix ──
+    // ── Step 4: Build co-purchase matrix with temporal decay ──
     const orderMap = new Map<string, Set<string>>();
+    const orderDateMap = new Map<string, Date>(); // orderId -> earliest event date
     const productMetadata = new Map<string, ProductMetadata>();
 
     for (const event of purchaseEvents) {
@@ -149,6 +194,11 @@ export async function runSimilarityComputation(shop: string) {
         orderMap.set(event.orderId, new Set());
       }
       orderMap.get(event.orderId)!.add(event.productId);
+
+      // Track order date for decay weighting
+      if (!orderDateMap.has(event.orderId) || event.createdAt < orderDateMap.get(event.orderId)!) {
+        orderDateMap.set(event.orderId, event.createdAt);
+      }
 
       if (!productMetadata.has(event.productId)) {
         productMetadata.set(event.productId, {
@@ -165,6 +215,11 @@ export async function runSimilarityComputation(shop: string) {
     const purchasePairMap = new Map<string, ProductPair>();
 
     for (const [orderId, productIds] of orderMap.entries()) {
+      // Temporal decay: recent orders weighted more heavily
+      const orderDate = orderDateMap.get(orderId) || new Date();
+      const ageDays = Math.max(0, (now - orderDate.getTime()) / 86400000);
+      const decayWeight = Math.exp(-LN2_OVER_HL * ageDays);
+
       const productsArray = Array.from(productIds);
 
       for (let i = 0; i < productsArray.length; i++) {
@@ -177,19 +232,22 @@ export async function runSimilarityComputation(shop: string) {
               productId1: id1,
               productId2: id2,
               coPurchaseCount: 0,
+              weightedCoPurchaseCount: 0,
               sharedCustomers: new Set()
             });
           }
 
           const pair = purchasePairMap.get(pairKey)!;
           pair.coPurchaseCount++;
+          pair.weightedCoPurchaseCount += decayWeight;
           pair.sharedCustomers.add(orderId);
         }
       }
     }
 
-    // ── Step 5: Build co-view matrix ──
+    // ── Step 5: Build co-view matrix with temporal decay ──
     const sessionViewMap = new Map<string, Set<string>>();
+    const sessionDateMap = new Map<string, Date>(); // sessionId -> most recent view
 
     for (const event of viewEvents) {
       if (!event.sessionId) continue;
@@ -197,14 +255,24 @@ export async function runSimilarityComputation(shop: string) {
         sessionViewMap.set(event.sessionId, new Set());
       }
       sessionViewMap.get(event.sessionId)!.add(event.productId);
+
+      // Track most recent event per session for decay
+      if (!sessionDateMap.has(event.sessionId) || event.createdAt > sessionDateMap.get(event.sessionId)!) {
+        sessionDateMap.set(event.sessionId, event.createdAt);
+      }
     }
 
     const coViewPairMap = new Map<string, CoViewPair>();
     let totalViewSessions = 0;
 
-    for (const [_sessionId, productIds] of sessionViewMap.entries()) {
+    for (const [sessionId, productIds] of sessionViewMap.entries()) {
       if (productIds.size < 2) continue; // Need at least 2 products viewed in a session
       totalViewSessions++;
+
+      // Temporal decay on session recency
+      const sessionDate = sessionDateMap.get(sessionId) || new Date();
+      const ageDays = Math.max(0, (now - sessionDate.getTime()) / 86400000);
+      const decayWeight = Math.exp(-LN2_OVER_HL * ageDays);
 
       const productsArray = Array.from(productIds);
       for (let i = 0; i < productsArray.length; i++) {
@@ -213,12 +281,13 @@ export async function runSimilarityComputation(shop: string) {
           const pairKey = `${id1}|${id2}`;
 
           if (!coViewPairMap.has(pairKey)) {
-            coViewPairMap.set(pairKey, { count: 0, sharedSessions: new Set() });
+            coViewPairMap.set(pairKey, { count: 0, weightedCount: 0, sharedSessions: new Set() });
           }
 
           const cvPair = coViewPairMap.get(pairKey)!;
           cvPair.count++;
-          cvPair.sharedSessions.add(_sessionId);
+          cvPair.weightedCount += decayWeight;
+          cvPair.sharedSessions.add(sessionId);
         }
       }
     }
@@ -248,7 +317,7 @@ export async function runSimilarityComputation(shop: string) {
       const purchasePair = purchasePairMap.get(pairKey);
       const coViewPair = coViewPairMap.get(pairKey);
 
-      // ── Co-purchase score ──
+      // ── Co-purchase score (Jaccard + decay-weighted frequency + lift) ──
       let coPurchaseScore = 0;
       let sampleSize = 0;
 
@@ -257,12 +326,32 @@ export async function runSimilarityComputation(shop: string) {
         const meta2 = productMetadata.get(id2);
 
         if (meta1 && meta2) {
+          const totalOrders = orderMap.size;
+
+          // Jaccard component
           const intersection = purchasePair.sharedCustomers.size;
           const union = meta1.customers.size + meta2.customers.size - intersection;
           const jaccardScore = union > 0 ? intersection / union : 0;
+
+          // Decay-weighted frequency component
           const maxOrders = Math.max(meta1.totalOrders, meta2.totalOrders);
-          const frequencyScore = maxOrders > 0 ? purchasePair.coPurchaseCount / maxOrders : 0;
-          coPurchaseScore = (jaccardScore * 0.6) + (frequencyScore * 0.4);
+          const frequencyScore = maxOrders > 0
+            ? purchasePair.weightedCoPurchaseCount / maxOrders
+            : 0;
+
+          // Lift component: P(A,B) / (P(A) * P(B))
+          // Rewards unexpected co-occurrences (cross-category complements)
+          let normalizedLift = 0;
+          if (totalOrders > 0) {
+            const probA = meta1.customers.size / totalOrders;
+            const probB = meta2.customers.size / totalOrders;
+            const probAB = intersection / totalOrders;
+            const rawLift = (probA * probB > 0) ? probAB / (probA * probB) : 0;
+            normalizedLift = Math.min(LIFT_CAP, rawLift) / LIFT_CAP;
+          }
+
+          // Blend: 30% Jaccard + 30% frequency + 40% lift
+          coPurchaseScore = (jaccardScore * 0.3) + (frequencyScore * 0.3) + (normalizedLift * 0.4);
         }
 
         sampleSize = purchasePair.coPurchaseCount;
@@ -280,11 +369,11 @@ export async function runSimilarityComputation(shop: string) {
         ? computePriceScore(catalog1.price, catalog2.price)
         : 0;
 
-      // ── Co-view score ──
+      // ── Co-view score (decay-weighted) ──
       let coViewScore = 0;
       if (coViewPair && totalViewSessions > 0) {
-        // Normalize by total multi-product sessions
-        coViewScore = Math.min(1, coViewPair.count / Math.max(totalViewSessions * 0.1, 1));
+        // Normalize decay-weighted count by total multi-product sessions
+        coViewScore = Math.min(1, coViewPair.weightedCount / Math.max(totalViewSessions * 0.1, 1));
       }
 
       // ── Overall score (weighted) ──

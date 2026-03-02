@@ -42,6 +42,79 @@ interface SessionBehavior {
   privacyLevel: string;
 }
 
+// Interaction weights for embedding computation
+const EMBEDDING_WEIGHTS = { view: 1.0, cart: 2.0, purchase: 3.0 };
+const EMBEDDING_DIM = 5; // [coPurchase, category, price, coView, overall]
+
+/**
+ * Compute user embedding as weighted centroid of product similarity vectors.
+ * Dimensions: [avgCoPurchase, avgCategory, avgPrice, avgCoView, avgOverall]
+ */
+async function computeUserEmbedding(
+  shop: string,
+  viewedProducts: string[],
+  cartedProducts: string[],
+  purchasedProducts: string[]
+): Promise<number[] | null> {
+  // Collect all interacted product IDs with weights
+  const productWeights = new Map<string, number>();
+  for (const pid of viewedProducts) {
+    productWeights.set(pid, (productWeights.get(pid) || 0) + EMBEDDING_WEIGHTS.view);
+  }
+  for (const pid of cartedProducts) {
+    productWeights.set(pid, (productWeights.get(pid) || 0) + EMBEDDING_WEIGHTS.cart);
+  }
+  for (const pid of purchasedProducts) {
+    productWeights.set(pid, (productWeights.get(pid) || 0) + EMBEDDING_WEIGHTS.purchase);
+  }
+
+  if (productWeights.size === 0) return null;
+
+  const productIds = Array.from(productWeights.keys());
+
+  // Fetch similarity rows for the user's interacted products
+  const simRows = await prisma.mLProductSimilarity.findMany({
+    where: {
+      storeHash: shop,
+      productId1: { in: productIds },
+    },
+    select: {
+      productId1: true,
+      coPurchaseScore: true,
+      categoryScore: true,
+      priceScore: true,
+      coViewScore: true,
+      overallScore: true,
+    },
+    orderBy: { overallScore: "desc" },
+    take: productIds.length * 20, // top 20 similarities per product
+  });
+
+  if (simRows.length === 0) return null;
+
+  // Compute weighted centroid
+  const embedding = new Array(EMBEDDING_DIM).fill(0);
+  let totalWeight = 0;
+
+  for (const row of simRows) {
+    const w = productWeights.get(row.productId1) || 1.0;
+    embedding[0] += row.coPurchaseScore * w;
+    embedding[1] += row.categoryScore * w;
+    embedding[2] += row.priceScore * w;
+    embedding[3] += row.coViewScore * w;
+    embedding[4] += row.overallScore * w;
+    totalWeight += w;
+  }
+
+  if (totalWeight > 0) {
+    for (let i = 0; i < EMBEDDING_DIM; i++) {
+      embedding[i] /= totalWeight;
+    }
+  }
+
+  return embedding;
+}
+
 /**
  * Run user profile updates for a single shop
  */
@@ -168,6 +241,19 @@ export async function runUserProfileUpdate(shop: string, settings?: { mlPrivacyL
         dataRetentionDays: 30
       };
       
+      // Compute user embedding from product similarity vectors
+      let featureVector = null;
+      try {
+        featureVector = await computeUserEmbedding(
+          shop,
+          Array.from(behavior.viewedProducts),
+          Array.from(behavior.cartedProducts),
+          Array.from(behavior.purchasedProducts)
+        );
+      } catch {
+        // best-effort — embedding is additive, not critical
+      }
+
       // Upsert profile
       try {
         const result = await prisma.mLUserProfile.upsert({
@@ -184,9 +270,13 @@ export async function runUserProfileUpdate(shop: string, settings?: { mlPrivacyL
             purchasedProducts: profileData.purchasedProducts,
             priceRangePreference: profileData.priceRangePreference,
             lastActivity: profileData.lastActivity,
-            privacyLevel: profileData.privacyLevel
+            privacyLevel: profileData.privacyLevel,
+            featureVector: featureVector,
           },
-          create: profileData
+          create: {
+            ...profileData,
+            featureVector: featureVector,
+          }
         });
         
         if (result.createdAt === result.updatedAt) {

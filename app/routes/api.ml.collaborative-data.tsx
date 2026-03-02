@@ -54,7 +54,7 @@ interface CollaborativeDataResponse {
 }
 
 interface TrackingEvent {
-  eventType: string;
+  event: string;
 }
 
 interface MLProductSimilarity {
@@ -197,14 +197,14 @@ async function getGlobalStats(shop: string): Promise<GlobalStats> {
         createdAt: { gte: thirtyDaysAgo }
       },
       select: {
-        eventType: true
+        event: true
       }
     });
 
     const totalInteractions = trackingEvents.length;
-    const viewCount = trackingEvents.filter((e: TrackingEvent) => e.eventType === 'view').length;
-    const cartCount = trackingEvents.filter((e: TrackingEvent) => e.eventType === 'add_to_cart').length;
-    const purchaseCount = trackingEvents.filter((e: TrackingEvent) => e.eventType === 'purchase').length;
+    const viewCount = trackingEvents.filter((e: TrackingEvent) => e.event === 'impression' || e.event === 'product_view').length;
+    const cartCount = trackingEvents.filter((e: TrackingEvent) => e.event === 'add_to_cart').length;
+    const purchaseCount = trackingEvents.filter((e: TrackingEvent) => e.event === 'purchase').length;
     
     const conversionRate = viewCount > 0 ? purchaseCount / viewCount : 0;
     const cartRate = viewCount > 0 ? cartCount / viewCount : 0;
