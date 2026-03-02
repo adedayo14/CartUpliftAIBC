@@ -530,6 +530,8 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
       ".cu-drawer-side-hd{padding:20px 18px 14px;flex-shrink:0}" +
       ".cu-drawer-side-hd h3{margin:0;font-size:17px;font-weight:700;color:#111}" +
       ".cu-drawer-side-bd{flex:1 1 0%;overflow-y:auto;padding:0 14px 14px;display:flex;flex-direction:column;gap:10px}" +
+      ".cu-drawer-side-bd .cu-rcard{position:relative}" +
+      ".cu-drawer-side-bd .cu-rcard-add{position:absolute;right:10px;top:112px;z-index:2;width:34px;height:34px;box-shadow:0 2px 6px rgba(0,0,0,.15)}" +
       ".cu-drawer-side-empty{display:none}" +
 
       /* Unified rec cards — used by both side and bottom layouts */
@@ -541,12 +543,12 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
       ".cu-rcard-img-wrap{position:relative;background:#fff}" +
       ".cu-rcard-img{width:100%;height:150px;object-fit:contain;display:block}" +
       ".cu-rcard-info{padding:6px 10px 8px}" +
-      ".cu-rcard-row{margin-bottom:2px}" +
+      ".cu-rcard-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:2px}" +
       ".cu-rcard-price{font-size:14px;font-weight:700;color:var(--cu-card-text,#111)}" +
-      ".cu-rcard-add{position:absolute;right:8px;bottom:8px;z-index:2;width:34px;height:34px;border-radius:50%;background:var(--cu-card-accent,#333);color:#fff;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:opacity .15s;box-shadow:0 2px 6px rgba(0,0,0,.15);flex-shrink:0}" +
+      ".cu-rcard-add{width:28px;height:28px;border-radius:50%;background:var(--cu-card-accent,#333);color:#fff;border:none;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;transition:opacity .15s;flex-shrink:0}" +
       ".cu-rcard-add:hover{opacity:.85}" +
       ".cu-rcard-add:disabled{background:#94a3b8;cursor:not-allowed}" +
-      ".cu-rcard-add svg{width:16px;height:16px}" +
+      ".cu-rcard-add svg{width:14px;height:14px}" +
       ".cu-rcard-name{font-size:13px;color:var(--cu-card-text,#111);opacity:.7;line-height:1.3;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;word-break:break-word}" +
       ".cu-rcard-opts{display:flex;gap:6px;margin-top:4px;align-items:center;flex-wrap:wrap}" +
       ".cu-rcard-swatch{width:20px;height:20px;border-radius:50%;border:2px solid transparent;cursor:pointer;transition:border-color .15s;box-shadow:inset 0 0 0 1px rgba(0,0,0,.1)}" +
@@ -618,8 +620,21 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
       /* Empty */
       ".cu-drawer-empty{padding:48px 20px;text-align:center;color:#999;font-size:14px}" +
 
-      /* Mobile: hide side panel, full-width cart */
-      "@media(max-width:768px){.cu-drawer-side{display:none}.cu-drawer{width:100vw}}";
+      /* Mobile: hide side panel, full-width cart, 2-col rec grid */
+      "@media(max-width:768px){" +
+        ".cu-drawer-side{display:none}" +
+        ".cu-drawer{width:100vw}" +
+        ".cu-drawer-recs-scroll{display:grid;grid-template-columns:1fr 1fr;gap:10px;overflow-x:visible;scroll-snap-type:none}" +
+        ".cu-drawer-recs .cu-rcard{flex:none}" +
+        ".cu-drawer-recs .cu-rcard-img{height:120px}" +
+        ".cu-drawer-recs .cu-rcard-price{font-size:13px}" +
+        ".cu-drawer-recs .cu-rcard-name{font-size:12px;-webkit-line-clamp:2}" +
+        ".cu-drawer-recs .cu-rcard-add{width:24px;height:24px}" +
+        ".cu-drawer-recs .cu-rcard-add svg{width:13px;height:13px}" +
+        ".cu-drawer-recs .cu-rcard-swatch{width:16px;height:16px}" +
+        ".cu-drawer-recs .cu-rcard-opts{margin-top:3px;gap:4px}" +
+        ".cu-drawer-recs{padding:14px 16px 10px}" +
+      "}";
     document.head.appendChild(style);
   }
 
@@ -1483,7 +1498,7 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
       addBtn.className = "cu-rcard-add";
       addBtn.innerHTML = _addBagSvg;
       addBtn.setAttribute("aria-label", "Add to cart");
-      imgWrap.appendChild(addBtn);
+      row.appendChild(addBtn);
     }
     info.appendChild(row);
 
