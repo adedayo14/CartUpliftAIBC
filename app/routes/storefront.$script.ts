@@ -811,7 +811,9 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
             scriptUrl.origin +
             "/apps/proxy/api/recommendations?store_hash=" +
             encodeURIComponent(storeHash) +
-            "&limit=" + String(limit) + "&context=trending";
+            "&limit=" + String(limit) + "&context=trending" +
+            (cartIds && cartIds.length ? "&cart=" + encodeURIComponent(cartIds.join(",")) : "") +
+            (productId ? "&product_id=" + encodeURIComponent(productId) : "");
           return fetchJson(trendingUrl)
             .then(function (td) {
               if (td && td.currency) window.__cuCurrency = td.currency;

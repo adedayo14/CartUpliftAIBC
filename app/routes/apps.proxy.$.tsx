@@ -879,6 +879,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
         const pushUnique = (arr: typeof combined) => {
           for (const r of arr) {
             if (seenIds.has(r.id)) continue;
+            if (anchors.has(r.id)) continue; // never recommend items already in cart
             seenIds.add(r.id);
             combined.push(r);
             if (combined.length >= limit) break;
