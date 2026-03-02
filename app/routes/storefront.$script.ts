@@ -526,7 +526,7 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
       ".cu-drawer-wrap *{box-sizing:border-box;font-family:inherit}" +
 
       /* Side panel — recommendations (left of cart) */
-      ".cu-drawer-side{width:300px;background:#f7f7f5;display:none;flex-direction:column;overflow:hidden;border-right:1px solid #eee;order:-1}" +
+      ".cu-drawer-side{width:260px;background:#f7f7f5;display:none;flex-direction:column;overflow:hidden;border-right:1px solid #eee;order:-1}" +
       ".cu-drawer-side-hd{padding:20px 18px 14px;flex-shrink:0}" +
       ".cu-drawer-side-hd h3{margin:0;font-size:17px;font-weight:700;color:#111}" +
       ".cu-drawer-side-bd{flex:1 1 0%;overflow-y:auto;padding:0 14px 14px;display:flex;flex-direction:column;gap:10px}" +
@@ -1770,9 +1770,9 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
   /* Router — delegates to the correct render based on settings */
   function renderRecs(allRecs, cartPidSet) {
     if (_recsPosition === "side") {
-      /* On mobile with "all_devices" mode, render as bottom horizontal scroll */
+      /* On mobile, always render side recs as bottom horizontal scroll */
       var isMobile = window.innerWidth <= 768;
-      if (isMobile && _sideDeviceMode === "all_devices") {
+      if (isMobile) {
         renderDrawerRecs(allRecs, cartPidSet);
         if (_sidePanel) _sidePanel.style.display = "none";
       } else {
