@@ -1430,13 +1430,30 @@ export async function loader({ request }: LoaderFunctionArgs) {
       const shopCurrency = await getShopCurrency(shopStr);
 
       const q = url.searchParams.get('query') || '';
+      const productIdParam = url.searchParams.get('product_id') || '';
       const limit = Math.min(100, Math.max(1, parseInt(url.searchParams.get('limit') || '50', 10)));
 
-      const { products: bcProducts, hasNextPage } = await getProducts(shopStr, {
-        limit,
-        keyword: q || undefined,
-        include: "images,variants",
-      });
+      let bcProducts: BCProduct[] = [];
+      let hasNextPage = false;
+
+      if (productIdParam) {
+        // Single product lookup by ID (used by add-to-cart fallback)
+        const numericId = parseInt(productIdParam, 10);
+        if (!isNaN(numericId)) {
+          try {
+            const prod = await getProduct(shopStr, numericId, "images,variants");
+            bcProducts = [prod];
+          } catch { /* product not found */ }
+        }
+      } else {
+        const result = await getProducts(shopStr, {
+          limit,
+          keyword: q || undefined,
+          include: "images,variants",
+        });
+        bcProducts = result.products;
+        hasNextPage = result.hasNextPage;
+      }
 
       const products = bcProducts.map((prod) => {
         const variants = (prod.variants || []).map((v) => ({

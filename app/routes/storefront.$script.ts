@@ -1133,9 +1133,13 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
         if (ppid) prevPids[ppid] = true;
       }
 
-      /* Remove item rows */
+      /* Remove item rows (keep .cu-drawer-recs in place for now) */
       var existingItems = _drawerBody.querySelectorAll(".cu-drawer-item, .cu-drawer-empty");
       for (var r = 0; r < existingItems.length; r += 1) existingItems[r].remove();
+
+      /* Detach bottom recs section so items are inserted before it */
+      var _existingRecsSection = _drawerBody.querySelector(".cu-drawer-recs");
+      if (_existingRecsSection) _existingRecsSection.remove();
 
       if (!cart || items.length === 0) {
         var empty = document.createElement("div");
@@ -1155,6 +1159,9 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
         var row = buildDrawerItem(items[i], cartId, isNew);
         _drawerBody.appendChild(row);
       }
+
+      /* Re-attach bottom recs section AFTER items so it stays at the bottom */
+      if (_existingRecsSection) _drawerBody.appendChild(_existingRecsSection);
 
       /* ─── Side panel recommendations: fetch once, then toggle ─── */
       var productIds = [];
@@ -1361,13 +1368,22 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
           addItemToCart([lineItem], function (ok) {
             if (ok) {
               onAdded();
-            } else if (!vid && _scriptUrl && _storeHash) {
+            } else if (_scriptUrl && _storeHash) {
+              /* Fallback: fetch variant info then retry */
               var prodUrl = _scriptUrl.origin +
                 "/apps/proxy/api/products?store_hash=" + encodeURIComponent(_storeHash) +
                 "&product_id=" + encodeURIComponent(pid);
               fetchJson(prodUrl)
                 .then(function (pData) {
-                  var product = pData && pData.product ? pData.product : pData;
+                  var product = null;
+                  if (pData && Array.isArray(pData.products)) {
+                    for (var pi = 0; pi < pData.products.length; pi++) {
+                      if (String(pData.products[pi].id) === String(pid)) { product = pData.products[pi]; break; }
+                    }
+                    if (!product && pData.products.length > 0) product = pData.products[0];
+                  } else if (pData && pData.product) {
+                    product = pData.product;
+                  }
                   var variants = product && Array.isArray(product.variants) ? product.variants : [];
                   var firstVar = variants.length > 0 ? variants[0] : null;
                   var fetchedVid = firstVar ? Number(firstVar.id || firstVar.variant_id) : 0;
@@ -1514,12 +1530,21 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
 
           addItemToCart([lineItem], function (ok) {
             if (ok) { onAdded(); }
-            else if (!vid && _scriptUrl && _storeHash) {
+            else if (_scriptUrl && _storeHash) {
+              /* Fallback: fetch variant info then retry */
               var prodUrl = _scriptUrl.origin +
                 "/apps/proxy/api/products?store_hash=" + encodeURIComponent(_storeHash) +
                 "&product_id=" + encodeURIComponent(pid);
               fetchJson(prodUrl).then(function (pData) {
-                var product = pData && pData.product ? pData.product : pData;
+                var product = null;
+                if (pData && Array.isArray(pData.products)) {
+                  for (var pi = 0; pi < pData.products.length; pi++) {
+                    if (String(pData.products[pi].id) === String(pid)) { product = pData.products[pi]; break; }
+                  }
+                  if (!product && pData.products.length > 0) product = pData.products[0];
+                } else if (pData && pData.product) {
+                  product = pData.product;
+                }
                 var variants = product && Array.isArray(product.variants) ? product.variants : [];
                 var firstVar = variants.length > 0 ? variants[0] : null;
                 var fetchedVid = firstVar ? Number(firstVar.id || firstVar.variant_id) : 0;
