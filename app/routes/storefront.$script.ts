@@ -1234,20 +1234,39 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
       var sortedPids = Object.keys(cartPidSet).sort();
       for (var j = 0; j < sortedPids.length; j += 1) productIds.push(sortedPids[j]);
 
+      /* Build name-stem set from cart items to exclude same-family products */
+      var cartStems = {};
+      for (var ci = 0; ci < items.length; ci++) {
+        var cName = String(items[ci].name || items[ci].title || "").toLowerCase().trim();
+        var cStem = cName.replace(/\s*[-\u2013]\s*[^-\u2013]*$/, "").trim();
+        if (cStem.length > 3) cartStems[cStem] = true;
+      }
+
+      function filterRecsForCart(recs) {
+        var out = [];
+        for (var fi = 0; fi < recs.length; fi++) {
+          var rName = String(recs[fi].title || "").toLowerCase().trim();
+          var rStem = rName.replace(/\s*[-\u2013]\s*[^-\u2013]*$/, "").trim();
+          if (rStem.length > 3 && cartStems[rStem]) continue;
+          out.push(recs[fi]);
+        }
+        return out;
+      }
+
       if (_drawerRecsAll.length > 0) {
-        renderRecs(_drawerRecsAll, cartPidSet);
+        renderRecs(filterRecsForCart(_drawerRecsAll), cartPidSet);
       } else if (_prewarmPromise) {
         /* Prewarm in flight — wait for it instead of starting a duplicate fetch */
         _prewarmPromise.then(function () {
           if (_drawerRecsAll.length > 0) {
-            renderRecs(_drawerRecsAll, getCartProductIdSet(cart));
+            renderRecs(filterRecsForCart(_drawerRecsAll), getCartProductIdSet(cart));
           } else if (_scriptUrl && _storeHash) {
             fetchRecommendationsWithFallback(
               _scriptUrl, _storeHash, "", productIds, "cart", 10
             ).then(function (recs) {
               _drawerRecsAll = recs;
               _lastRecsFetchKey = productIds.join(",");
-              renderRecs(_drawerRecsAll, getCartProductIdSet(cart));
+              renderRecs(filterRecsForCart(_drawerRecsAll), getCartProductIdSet(cart));
             });
           }
         });
@@ -1257,7 +1276,7 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
         ).then(function (recs) {
           _drawerRecsAll = recs;
           _lastRecsFetchKey = productIds.join(",");
-          renderRecs(_drawerRecsAll, getCartProductIdSet(cart));
+          renderRecs(filterRecsForCart(_drawerRecsAll), getCartProductIdSet(cart));
         });
       }
     });
