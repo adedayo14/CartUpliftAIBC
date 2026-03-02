@@ -47,6 +47,11 @@ interface AppSettings {
   maxRecommendations?: number;
   drawerRecsPosition?: string;
   recommendationsTitle?: string;
+  sideRecsDeviceMode?: string;
+  bottomRecsStickyEnabled?: boolean;
+  recsCardBackground?: string;
+  recsCardTextColor?: string;
+  recsCardAccentColor?: string;
   [key: string]: unknown;
 }
 
@@ -338,6 +343,71 @@ export default function AppSettings() {
                         description="Heading shown in recommendations (both bottom and side layouts)"
                         placeholder="Hand picked for you"
                       />
+
+                      {formSettings.drawerRecsPosition === "side" && (
+                        <Select
+                          label="Side panel device visibility"
+                          options={[
+                            { content: 'Desktop only (Recommended)', value: 'desktop_only' },
+                            { content: 'All devices (horizontal scroll on mobile)', value: 'all_devices' },
+                          ]}
+                          value={formSettings.sideRecsDeviceMode || "desktop_only"}
+                          onOptionChange={(value) => updateSetting("sideRecsDeviceMode", value)}
+                          description="On mobile, side panel converts to a horizontal scroll section"
+                        />
+                      )}
+
+                      {formSettings.drawerRecsPosition === "bottom" && (
+                        <Checkbox
+                          label="Stick recommendations to bottom"
+                          checked={formSettings.bottomRecsStickyEnabled || false}
+                          onChange={(e) => updateSetting("bottomRecsStickyEnabled", e.target.checked)}
+                          description="Keep recommendations always visible at the bottom of the cart drawer"
+                        />
+                      )}
+
+                      <HR />
+
+                      <H3>Card Appearance</H3>
+
+                      <Grid gridColumns="repeat(3, 1fr)" gridGap="0.75rem">
+                        <Box>
+                          <label>
+                            <Text bold>Card Background</Text>
+                            <input
+                              type="color"
+                              title="Card background color"
+                              value={formSettings.recsCardBackground || "#f5f5f5"}
+                              onChange={(e) => updateSetting("recsCardBackground", e.target.value)}
+                              style={{ width: "100%", height: "36px", border: "1px solid #d1d5db", borderRadius: "4px", cursor: "pointer", padding: "2px" }}
+                            />
+                          </label>
+                        </Box>
+                        <Box>
+                          <label>
+                            <Text bold>Text Color</Text>
+                            <input
+                              type="color"
+                              title="Card text color"
+                              value={formSettings.recsCardTextColor || "#111111"}
+                              onChange={(e) => updateSetting("recsCardTextColor", e.target.value)}
+                              style={{ width: "100%", height: "36px", border: "1px solid #d1d5db", borderRadius: "4px", cursor: "pointer", padding: "2px" }}
+                            />
+                          </label>
+                        </Box>
+                        <Box>
+                          <label>
+                            <Text bold>Button Color</Text>
+                            <input
+                              type="color"
+                              title="Add-to-cart button color"
+                              value={formSettings.recsCardAccentColor || "#333333"}
+                              onChange={(e) => updateSetting("recsCardAccentColor", e.target.value)}
+                              style={{ width: "100%", height: "36px", border: "1px solid #d1d5db", borderRadius: "4px", cursor: "pointer", padding: "2px" }}
+                            />
+                          </label>
+                        </Box>
+                      </Grid>
 
                       <HR />
 

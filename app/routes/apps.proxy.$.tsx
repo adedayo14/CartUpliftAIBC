@@ -24,6 +24,19 @@ import {
 
 // ─── Type Definitions ────────────────────────────────────────────────────────
 
+interface ProductOptionValue {
+  id: number;
+  label: string;
+  option_id: number;
+  option_display_name: string;
+}
+
+interface ProductVariantMeta {
+  id: string;
+  option_values: ProductOptionValue[];
+  purchasing_disabled: boolean;
+}
+
 interface ProductWithMeta {
   id: string;
   title: string;
@@ -32,6 +45,7 @@ interface ProductWithMeta {
   price: number;
   inStock: boolean;
   variant_id?: string;
+  variants?: ProductVariantMeta[];
 }
 
 interface MLRecommendation {
@@ -113,6 +127,16 @@ function normalizeProduct(product: BCProduct): ProductWithMeta {
     price,
     inStock,
     variant_id: firstVariant ? String(firstVariant.id) : undefined,
+    variants: product.variants?.slice(0, 10).map(v => ({
+      id: String(v.id),
+      option_values: (v.option_values || []).map(o => ({
+        id: o.id,
+        label: o.label,
+        option_id: o.option_id,
+        option_display_name: o.option_display_name,
+      })),
+      purchasing_disabled: v.purchasing_disabled,
+    })) || [],
   };
 }
 

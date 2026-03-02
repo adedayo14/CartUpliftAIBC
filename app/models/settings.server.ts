@@ -126,6 +126,11 @@ export interface SettingsData {
 	// Cart Drawer Settings
 	drawerRecsPosition: string;
 	drawerSideRecsTitle: string;
+	sideRecsDeviceMode: string;
+	bottomRecsStickyEnabled: boolean;
+	recsCardBackground: string;
+	recsCardTextColor: string;
+	recsCardAccentColor: string;
 
 	// Theme embed status (updated by storefront heartbeat)
 	themeEmbedEnabled?: boolean;
@@ -291,6 +296,11 @@ export async function getSettings(storeHash: string): Promise<SettingsData> {
 			drawerSideRecsTitle:
 				(typedSettings as Record<string, unknown>).drawerSideRecsTitle as string ??
 				"Why not add...",
+			sideRecsDeviceMode: typedSettings.sideRecsDeviceMode ?? "desktop_only",
+			bottomRecsStickyEnabled: typedSettings.bottomRecsStickyEnabled ?? false,
+			recsCardBackground: typedSettings.recsCardBackground ?? "#f5f5f5",
+			recsCardTextColor: typedSettings.recsCardTextColor ?? "#111111",
+			recsCardAccentColor: typedSettings.recsCardAccentColor ?? "#333333",
 		};
 	} catch (error: unknown) {
 		logger.error(`Error getting settings: ${error instanceof Error ? error.message : String(error)}`);
@@ -398,6 +408,11 @@ export async function saveSettings(
 			// Cart Drawer Settings
 			"drawerRecsPosition",
 			"drawerSideRecsTitle",
+			"sideRecsDeviceMode",
+			"bottomRecsStickyEnabled",
+			"recsCardBackground",
+			"recsCardTextColor",
+			"recsCardAccentColor",
 			// Multi-Storefront
 			"activeChannelId",
 			"channelIds",
@@ -708,6 +723,11 @@ export async function saveSettings(
 			drawerSideRecsTitle:
 				(settings as Record<string, unknown>).drawerSideRecsTitle as string ??
 				"Why not add...",
+			sideRecsDeviceMode: settings.sideRecsDeviceMode ?? "desktop_only",
+			bottomRecsStickyEnabled: settings.bottomRecsStickyEnabled ?? false,
+			recsCardBackground: settings.recsCardBackground ?? "#f5f5f5",
+			recsCardTextColor: settings.recsCardTextColor ?? "#111111",
+			recsCardAccentColor: settings.recsCardAccentColor ?? "#333333",
 		};
 	} catch (error) {
 		throw new Error(`Failed to save settings: ${(error as Error).message}`);
@@ -824,6 +844,11 @@ export function getDefaultSettings(): SettingsData {
 		// Cart Drawer Settings
 		drawerRecsPosition: "bottom",
 		drawerSideRecsTitle: "Why not add...",
+		sideRecsDeviceMode: "desktop_only",
+		bottomRecsStickyEnabled: false,
+		recsCardBackground: "#f5f5f5",
+		recsCardTextColor: "#111111",
+		recsCardAccentColor: "#333333",
 
 		themeEmbedEnabled: false,
 		themeEmbedLastSeen: undefined,

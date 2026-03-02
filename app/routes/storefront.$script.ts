@@ -529,24 +529,29 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
       ".cu-drawer-side{width:300px;background:#f7f7f5;display:none;flex-direction:column;overflow:hidden;border-right:1px solid #eee;order:-1}" +
       ".cu-drawer-side-hd{padding:20px 18px 14px;flex-shrink:0}" +
       ".cu-drawer-side-hd h3{margin:0;font-size:17px;font-weight:700;color:#111}" +
-      ".cu-drawer-side-bd{flex:1 1 0%;overflow-y:auto;padding:0 14px 14px;display:flex;flex-direction:column;gap:16px}" +
+      ".cu-drawer-side-bd{flex:1 1 0%;overflow-y:auto;padding:0 14px 14px;display:flex;flex-direction:column;gap:10px}" +
       ".cu-drawer-side-empty{display:none}" +
 
-      /* Side rec cards — vertical layout */
-      ".cu-side-card{background:#fff;border-radius:10px;overflow:hidden;transition:opacity .35s,transform .35s;box-shadow:0 1px 4px rgba(0,0,0,.05)}" +
-      ".cu-side-card--hidden{display:none}" +
-      ".cu-side-card--out{opacity:0;transform:scale(.92);pointer-events:none}" +
-      ".cu-side-card--reveal{animation:cu-rec-reveal .35s ease}" +
-      ".cu-side-card-img-wrap{position:relative;background:#fafafa}" +
-      ".cu-side-card-img{width:100%;height:180px;object-fit:contain;display:block}" +
-      ".cu-side-card-add{position:absolute;bottom:10px;right:10px;width:38px;height:38px;border-radius:50%;background:#333;color:#fff;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:background .15s;box-shadow:0 2px 6px rgba(0,0,0,.2)}" +
-      ".cu-side-card-add:hover{background:#111}" +
-      ".cu-side-card-add:disabled{background:#94a3b8;cursor:not-allowed}" +
-      ".cu-side-card-add svg{width:18px;height:18px}" +
-      ".cu-side-card-info{padding:10px 12px 12px}" +
-      ".cu-side-card-price{font-size:13px;font-weight:700;color:#111;margin-bottom:2px}" +
-      ".cu-side-card-name{font-size:12px;color:#555;line-height:1.4;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}" +
-      "@keyframes cu-rec-reveal{from{opacity:0;transform:scale(.85)}to{opacity:1;transform:scale(1)}}" +
+      /* Unified rec cards — used by both side and bottom layouts */
+      ".cu-rcard{background:var(--cu-card-bg,#f5f5f5);border-radius:2px;overflow:hidden;transition:opacity .3s,transform .3s}" +
+      ".cu-rcard--out{opacity:0;transform:scale(.9);pointer-events:none}" +
+      ".cu-rcard--hidden{display:none}" +
+      ".cu-rcard--reveal{animation:cu-rc-reveal .35s ease}" +
+      "@keyframes cu-rc-reveal{from{opacity:0;transform:scale(.85)}to{opacity:1;transform:scale(1)}}" +
+      ".cu-rcard-img-wrap{position:relative;background:#fff}" +
+      ".cu-rcard-img{width:100%;height:150px;object-fit:contain;display:block}" +
+      ".cu-rcard-info{padding:6px 10px 8px}" +
+      ".cu-rcard-row{margin-bottom:2px}" +
+      ".cu-rcard-price{font-size:14px;font-weight:700;color:var(--cu-card-text,#111)}" +
+      ".cu-rcard-add{position:absolute;right:8px;bottom:8px;z-index:2;width:34px;height:34px;border-radius:50%;background:var(--cu-card-accent,#333);color:#fff;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:opacity .15s;box-shadow:0 2px 6px rgba(0,0,0,.15);flex-shrink:0}" +
+      ".cu-rcard-add:hover{opacity:.85}" +
+      ".cu-rcard-add:disabled{background:#94a3b8;cursor:not-allowed}" +
+      ".cu-rcard-add svg{width:16px;height:16px}" +
+      ".cu-rcard-name{font-size:13px;color:var(--cu-card-text,#111);opacity:.7;line-height:1.3;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;word-break:break-word}" +
+      ".cu-rcard-opts{display:flex;gap:6px;margin-top:4px;align-items:center;flex-wrap:wrap}" +
+      ".cu-rcard-swatch{width:20px;height:20px;border-radius:50%;border:2px solid transparent;cursor:pointer;transition:border-color .15s;box-shadow:inset 0 0 0 1px rgba(0,0,0,.1)}" +
+      ".cu-rcard-swatch:hover,.cu-rcard-swatch--active{border-color:var(--cu-card-accent,#333)}" +
+      ".cu-rcard-opt-sel{font-size:11px;padding:3px 6px;border:1px solid #ccc;border-radius:3px;background:#fff;cursor:pointer;max-width:120px}" +
 
       /* Cart panel (right) */
       ".cu-drawer{width:420px;max-width:100vw;background:#fff;display:flex;flex-direction:column;flex-shrink:0}" +
@@ -595,17 +600,12 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
       ".cu-drawer-recs-hd h3{margin:0;font-size:13px;font-weight:700;letter-spacing:.3px;color:#111}" +
       ".cu-drawer-recs-scroll{display:flex;gap:12px;overflow-x:auto;padding-bottom:4px;scroll-snap-type:x mandatory;-webkit-overflow-scrolling:touch;scrollbar-width:none}" +
       ".cu-drawer-recs-scroll::-webkit-scrollbar{display:none}" +
-      ".cu-drawer-rc{flex:0 0 160px;scroll-snap-align:start;background:#fff;border:1px solid #e8e8e5;border-radius:10px;padding:12px;text-align:center;display:flex;flex-direction:column;align-items:center;transition:opacity .3s,transform .3s;box-shadow:0 1px 4px rgba(0,0,0,.04)}" +
-      ".cu-drawer-rc--out{opacity:0;transform:scale(.85);pointer-events:none}" +
-      ".cu-drawer-rc--hidden{display:none}" +
-      ".cu-drawer-rc--reveal{animation:cu-rc-reveal .35s ease}" +
-      "@keyframes cu-rc-reveal{from{opacity:0;transform:scale(.85)}to{opacity:1;transform:scale(1)}}" +
-      ".cu-drawer-rc-img{width:100%;height:100px;object-fit:contain;margin-bottom:8px;border-radius:6px}" +
-      ".cu-drawer-rc-name{font-size:12px;color:#111;font-weight:600;line-height:1.35;margin-bottom:4px;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;min-height:30px}" +
-      ".cu-drawer-rc-price{font-size:13px;font-weight:700;color:#111;margin-bottom:10px}" +
-      ".cu-drawer-rc-add{display:block;width:100%;padding:8px 6px;background:#111;color:#fff;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;transition:background .15s}" +
-      ".cu-drawer-rc-add:hover{background:#333}" +
-      ".cu-drawer-rc-add:disabled{background:#94a3b8;cursor:not-allowed}" +
+      ".cu-drawer-recs .cu-rcard{flex:0 0 170px;scroll-snap-align:start}" +
+      ".cu-drawer-recs .cu-rcard-img{height:100px}" +
+      /* Sticky bottom recs mode */
+      ".cu-drawer-bd--sticky{display:flex;flex-direction:column;overflow:hidden}" +
+      ".cu-drawer-bd-scroll{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch}" +
+      ".cu-drawer-recs--sticky{flex-shrink:0;max-height:35vh;overflow-y:auto}" +
 
       /* Footer */
       ".cu-drawer-ft{border-top:1px solid #eee;padding:16px 20px;flex-shrink:0;background:#fff}" +
@@ -873,6 +873,13 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
   var _shipDoneText = "\u2713 Free shipping unlocked!";
   var _recsTitle = "Hand picked for you";
   var _recsPosition = "bottom";  /* "bottom" = horizontal scroll in cart, "side" = left panel */
+  var _sideDeviceMode = "desktop_only";
+  var _bottomRecsSticky = false;
+  var _cardBg = "#f5f5f5";
+  var _cardText = "#111111";
+  var _cardAccent = "#333333";
+  var _prewarmStarted = false;
+  var _prewarmPromise = null;
 
   function getCartItems(cart) {
     if (!cart) return [];
@@ -993,7 +1000,7 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
 
     /* Body (scrollable) */
     _drawerBody = document.createElement("div");
-    _drawerBody.className = "cu-drawer-bd";
+    _drawerBody.className = "cu-drawer-bd" + (_bottomRecsSticky ? " cu-drawer-bd--sticky" : "");
     _drawer.appendChild(_drawerBody);
 
     /* Footer */
@@ -1017,6 +1024,11 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
     _drawer.appendChild(ft);
 
     _drawerWrap.appendChild(_drawer);
+
+    /* Inject card color CSS variables */
+    _drawerWrap.style.setProperty("--cu-card-bg", _cardBg);
+    _drawerWrap.style.setProperty("--cu-card-text", _cardText);
+    _drawerWrap.style.setProperty("--cu-card-accent", _cardAccent);
 
     document.body.appendChild(_overlay);
     document.body.appendChild(_drawerWrap);
@@ -1055,7 +1067,22 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
         _recsTitle = s.drawerSideRecsTitle;
       }
       if (s.drawerRecsPosition === "side" || s.drawerRecsPosition === "bottom") _recsPosition = s.drawerRecsPosition;
+      if (s.sideRecsDeviceMode === "desktop_only" || s.sideRecsDeviceMode === "all_devices") _sideDeviceMode = s.sideRecsDeviceMode;
+      _bottomRecsSticky = !!s.bottomRecsStickyEnabled;
+      if (s.recsCardBackground) _cardBg = s.recsCardBackground;
+      if (s.recsCardTextColor) _cardText = s.recsCardTextColor;
+      if (s.recsCardAccentColor) _cardAccent = s.recsCardAccentColor;
       log("Settings loaded: shipping=" + _shipEnabled + " threshold=" + _shipThreshold + " recsPos=" + _recsPosition);
+      /* Inject card color CSS variables */
+      if (_drawerWrap) {
+        _drawerWrap.style.setProperty("--cu-card-bg", _cardBg);
+        _drawerWrap.style.setProperty("--cu-card-text", _cardText);
+        _drawerWrap.style.setProperty("--cu-card-accent", _cardAccent);
+      }
+      /* Apply sticky mode class */
+      if (_bottomRecsSticky && _drawerBody) {
+        _drawerBody.classList.add("cu-drawer-bd--sticky");
+      }
       if (_sideTitleEl) _sideTitleEl.textContent = _recsTitle;
       var drawerTitle = _drawerBody ? _drawerBody.querySelector(".cu-drawer-recs-hd h3") : null;
       if (drawerTitle) drawerTitle.textContent = _recsTitle;
@@ -1097,6 +1124,30 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
       if (pid) set[pid] = true;
     }
     return set;
+  }
+
+  /* ─── Prewarm Recommendations ─── */
+  function prewarmRecommendations() {
+    if (_prewarmStarted || _drawerRecsAll.length > 0) return;
+    if (!_scriptUrl || !_storeHash) return;
+    _prewarmStarted = true;
+    log("Prewarming recommendations...");
+    _prewarmPromise = fetchFullCart().then(function (cart) {
+      if (!cart) return [];
+      var cartPidSet = getCartProductIdSet(cart);
+      var productIds = Object.keys(cartPidSet).sort();
+      if (productIds.length === 0) return [];
+      return fetchRecommendationsWithFallback(
+        _scriptUrl, _storeHash, "", productIds, "cart", 10
+      ).then(function (recs) {
+        if (recs && recs.length > 0) {
+          _drawerRecsAll = recs;
+          _lastRecsFetchKey = productIds.join(",");
+          log("Prewarmed " + recs.length + " recommendations");
+        }
+        return recs || [];
+      });
+    }).catch(function () { return []; });
   }
 
   function refreshDrawer() {
@@ -1141,6 +1192,13 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
       var _existingRecsSection = _drawerBody.querySelector(".cu-drawer-recs");
       if (_existingRecsSection) _existingRecsSection.remove();
 
+      /* Ensure scroll wrapper exists in sticky mode */
+      if (_bottomRecsSticky && !_drawerBody.querySelector(".cu-drawer-bd-scroll")) {
+        var scrollWrap = document.createElement("div");
+        scrollWrap.className = "cu-drawer-bd-scroll";
+        _drawerBody.appendChild(scrollWrap);
+      }
+
       if (!cart || items.length === 0) {
         var empty = document.createElement("div");
         empty.className = "cu-drawer-empty";
@@ -1157,11 +1215,17 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
         var rowPid = String(items[i].productId || items[i].product_id || items[i].id || "");
         var isNew = !prevPids[rowPid];
         var row = buildDrawerItem(items[i], cartId, isNew);
-        _drawerBody.appendChild(row);
+        var _itemTarget = _bottomRecsSticky ? (_drawerBody.querySelector(".cu-drawer-bd-scroll") || _drawerBody) : _drawerBody;
+        _itemTarget.appendChild(row);
       }
 
       /* Re-attach bottom recs section AFTER items so it stays at the bottom */
-      if (_existingRecsSection) _drawerBody.appendChild(_existingRecsSection);
+      if (_existingRecsSection) {
+        if (_bottomRecsSticky) {
+          _existingRecsSection.classList.add("cu-drawer-recs--sticky");
+        }
+        _drawerBody.appendChild(_existingRecsSection);
+      }
 
       /* ─── Side panel recommendations: fetch once, then toggle ─── */
       var productIds = [];
@@ -1170,6 +1234,21 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
 
       if (_drawerRecsAll.length > 0) {
         renderRecs(_drawerRecsAll, cartPidSet);
+      } else if (_prewarmPromise) {
+        /* Prewarm in flight — wait for it instead of starting a duplicate fetch */
+        _prewarmPromise.then(function () {
+          if (_drawerRecsAll.length > 0) {
+            renderRecs(_drawerRecsAll, getCartProductIdSet(cart));
+          } else if (_scriptUrl && _storeHash) {
+            fetchRecommendationsWithFallback(
+              _scriptUrl, _storeHash, "", productIds, "cart", 10
+            ).then(function (recs) {
+              _drawerRecsAll = recs;
+              _lastRecsFetchKey = productIds.join(",");
+              renderRecs(_drawerRecsAll, getCartProductIdSet(cart));
+            });
+          }
+        });
       } else if (_scriptUrl && _storeHash) {
         fetchRecommendationsWithFallback(
           _scriptUrl, _storeHash, "", productIds, "cart", 10
@@ -1310,116 +1389,248 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
 
   var _addBagSvg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 01-8 0"/></svg>';
 
-  function buildSideCard(rec) {
-    var card = document.createElement("div");
-    card.className = "cu-side-card";
+  var _colorNameMap = {
+    "black":"#000","white":"#fff","red":"#e53e3e","blue":"#3182ce","green":"#38a169",
+    "yellow":"#ecc94b","orange":"#ed8936","purple":"#805ad5","pink":"#ed64a6",
+    "grey":"#a0aec0","gray":"#a0aec0","brown":"#8b6914","navy":"#2a4365",
+    "beige":"#f5f0e1","cream":"#fffdd0","silver":"#c0c0c0","gold":"#d4a017",
+    "teal":"#319795","coral":"#f56565","ivory":"#fffff0","tan":"#d2b48c",
+    "maroon":"#800000","olive":"#808000","aqua":"#00bcd4","charcoal":"#36454f",
+    "burgundy":"#800020","khaki":"#c3b091","lavender":"#b794f4","mint":"#48bb78",
+    "peach":"#fbb6ce","rust":"#b7410e","sage":"#87ae73","slate":"#708090",
+    "wine":"#722f37","indigo":"#4c51bf","magenta":"#d53f8c","turquoise":"#38b2ac",
+    "sand":"#c2b280","stone":"#928e85","natural":"#e8dcc8","denim":"#1560bd",
+    "rose":"#f687b3","sky":"#63b3ed","forest":"#276749","chocolate":"#7b3f00",
+    "espresso":"#3c1414","lemon":"#fefcbf","lilac":"#c4b5fd","mauve":"#d6bcfa",
+    "pewter":"#96a3a6","plum":"#553c9a","smoke":"#a0aec0","steel":"#718096"
+  };
 
+  function resolveSwatchColor(label) {
+    if (!label) return null;
+    var lower = label.toLowerCase().trim();
+    if (_colorNameMap[lower]) return _colorNameMap[lower];
+    /* If it looks like a hex color */
+    if (/^#[0-9a-f]{3,6}$/i.test(lower)) return lower;
+    /* Multi-word: try each word */
+    var words = lower.split(/[\s\/\-]+/);
+    for (var w = 0; w < words.length; w++) {
+      if (_colorNameMap[words[w]]) return _colorNameMap[words[w]];
+    }
+    return null;
+  }
+
+  function buildUnifiedCard(rec, layout) {
+    var card = document.createElement("div");
+    card.className = "cu-rcard";
     var recId = firstNumeric(rec.id || rec.product_id || rec.productId);
     if (recId) card.setAttribute("data-cu-rec-pid", recId);
 
-    /* Image wrapper with overlay add button */
-    var imgWrap = document.createElement("div");
-    imgWrap.className = "cu-side-card-img-wrap";
+    /* Selected variant tracking */
+    var selectedVid = rec.variant_id || rec.variantId || "";
 
+    /* Image wrapper */
+    var imgWrap = document.createElement("div");
+    imgWrap.className = "cu-rcard-img-wrap";
     if (rec.image) {
       var imgLink = document.createElement("a");
       imgLink.href = normalizeProductUrl(rec.handle);
       var img = document.createElement("img");
-      img.className = "cu-side-card-img";
+      img.className = "cu-rcard-img";
       img.src = rec.image;
       img.alt = String(rec.title || "Product");
       img.loading = "lazy";
       imgLink.appendChild(img);
       imgWrap.appendChild(imgLink);
     }
+    card.appendChild(imgWrap);
 
+    /* Info section */
+    var info = document.createElement("div");
+    info.className = "cu-rcard-info";
+
+    /* Price + Add icon row */
+    var row = document.createElement("div");
+    row.className = "cu-rcard-row";
+    var price = document.createElement("div");
+    price.className = "cu-rcard-price";
+    price.textContent = formatMoney(rec.price, getCurrencyCode());
+    row.appendChild(price);
+
+    var addBtn = null;
     if (recId) {
-      var addBtn = document.createElement("button");
-      addBtn.className = "cu-side-card-add";
+      addBtn = document.createElement("button");
+      addBtn.className = "cu-rcard-add";
       addBtn.innerHTML = _addBagSvg;
       addBtn.setAttribute("aria-label", "Add to cart");
-      var recVariantId = rec.variant_id || rec.variantId || "";
-      var recTitle = String(rec.title || "Product");
+      imgWrap.appendChild(addBtn);
+    }
+    info.appendChild(row);
 
-      (function (btn, pid, cardEl, vid, title) {
+    /* Product name */
+    var name = document.createElement("div");
+    name.className = "cu-rcard-name";
+    name.textContent = String(rec.title || "Product");
+    info.appendChild(name);
+
+    /* Option swatches / dropdowns */
+    var variants = rec.variants || [];
+    if (variants.length > 1) {
+      /* Group option values by option_display_name */
+      var optionGroups = {};
+      var optionOrder = [];
+      for (var vi = 0; vi < variants.length; vi++) {
+        if (variants[vi].purchasing_disabled) continue;
+        var ovs = variants[vi].option_values || [];
+        for (var oi = 0; oi < ovs.length; oi++) {
+          var optName = ovs[oi].option_display_name || "";
+          if (!optionGroups[optName]) {
+            optionGroups[optName] = { values: [], seen: {} };
+            optionOrder.push(optName);
+          }
+          var lbl = ovs[oi].label;
+          if (!optionGroups[optName].seen[lbl]) {
+            optionGroups[optName].seen[lbl] = true;
+            optionGroups[optName].values.push({ label: lbl, optionId: ovs[oi].option_id, valueId: ovs[oi].id });
+          }
+        }
+      }
+
+      if (optionOrder.length > 0) {
+        var optsContainer = document.createElement("div");
+        optsContainer.className = "cu-rcard-opts";
+
+        for (var gi = 0; gi < optionOrder.length; gi++) {
+          var gName = optionOrder[gi];
+          var gVals = optionGroups[gName].values;
+          var isColor = /colou?r/i.test(gName);
+
+          if (isColor && gVals.length > 0) {
+            /* Render color swatches */
+            for (var si = 0; si < gVals.length && si < 6; si++) {
+              var sw = document.createElement("span");
+              sw.className = "cu-rcard-swatch" + (si === 0 ? " cu-rcard-swatch--active" : "");
+              sw.title = gVals[si].label;
+              var bgColor = resolveSwatchColor(gVals[si].label);
+              sw.style.backgroundColor = bgColor || "#ccc";
+              if (!bgColor) sw.textContent = gVals[si].label.charAt(0);
+              /* Click to select variant */
+              (function (swEl, optLabel, allVariants) {
+                swEl.addEventListener("click", function (e) {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  /* Highlight active swatch */
+                  var siblings = optsContainer.querySelectorAll(".cu-rcard-swatch");
+                  for (var sx = 0; sx < siblings.length; sx++) siblings[sx].classList.remove("cu-rcard-swatch--active");
+                  swEl.classList.add("cu-rcard-swatch--active");
+                  /* Find matching variant */
+                  for (var mv = 0; mv < allVariants.length; mv++) {
+                    var ov = allVariants[mv].option_values || [];
+                    for (var x = 0; x < ov.length; x++) {
+                      if (ov[x].label === optLabel && !allVariants[mv].purchasing_disabled) {
+                        selectedVid = allVariants[mv].id;
+                        break;
+                      }
+                    }
+                  }
+                });
+              })(sw, gVals[si].label, variants);
+              optsContainer.appendChild(sw);
+            }
+          } else if (gVals.length > 1) {
+            /* Render dropdown for non-color options */
+            var sel = document.createElement("select");
+            sel.className = "cu-rcard-opt-sel";
+            sel.title = gName;
+            for (var di = 0; di < gVals.length; di++) {
+              var opt = document.createElement("option");
+              opt.value = gVals[di].label;
+              opt.textContent = gVals[di].label;
+              sel.appendChild(opt);
+            }
+            (function (selEl, allVariants) {
+              selEl.addEventListener("change", function () {
+                var val = selEl.value;
+                for (var mv = 0; mv < allVariants.length; mv++) {
+                  var ov = allVariants[mv].option_values || [];
+                  for (var x = 0; x < ov.length; x++) {
+                    if (ov[x].label === val && !allVariants[mv].purchasing_disabled) {
+                      selectedVid = allVariants[mv].id;
+                      break;
+                    }
+                  }
+                }
+              });
+            })(sel, variants);
+            optsContainer.appendChild(sel);
+          }
+        }
+        info.appendChild(optsContainer);
+      }
+    }
+
+    card.appendChild(info);
+
+    /* Add-to-cart click handler */
+    if (addBtn && recId) {
+      var recTitle = String(rec.title || "Product");
+      (function (btn, pid, cardEl, title) {
         btn.addEventListener("click", function (e) {
           e.preventDefault();
           e.stopPropagation();
           btn.disabled = true;
           trackEvent("click", pid, title);
           var lineItem = { quantity: 1, productId: Number(pid) };
+          var vid = selectedVid;
           if (vid) lineItem.variantId = Number(vid);
 
           function onAdded() {
             trackEvent("add_to_cart", pid, title);
-            cardEl.classList.add("cu-side-card--out");
+            cardEl.classList.add("cu-rcard--out");
             setTimeout(function () {
-              cardEl.classList.remove("cu-side-card--out");
-              cardEl.classList.add("cu-side-card--hidden");
+              cardEl.classList.remove("cu-rcard--out");
+              cardEl.classList.add("cu-rcard--hidden");
               btn.disabled = false;
               refreshDrawer();
             }, 320);
           }
-
-          function onFailed() {
-            btn.disabled = false;
-          }
+          function onFailed() { btn.disabled = false; }
 
           addItemToCart([lineItem], function (ok) {
-            if (ok) {
-              onAdded();
-            } else if (_scriptUrl && _storeHash) {
-              /* Fallback: fetch variant info then retry */
+            if (ok) { onAdded(); }
+            else if (_scriptUrl && _storeHash) {
               var prodUrl = _scriptUrl.origin +
                 "/apps/proxy/api/products?store_hash=" + encodeURIComponent(_storeHash) +
                 "&product_id=" + encodeURIComponent(pid);
-              fetchJson(prodUrl)
-                .then(function (pData) {
-                  var product = null;
-                  if (pData && Array.isArray(pData.products)) {
-                    for (var pi = 0; pi < pData.products.length; pi++) {
-                      if (String(pData.products[pi].id) === String(pid)) { product = pData.products[pi]; break; }
-                    }
-                    if (!product && pData.products.length > 0) product = pData.products[0];
-                  } else if (pData && pData.product) {
-                    product = pData.product;
+              fetchJson(prodUrl).then(function (pData) {
+                var product = null;
+                if (pData && Array.isArray(pData.products)) {
+                  for (var pi = 0; pi < pData.products.length; pi++) {
+                    if (String(pData.products[pi].id) === String(pid)) { product = pData.products[pi]; break; }
                   }
-                  var variants = product && Array.isArray(product.variants) ? product.variants : [];
-                  var firstVar = variants.length > 0 ? variants[0] : null;
-                  var fetchedVid = firstVar ? Number(firstVar.id || firstVar.variant_id) : 0;
-                  if (fetchedVid) {
-                    addItemToCart([{ quantity: 1, productId: Number(pid), variantId: fetchedVid }], function (ok2) {
-                      if (ok2) { onAdded(); } else { onFailed(); }
-                    });
-                  } else { onFailed(); }
-                })
-                .catch(function () { onFailed(); });
-            } else {
-              onFailed();
-            }
+                  if (!product && pData.products.length > 0) product = pData.products[0];
+                } else if (pData && pData.product) {
+                  product = pData.product;
+                }
+                var vars = product && Array.isArray(product.variants) ? product.variants : [];
+                var firstVar = vars.length > 0 ? vars[0] : null;
+                var fetchedVid = firstVar ? Number(firstVar.id || firstVar.variant_id) : 0;
+                if (fetchedVid) {
+                  addItemToCart([{ quantity: 1, productId: Number(pid), variantId: fetchedVid }], function (ok2) {
+                    if (ok2) { onAdded(); } else { onFailed(); }
+                  });
+                } else { onFailed(); }
+              }).catch(function () { onFailed(); });
+            } else { onFailed(); }
           });
         });
-      })(addBtn, recId, card, recVariantId, recTitle);
-      imgWrap.appendChild(addBtn);
+      })(addBtn, recId, card, recTitle);
     }
-
-    card.appendChild(imgWrap);
-
-    /* Info: price + name */
-    var info = document.createElement("div");
-    info.className = "cu-side-card-info";
-    var price = document.createElement("div");
-    price.className = "cu-side-card-price";
-    price.textContent = formatMoney(rec.price, getCurrencyCode());
-    info.appendChild(price);
-    var name = document.createElement("div");
-    name.className = "cu-side-card-name";
-    name.textContent = String(rec.title || "Product");
-    info.appendChild(name);
-    card.appendChild(info);
 
     return card;
   }
+
+  /* Legacy alias for side cards — now uses unified builder */
+  function buildSideCard(rec) { return buildUnifiedCard(rec, "side"); }
 
   function renderSideRecs(allRecs, cartPidSet) {
     if (!_sideBody) return;
@@ -1434,7 +1645,7 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
         var card = buildSideCard(allRecs[i]);
         var cpid = card.getAttribute("data-cu-rec-pid");
         if (cpid && cartPidSet && cartPidSet[cpid]) {
-          card.classList.add("cu-side-card--hidden");
+          card.classList.add("cu-rcard--hidden");
         } else {
           visCount += 1;
         }
@@ -1448,25 +1659,25 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
     }
 
     /* Toggle visibility on existing cards */
-    var cards = _sideBody.querySelectorAll(".cu-side-card[data-cu-rec-pid]");
+    var cards = _sideBody.querySelectorAll(".cu-rcard[data-cu-rec-pid]");
     var visibleCount = 0;
 
     for (var j = 0; j < cards.length; j += 1) {
       var pid = cards[j].getAttribute("data-cu-rec-pid");
       var inCart = cartPidSet && cartPidSet[pid];
-      var wasHidden = cards[j].classList.contains("cu-side-card--hidden");
+      var wasHidden = cards[j].classList.contains("cu-rcard--hidden");
 
       if (inCart && !wasHidden) {
-        cards[j].classList.add("cu-side-card--hidden");
-        cards[j].classList.remove("cu-side-card--out");
-        cards[j].classList.remove("cu-side-card--reveal");
+        cards[j].classList.add("cu-rcard--hidden");
+        cards[j].classList.remove("cu-rcard--out");
+        cards[j].classList.remove("cu-rcard--reveal");
       } else if (!inCart && wasHidden) {
-        cards[j].classList.remove("cu-side-card--hidden");
-        cards[j].classList.remove("cu-side-card--out");
-        cards[j].classList.add("cu-side-card--reveal");
+        cards[j].classList.remove("cu-rcard--hidden");
+        cards[j].classList.remove("cu-rcard--out");
+        cards[j].classList.add("cu-rcard--reveal");
         visibleCount += 1;
       } else if (!inCart) {
-        cards[j].classList.remove("cu-side-card--out");
+        cards[j].classList.remove("cu-rcard--out");
         visibleCount += 1;
       }
     }
@@ -1476,92 +1687,7 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
 
   /* ─── Bottom Recs (horizontal scroll inside cart body) ─── */
 
-  function buildRecCard(rec) {
-    var card = document.createElement("div");
-    card.className = "cu-drawer-rc";
-    var recId = firstNumeric(rec.id || rec.product_id || rec.productId);
-    if (recId) card.setAttribute("data-cu-rec-pid", recId);
-
-    if (rec.image) {
-      var img = document.createElement("img");
-      img.className = "cu-drawer-rc-img";
-      img.src = rec.image;
-      img.alt = String(rec.title || "Product");
-      img.loading = "lazy";
-      card.appendChild(img);
-    }
-
-    var name = document.createElement("div");
-    name.className = "cu-drawer-rc-name";
-    name.textContent = String(rec.title || "Product");
-    card.appendChild(name);
-
-    var price = document.createElement("div");
-    price.className = "cu-drawer-rc-price";
-    price.textContent = formatMoney(rec.price, getCurrencyCode());
-    card.appendChild(price);
-
-    if (recId) {
-      var addBtn = document.createElement("button");
-      addBtn.className = "cu-drawer-rc-add";
-      addBtn.textContent = "Add";
-      var recVariantId = rec.variant_id || rec.variantId || "";
-      var recTitle = String(rec.title || "Product");
-      (function (btn, pid, cardEl, vid, title) {
-        btn.addEventListener("click", function () {
-          btn.disabled = true;
-          btn.textContent = "Adding\u2026";
-          trackEvent("click", pid, title);
-          var lineItem = { quantity: 1, productId: Number(pid) };
-          if (vid) lineItem.variantId = Number(vid);
-
-          function onAdded() {
-            trackEvent("add_to_cart", pid, title);
-            cardEl.classList.add("cu-drawer-rc--out");
-            setTimeout(function () {
-              cardEl.classList.remove("cu-drawer-rc--out");
-              cardEl.classList.add("cu-drawer-rc--hidden");
-              btn.textContent = "Add";
-              btn.disabled = false;
-              refreshDrawer();
-            }, 320);
-          }
-          function onFailed() { btn.textContent = "Add"; btn.disabled = false; }
-
-          addItemToCart([lineItem], function (ok) {
-            if (ok) { onAdded(); }
-            else if (_scriptUrl && _storeHash) {
-              /* Fallback: fetch variant info then retry */
-              var prodUrl = _scriptUrl.origin +
-                "/apps/proxy/api/products?store_hash=" + encodeURIComponent(_storeHash) +
-                "&product_id=" + encodeURIComponent(pid);
-              fetchJson(prodUrl).then(function (pData) {
-                var product = null;
-                if (pData && Array.isArray(pData.products)) {
-                  for (var pi = 0; pi < pData.products.length; pi++) {
-                    if (String(pData.products[pi].id) === String(pid)) { product = pData.products[pi]; break; }
-                  }
-                  if (!product && pData.products.length > 0) product = pData.products[0];
-                } else if (pData && pData.product) {
-                  product = pData.product;
-                }
-                var variants = product && Array.isArray(product.variants) ? product.variants : [];
-                var firstVar = variants.length > 0 ? variants[0] : null;
-                var fetchedVid = firstVar ? Number(firstVar.id || firstVar.variant_id) : 0;
-                if (fetchedVid) {
-                  addItemToCart([{ quantity: 1, productId: Number(pid), variantId: fetchedVid }], function (ok2) {
-                    if (ok2) { onAdded(); } else { onFailed(); }
-                  });
-                } else { onFailed(); }
-              }).catch(function () { onFailed(); });
-            } else { onFailed(); }
-          });
-        });
-      })(addBtn, recId, card, recVariantId, recTitle);
-      card.appendChild(addBtn);
-    }
-    return card;
-  }
+  function buildRecCard(rec) { return buildUnifiedCard(rec, "bottom"); }
 
   var _bottomRecsKey = "";
 
@@ -1589,7 +1715,7 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
         var card = buildRecCard(allRecs[i]);
         var cpid = card.getAttribute("data-cu-rec-pid");
         if (cpid && cartPidSet && cartPidSet[cpid]) {
-          card.classList.add("cu-drawer-rc--hidden");
+          card.classList.add("cu-rcard--hidden");
         } else { visCards += 1; }
         scroll.appendChild(card);
       }
@@ -1602,18 +1728,18 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
     }
 
     if (!section) return;
-    var cards = section.querySelectorAll(".cu-drawer-rc[data-cu-rec-pid]");
+    var cards = section.querySelectorAll(".cu-rcard[data-cu-rec-pid]");
     var visibleCount = 0;
     for (var j = 0; j < cards.length; j += 1) {
       var pid = cards[j].getAttribute("data-cu-rec-pid");
       var inCart = cartPidSet && cartPidSet[pid];
-      var wasHidden = cards[j].classList.contains("cu-drawer-rc--hidden");
+      var wasHidden = cards[j].classList.contains("cu-rcard--hidden");
       if (inCart && !wasHidden) {
-        cards[j].classList.add("cu-drawer-rc--hidden");
-        cards[j].classList.remove("cu-drawer-rc--out");
+        cards[j].classList.add("cu-rcard--hidden");
+        cards[j].classList.remove("cu-rcard--out");
       } else if (!inCart && wasHidden) {
-        cards[j].classList.remove("cu-drawer-rc--hidden");
-        cards[j].classList.add("cu-drawer-rc--reveal");
+        cards[j].classList.remove("cu-rcard--hidden");
+        cards[j].classList.add("cu-rcard--reveal");
         visibleCount += 1;
       } else if (!inCart) { visibleCount += 1; }
     }
@@ -1623,11 +1749,18 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
   /* Router — delegates to the correct render based on settings */
   function renderRecs(allRecs, cartPidSet) {
     if (_recsPosition === "side") {
-      if (_sidePanel) _sidePanel.style.display = "flex";
-      renderSideRecs(allRecs, cartPidSet);
-      /* Clear any bottom recs */
-      var oldBottom = _drawerBody && _drawerBody.querySelector(".cu-drawer-recs");
-      if (oldBottom) oldBottom.remove();
+      /* On mobile with "all_devices" mode, render as bottom horizontal scroll */
+      var isMobile = window.innerWidth <= 768;
+      if (isMobile && _sideDeviceMode === "all_devices") {
+        renderDrawerRecs(allRecs, cartPidSet);
+        if (_sidePanel) _sidePanel.style.display = "none";
+      } else {
+        if (_sidePanel) _sidePanel.style.display = "flex";
+        renderSideRecs(allRecs, cartPidSet);
+        /* Clear any bottom recs */
+        var oldBottom = _drawerBody && _drawerBody.querySelector(".cu-drawer-recs");
+        if (oldBottom) oldBottom.remove();
+      }
     } else {
       renderDrawerRecs(allRecs, cartPidSet);
       /* Hide side panel */
@@ -1755,6 +1888,8 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
       return;
     }
 
+    /* Start prewarming recs immediately (don't wait for settings) */
+    prewarmRecommendations();
     /* Fetch store settings (once) for shipping bar, recs title, etc. */
     fetchStoreSettings();
 
