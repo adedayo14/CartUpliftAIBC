@@ -622,7 +622,7 @@ const CART_UPLIFT_SCRIPT = String.raw`(function () {
 
       /* Mobile: hide side panel, full-width cart, horizontal scroll recs */
       "@media(max-width:768px){" +
-        ".cu-drawer-wrap{width:100vw}" +
+        ".cu-drawer-wrap{left:0;width:100vw}" +
         ".cu-drawer-side{display:none!important}" +
         ".cu-drawer{width:100vw}" +
         ".cu-drawer-recs .cu-rcard{flex:0 0 46%}" +
